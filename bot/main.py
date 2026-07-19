@@ -25,6 +25,7 @@ from .handlers.start import start_command, help_command, menu_command, menu_call
 from .handlers.study import study_conv_handler
 from .handlers.gym import gym_conv_handler, stale_gym_callback
 from .handlers.diet import diet_conv_handler, stale_meal_callback
+from .handlers.catalog import food_command, recipe_command
 from .handlers.habits import (
     habits_setup_conv_handler,
     habit_check_callback,
@@ -56,6 +57,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 async def post_init(application) -> None:
     """Called after Application.initialize() — set up DB and jobs."""
+    if "db" in application.bot_data:
+        logger.warning("post_init called again — skipping (already initialised)")
+        return
+
     db = DatabaseManager(DB_PATH)
     await db.connect()
     await db.init_db()
@@ -102,6 +107,8 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("help", help_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("menu", menu_command, filters=AUTH_FILTER))
+    application.add_handler(CommandHandler("food", food_command, filters=AUTH_FILTER))
+    application.add_handler(CommandHandler("recipe", recipe_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("summary", summary_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("chart", chart_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("streak", streak_command, filters=AUTH_FILTER))

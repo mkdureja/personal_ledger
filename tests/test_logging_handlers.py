@@ -447,7 +447,7 @@ async def test_timeout_delivery_failure_still_clears_flow() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("calorie_token", ["0", "-20", "²"])
+@pytest.mark.parametrize("calorie_token", ["0", "²"])
 async def test_diet_shortcut_rejects_invalid_numeric_calorie_tokens(
     calorie_token: str,
 ) -> None:

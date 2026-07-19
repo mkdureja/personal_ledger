@@ -83,31 +83,40 @@ async def study_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     args = context.args or []
 
-    # Shortcut: /study <subject> <minutes> [notes...]
+    # Shortcut: /study <subject words...> <minutes> [notes...]
+    # The duration is the first token from the end that looks like a positive
+    # integer.  Everything before it is the subject; everything after is notes.
     if len(args) >= 2:
-        subject = args[0]
-        if len(subject) > MAX_SUBJECT_LENGTH:
-            await update.message.reply_text(
-                f"❌ Subject too long (max {MAX_SUBJECT_LENGTH} characters)."
+        duration_index: int | None = None
+        for idx in range(len(args) - 1, 0, -1):
+            candidate, err = parse_int(
+                args[idx], "Duration", max_value=MAX_STUDY_MINUTES
             )
-            return ConversationHandler.END
-        duration, err = parse_int(
-            args[1], "Duration", max_value=MAX_STUDY_MINUTES
-        )
-        if err:
-            await update.message.reply_text(err)
-            return ConversationHandler.END
+            if err is None:
+                duration_index = idx
+                break
+        if duration_index is None:
+            # Fall through to guided flow when no valid duration is found.
+            pass
+        else:
+            subject = " ".join(args[:duration_index])
+            duration = candidate
+            if len(subject) > MAX_SUBJECT_LENGTH:
+                await update.message.reply_text(
+                    f"❌ Subject too long (max {MAX_SUBJECT_LENGTH} characters)."
+                )
+                return ConversationHandler.END
 
-        notes = " ".join(args[2:]) if len(args) > 2 else None
-        if notes and len(notes) > MAX_NOTES_LENGTH:
-            await update.message.reply_text(
-                f"❌ Notes too long (max {MAX_NOTES_LENGTH} characters)."
-            )
-            return ConversationHandler.END
-        await db.log_study(user.id, subject, duration, notes)
+            notes = " ".join(args[duration_index + 1:]) if len(args) > duration_index + 1 else None
+            if notes and len(notes) > MAX_NOTES_LENGTH:
+                await update.message.reply_text(
+                    f"❌ Notes too long (max {MAX_NOTES_LENGTH} characters)."
+                )
+                return ConversationHandler.END
+            await db.log_study(user.id, subject, duration, notes)
 
-        await reply_html(update.message, _confirmation(subject, duration, notes))
-        return ConversationHandler.END
+            await reply_html(update.message, _confirmation(subject, duration, notes))
+            return ConversationHandler.END
 
     # Guided flow
     activate_conversation(update, context, "study")

@@ -8,7 +8,7 @@ A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, and **Habit
 |---|---|
 | 📖 **Study** | Subject, duration (minutes), notes |
 | 🏋️ **Gym** | Exercise, sets, reps, weight (or bodyweight) |
-| 🍽️ **Diet** | Meal type, food items, calories |
+| 🍽️ **Diet** | Meal type, food items, calories, and protein/carbs/fat macros |
 | ✅ **Habits** | Predefined habits, daily check-off, streaks |
 
 **Extras:**
@@ -75,7 +75,51 @@ python -m bot
 | `/gym` | Guided workout log (multi-exercise) |
 | `/gym <exercise> <sets> <reps> [kg]` | Quick single exercise |
 | `/diet` | Guided meal log |
-| `/diet <meal> <food> [calories]` | Quick meal log |
+| `/diet <meal> <food> [calories] [p=<g> c=<g> f=<g>]` | Quick meal log |
+
+Diet macros are optional decimal grams. For example,
+`/diet lunch dal+rice 650 p=25 c=80 f=15` records 25 g protein,
+80 g carbs, and 15 g fat; quick logs may include any subset of those labels.
+In the guided flow, enter all three values in
+protein/carbs/fat order (for example, `25 80 15`) or use `/skip`. Daily and
+weekly summaries total the known values and clearly flag meals whose macros
+were not recorded.
+
+### Saved foods and recipes
+
+| Command | Description |
+|---|---|
+| `/food add <key> per=<qtyunit> [kcal=<n> p=<g> c=<g> f=<g>]` | Save or update a food (at least one nutrient is required) |
+| `/food portion <key> <portion>=<qtyunit>` | Add or update a named portion |
+| `/food unportion <key> <portion>` | Remove a named portion |
+| `/food list` / `/food show <key>` / `/food remove <key>` | Browse or archive saved foods |
+| `/recipe add <key> yield=<qtyunit>` | Save or update a recipe and its yield |
+| `/recipe ingredient <recipe> food:<food> <qtyunit>` | Add or update an ingredient (attached or spaced unit) |
+| `/recipe removeitem <recipe> food:<food>` | Remove an ingredient |
+| `/recipe list` / `/recipe show <key>` / `/recipe remove <key>` | Browse or archive recipes |
+
+Keys use one token of ASCII letters/numbers; kebab-case names such as
+`greek-yogurt` are recommended.
+Quantities accept metric aliases such as `220gm` as well as food-specific
+portions such as `1 medium`. Log a saved definition explicitly so ordinary
+`/diet` commands remain unchanged:
+
+Saving an existing food key replaces its nutrition profile; nutrient labels
+left out of that update become unknown.
+
+Recipe ingredients keep the resolved base quantity, so changing a named
+portion later does not rewrite the recipe. Food nutrition edits affect future
+recipe logs, while completed diet logs remain unchanged snapshots.
+
+```text
+/diet snack food:apple 1 medium
+/diet snack food:apple 220 gm
+/diet dinner recipe:chicken-curry 1 serving
+```
+
+Dimensions are never converted unless you configure an explicit food-specific
+mapping such as `piece=50g` or `ml=1.4g`. A recipe can be logged in grams or
+millilitres only when its recorded yield uses that unit dimension.
 
 ### Habits
 | Command | Description |
@@ -109,6 +153,7 @@ bot/
 ├── main.py          # Entry point, handler registration
 ├── config.py        # .env loader, TZ helpers
 ├── database.py      # Async SQLite (aiosqlite)
+├── nutrition.py     # Exact unit parsing and nutrition scaling
 ├── keyboards.py     # InlineKeyboard builders
 ├── charts.py        # matplotlib chart generation
 └── handlers/
@@ -117,6 +162,7 @@ bot/
     ├── study.py     # Study ConversationHandler
     ├── gym.py       # Gym ConversationHandler
     ├── diet.py      # Diet ConversationHandler
+    ├── catalog.py   # Saved food and recipe commands
     ├── habits.py    # Habit setup + check-off
     ├── analytics.py # Summaries, charts, streaks
     └── reminders.py # Daily JobQueue reminder
@@ -139,4 +185,4 @@ bot/
 python -m pytest tests/ -v
 ```
 
-Tests cover startup/job scheduling, schema upgrades and constraints, CRUD and undo ordering, timezone boundaries, streaks, authorization, callback expiry/ownership, guided-flow isolation, input bounds, legacy habit pagination, analytics routing, and reminder message limits.
+Tests cover startup/job scheduling, schema upgrades and constraints, CRUD and undo ordering, timezone boundaries, streaks, authorization, callback expiry/ownership, guided-flow isolation, input bounds, catalog ownership and unit conversion, recipe scaling and snapshots, legacy habit and diet-macro migrations, analytics aggregation/routing, and reminder message limits.

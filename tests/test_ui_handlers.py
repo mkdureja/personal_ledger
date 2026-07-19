@@ -292,6 +292,28 @@ async def test_active_habit_cap_blocks_database_insert(user_id):
 
 
 @pytest.mark.asyncio
+async def test_add_habit_text_rejects_case_insensitive_duplicates(user_id):
+    """EDGE-1: Adding 'meditate' when 'Meditate' is active should be rejected."""
+    habits = [{"id": 1, "habit_name": "Meditate"}]
+    db = SimpleNamespace(
+        get_active_habits=AsyncMock(return_value=habits),
+        add_habit=AsyncMock(),
+    )
+    message = SimpleNamespace(text="meditate", reply_text=AsyncMock())
+    update = SimpleNamespace(
+        message=message,
+        effective_user=SimpleNamespace(id=user_id),
+    )
+    context = SimpleNamespace(bot_data={"db": db})
+
+    result = await add_habit_text(update, context)
+
+    assert result == ADDING_HABIT
+    db.add_habit.assert_not_awaited()
+    assert "Already active: <b>meditate</b>" in message.reply_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_weekly_habit_percentage_counts_only_active_ids(user_id):
     db = SimpleNamespace(
         get_study_logs=AsyncMock(return_value=[]),

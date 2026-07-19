@@ -27,7 +27,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "I'm your personal logging bot for tracking:\n"
         "📖 <b>Study</b> — subjects, duration, notes\n"
         "🏋️ <b>Gym</b> — exercises, sets, reps, weight\n"
-        "🍽️ <b>Diet</b> — meals, food items, calories\n"
+        "🍽️ <b>Diet</b> — meals, calories, and macros\n"
         "✅ <b>Habits</b> — daily check-offs with streaks\n\n"
         "Use /menu for the main menu, or type /help for all commands."
     )
@@ -47,7 +47,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/gym</code> — Log gym exercises\n"
         "<code>/gym &lt;exercise&gt; &lt;sets&gt; &lt;reps&gt; [weight]</code> — Quick log\n"
         "<code>/diet</code> — Log a meal\n"
-        "<code>/diet &lt;meal&gt; &lt;food&gt; [calories]</code> — Quick log\n\n"
+        "<code>/diet &lt;meal&gt; &lt;food&gt; [calories] "
+        "[p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</code> — Quick log\n"
+        "<code>/food</code> — Manage saved foods and portions\n"
+        "<code>/recipe</code> — Manage saved recipes\n\n"
         "<b>Habits</b>\n"
         "<code>/habits</code> — Check off today's habits\n"
         "<code>/habits setup</code> — Add/remove habits\n\n"
@@ -121,7 +124,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await reply_html(
             query.message,
             "🍽️ <b>Diet</b> — Send /diet to start logging, or use:\n"
-            "<code>/diet &lt;meal&gt; &lt;food&gt; [calories]</code>",
+            "<code>/diet &lt;meal&gt; &lt;food&gt; [calories] "
+            "[p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</code>\n"
+            "<code>/diet snack food:apple 1 medium</code>\n"
+            "<code>/diet dinner recipe:curry 1 serving</code>\n\n"
+            "Manage saved nutrition with /food and /recipe.",
         )
     elif data == "menu_habits":
         # Import here to avoid circular imports

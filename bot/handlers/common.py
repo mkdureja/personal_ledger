@@ -52,9 +52,12 @@ _CONVERSATION_DATA_KEYS = {
         "diet_meal_message_id",
         "diet_meal_type",
         "diet_food_items",
+        "diet_calories",
     ),
     "habits": ("habit_setup_prompt",),
 }
+_MAX_UNDO_TEXT_LENGTH = 400
+_MAX_UNDO_VALUE_LENGTH = 32
 
 
 def _conversation_chat_id(update: Update) -> int | None:
@@ -97,6 +100,14 @@ def current_conversation(
 def escape_html(value: object) -> str:
     """Escape a dynamic value for inclusion in a Telegram HTML message."""
     return html.escape(str(value))
+
+
+def _bounded_html(value: object, max_chars: int) -> str:
+    """Escape a legacy value after bounding its contribution to a message."""
+    text = str(value)
+    if len(text) > max_chars:
+        text = text[: max_chars - 1] + "…"
+    return escape_html(text)
 
 
 async def conversation_available(
@@ -296,33 +307,49 @@ async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    category = escape_html(entry.get("category", "Unknown"))
+    category = _bounded_html(entry.get("category", "Unknown"), 64)
     lines = [f"↩️ <b>Undone:</b> {category}"]
 
     # Build detail based on category
     if "subject" in entry:
-        subject = escape_html(entry["subject"])
-        duration = escape_html(entry["duration_min"])
+        subject = _bounded_html(entry["subject"], _MAX_UNDO_TEXT_LENGTH)
+        duration = _bounded_html(entry["duration_min"], _MAX_UNDO_VALUE_LENGTH)
         lines.append(f"📖 {subject} — {duration} min")
     elif "exercise" in entry:
-        exercise = escape_html(entry["exercise"])
-        sets = escape_html(entry["sets"])
-        reps = escape_html(entry["reps"])
+        exercise = _bounded_html(entry["exercise"], _MAX_UNDO_TEXT_LENGTH)
+        sets = _bounded_html(entry["sets"], _MAX_UNDO_VALUE_LENGTH)
+        reps = _bounded_html(entry["reps"], _MAX_UNDO_VALUE_LENGTH)
         w = (
-            f" @ {escape_html(entry['weight_kg'])}kg"
+            f" @ {_bounded_html(entry['weight_kg'], _MAX_UNDO_VALUE_LENGTH)}kg"
             if entry.get("weight_kg") is not None
             else " (bodyweight)"
         )
         lines.append(f"🏋️ {exercise} — {sets}×{reps}{w}")
     elif "food_items" in entry:
-        meal_type = escape_html(entry["meal_type"])
-        food_items = escape_html(entry["food_items"])
+        meal_type = _bounded_html(entry["meal_type"], _MAX_UNDO_VALUE_LENGTH)
+        food_items = _bounded_html(entry["food_items"], _MAX_UNDO_TEXT_LENGTH)
         cal = (
-            f" — {escape_html(entry['calories'])} cal"
+            f" — {_bounded_html(entry['calories'], _MAX_UNDO_VALUE_LENGTH)} cal"
             if entry.get("calories") is not None
             else ""
         )
         lines.append(f"🍽️ {meal_type}: {food_items}{cal}")
+        macro_parts: list[str] = []
+        for key, label in (
+            ("protein_g", "P"),
+            ("carbs_g", "C"),
+            ("fat_g", "F"),
+        ):
+            value = entry.get(key)
+            if value is None:
+                continue
+            if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                rendered = f"{float(value):g}"
+            else:
+                rendered = _bounded_html(value, _MAX_UNDO_VALUE_LENGTH)
+            macro_parts.append(f"{label} {rendered}g")
+        if macro_parts:
+            lines.append(f"⚖️ {' · '.join(macro_parts)}")
 
     await reply_html(update.message, "\n".join(lines))
 

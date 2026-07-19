@@ -448,7 +448,7 @@ async def add_habit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
 
     active_habits = await db.get_active_habits(user_id)
-    if any(habit["habit_name"] == habit_name for habit in active_habits):
+    if any(habit["habit_name"].casefold() == habit_name.casefold() for habit in active_habits):
         await reply_html(
             update.message,
             f"ℹ️ Already active: <b>{escape_html(habit_name)}</b>",

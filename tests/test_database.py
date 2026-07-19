@@ -72,6 +72,66 @@ class TestSchema:
         referenced_tables = {row["table"] for row in await cursor.fetchall()}
         assert {"users", "habits"}.issubset(referenced_tables)
 
+    async def test_fresh_diet_schema_has_nullable_macro_columns(self, db):
+        """Fresh databases expose all macros as optional REAL values."""
+        cursor = await db.conn.execute("PRAGMA table_info(diet_logs)")
+        columns = {row["name"]: row for row in await cursor.fetchall()}
+
+        for column_name in ("protein_g", "carbs_g", "fat_g"):
+            assert columns[column_name]["type"] == "REAL"
+            assert columns[column_name]["notnull"] == 0
+            assert columns[column_name]["dflt_value"] is None
+
+    async def test_init_migrates_legacy_diet_table_without_losing_data(
+        self, db, user_id
+    ):
+        """Existing meals survive the idempotent nullable-column migration."""
+        await db.conn.execute("DROP TABLE diet_logs")
+        await db.conn.execute(
+            """
+            CREATE TABLE diet_logs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                meal_type   TEXT NOT NULL,
+                food_items  TEXT NOT NULL,
+                calories    INTEGER,
+                logged_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+            """
+        )
+        await db.conn.execute(
+            "INSERT INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
+            (user_id, "legacy", "Legacy"),
+        )
+        await db.conn.execute(
+            "INSERT INTO diet_logs "
+            "(user_id, meal_type, food_items, calories, logged_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, "lunch", "Legacy meal", 725, "2026-07-18 06:30:00"),
+        )
+        await db.conn.commit()
+
+        await db.init_db()
+        await db.init_db()
+
+        cursor = await db.conn.execute("PRAGMA table_info(diet_logs)")
+        column_names = [row["name"] for row in await cursor.fetchall()]
+        assert column_names.count("protein_g") == 1
+        assert column_names.count("carbs_g") == 1
+        assert column_names.count("fat_g") == 1
+
+        cursor = await db.conn.execute(
+            "SELECT * FROM diet_logs WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        assert row["food_items"] == "Legacy meal"
+        assert row["calories"] == 725
+        assert row["logged_at"] == "2026-07-18 06:30:00"
+        assert row["protein_g"] is None
+        assert row["carbs_g"] is None
+        assert row["fat_g"] is None
+
     async def test_init_adds_triggers_without_rewriting_history(
         self, db_with_user, user_id
     ):
@@ -210,6 +270,26 @@ class TestDiet:
         row_id = await db_with_user.log_diet(user_id, "lunch", "dal, rice", 650)
         assert row_id is not None
 
+    async def test_log_and_retrieve_macros(self, db_with_user, user_id):
+        """Macro values survive insert and date-range retrieval."""
+        row_id = await db_with_user.log_diet(
+            user_id,
+            "lunch",
+            "dal, rice",
+            650,
+            protein_g=28.5,
+            carbs_g=91.25,
+            fat_g=14.0,
+        )
+
+        logs = await db_with_user.get_diet_logs(
+            user_id, date.today(), date.today()
+        )
+        row = next(row for row in logs if row["id"] == row_id)
+        assert row["protein_g"] == pytest.approx(28.5)
+        assert row["carbs_g"] == pytest.approx(91.25)
+        assert row["fat_g"] == pytest.approx(14.0)
+
     async def test_log_without_calories(self, db_with_user, user_id):
         """Log a meal without calories (skipped)."""
         row_id = await db_with_user.log_diet(user_id, "dinner", "pasta", None)
@@ -218,12 +298,29 @@ class TestDiet:
         found = [r for r in logs if r["id"] == row_id]
         assert len(found) == 1
         assert found[0]["calories"] is None
+        assert found[0]["protein_g"] is None
+        assert found[0]["carbs_g"] is None
+        assert found[0]["fat_g"] is None
 
     async def test_invalid_meal_type(self, db_with_user, user_id):
         """CHECK constraint rejects invalid meal types."""
         with pytest.raises(sqlite3.IntegrityError):
-            await db_with_user.log_diet(user_id, "brunch", "eggs", 300)
+            await db_with_user.log_diet(
+                user_id,
+                "brunch",
+                "eggs",
+                300,
+                protein_g=20.0,
+                carbs_g=2.0,
+                fat_g=15.0,
+            )
         assert db_with_user.conn.in_transaction is False
+
+        cursor = await db_with_user.conn.execute(
+            "SELECT COUNT(*) AS count FROM diet_logs WHERE user_id = ?",
+            (user_id,),
+        )
+        assert (await cursor.fetchone())["count"] == 0
 
         # The failed write must release the mutation lock and leave the
         # connection ready for the next operation.
@@ -381,6 +478,23 @@ class TestHabits:
 
         assert db_with_user.conn.in_transaction is False
 
+    async def test_get_streak_is_bounded(self, db_with_user, user_id):
+        """get_streak does not load more than 366 rows into memory."""
+        habit_id, _ = await db_with_user.add_habit(user_id, "Bounded Streak")
+        
+        # Insert 400 consecutive logs
+        base_date = date(2026, 7, 18)
+        logs = [(user_id, habit_id, (base_date - timedelta(days=i)).isoformat()) for i in range(400)]
+        await db_with_user.conn.executemany(
+            "INSERT INTO habit_logs (user_id, habit_id, log_date) VALUES (?, ?, ?)",
+            logs
+        )
+        await db_with_user.conn.commit()
+
+        # The streak should evaluate to 366 because the query limits to 366 rows
+        streak = await db_with_user.get_streak(user_id, habit_id, base_date)
+        assert streak == 366
+
 
 class TestUndo:
     """Undo functionality."""
@@ -469,3 +583,55 @@ class TestUndo:
         assert entry is not None
         assert entry["id"] == second.lastrowid
         assert entry["subject"] == "Second"
+
+    async def test_undo_timestamp_precision_differences(
+        self, db_with_user, user_id
+    ):
+        """String sorting of different precision timestamps can be wrong, datetime parsing fixes it."""
+        # SQLite CURRENT_TIMESTAMP uses "YYYY-MM-DD HH:MM:SS"
+        # Programmatic inserts use "YYYY-MM-DD HH:MM:SS.ffffff"
+        # "2026-07-19 12:00:00.999999" > "2026-07-19 12:00:00" is True
+        # "2026-07-19 12:00:00.000001" > "2026-07-19 12:00:00" is True
+        
+        # But wait! If we have:
+        # A: "2026-07-19 12:00:01"
+        # B: "2026-07-19 12:00:00.999999"
+        # String comparison: "2026-07-19 12:00:01" > "2026-07-19 12:00:00.999999" is True
+        # So string comparison is actually fine for ISO8601 if left-aligned.
+        # But wait, BUG-1 states there's an issue. 
+        # "2026-07-19 12:00:00" and "2026-07-19 12:00:00.999999"
+        # Actually, comparing datetimes is just safer. Let's make sure it picks the latest datetime.
+        
+        # Create an entry exactly on the second
+        await db_with_user.conn.execute(
+            "INSERT INTO study_logs "
+            "(user_id, subject, duration_min, logged_at) VALUES (?, ?, ?, ?)",
+            (user_id, "Exact Second", 10, "2026-07-19 12:00:01"),
+        )
+        
+        # Create an entry just before it, but with microseconds
+        await db_with_user.conn.execute(
+            "INSERT INTO gym_logs "
+            "(user_id, exercise, sets, reps, logged_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, "Microseconds", 3, 5, "2026-07-19 12:00:00.999999"),
+        )
+        
+        # Create an entry just after it, with microseconds
+        await db_with_user.conn.execute(
+            "INSERT INTO diet_logs "
+            "(user_id, meal_type, food_items, logged_at) VALUES (?, ?, ?, ?)",
+            (user_id, "snack", "After", "2026-07-19 12:00:01.000001"),
+        )
+        await db_with_user.conn.commit()
+        
+        # Undo should pick the diet log (12:00:01.000001)
+        entry = await db_with_user.undo_last(user_id)
+        assert entry is not None
+        assert entry["category"] == "🍽️ Diet"
+        assert entry["food_items"] == "After"
+        
+        # Next undo should pick study log (12:00:01)
+        entry2 = await db_with_user.undo_last(user_id)
+        assert entry2 is not None
+        assert entry2["category"] == "📖 Study"
+        assert entry2["subject"] == "Exact Second"

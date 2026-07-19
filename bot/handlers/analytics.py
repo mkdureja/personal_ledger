@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta
 
 from telegram import Message, Update
@@ -25,6 +26,11 @@ _ANALYTICS_ACTIONS = frozenset(
 _MAX_DYNAMIC_NAME_LENGTH = 100
 _MAX_NAME_LIST_LENGTH = 1_000
 _MAX_HTML_MESSAGE_LENGTH = 3_800
+_MACRO_FIELDS = (
+    ("protein_g", "P"),
+    ("carbs_g", "C"),
+    ("fat_g", "F"),
+)
 
 
 def _safe_name(value: object) -> str:
@@ -48,6 +54,91 @@ def _format_name_list(names: list[str]) -> str:
         rendered.append(safe)
         length += separator_length + len(safe)
     return ", ".join(rendered)
+
+
+def _optional_row_value(row: object, column: str) -> object | None:
+    """Read an optional column from dict-like and SQLite rows.
+
+    Treating an absent column as unknown keeps summaries compatible with test
+    doubles and legacy rows while a database migration is being applied.
+    """
+    try:
+        return row[column]  # type: ignore[index]
+    except (IndexError, KeyError, TypeError):
+        return None
+
+
+def _known_macro_value(row: object, column: str) -> float | None:
+    """Return a finite, non-negative stored macro value, or ``None``."""
+    value = _optional_row_value(row, column)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) and numeric >= 0 else None
+
+
+def _known_calorie_values(entries: list[object]) -> list[int]:
+    """Return only stored non-negative calorie counts from diet rows."""
+    values: list[int] = []
+    for row in entries:
+        value = _optional_row_value(row, "calories")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            continue
+        values.append(value)
+    return values
+
+
+def _format_grams(value: float) -> str:
+    """Format a macro total compactly so even unusual legacy values are bounded."""
+    if not math.isfinite(value):
+        return "≥1e308"
+    if 0 < value < 0.01:
+        return f"{value:.6g}"
+    if value < 1_000_000:
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    return f"{value:.6g}"
+
+
+def _macro_summary_lines(entries: list[object]) -> list[str]:
+    """Aggregate only known macros and expose per-field meal coverage.
+
+    Missing legacy values are never converted to zero. When coverage is
+    partial, each total states how many meals contributed and an explicit note
+    explains that unknown values were excluded.
+    """
+    if not entries:
+        return []
+
+    known_values = {
+        column: [
+            value
+            for row in entries
+            if (value := _known_macro_value(row, column)) is not None
+        ]
+        for column, _label in _MACRO_FIELDS
+    }
+    if not any(known_values.values()):
+        return ["⚖️ <b>Macros</b>: not recorded for these meals"]
+
+    meal_count = len(entries)
+    complete = all(
+        len(known_values[column]) == meal_count for column, _label in _MACRO_FIELDS
+    )
+    parts: list[str] = []
+    for column, label in _MACRO_FIELDS:
+        values = known_values[column]
+        if values:
+            rendered_total = f"{_format_grams(sum(values))}g"
+        else:
+            rendered_total = "—"
+        coverage = "" if complete else f" ({len(values)}/{meal_count})"
+        parts.append(f"{label} {rendered_total}{coverage}")
+
+    heading = "Macros" if complete else "Macros (known values)"
+    lines = [f"⚖️ <b>{heading}</b>: {' · '.join(parts)}"]
+    if not complete:
+        lines.append("⚠️ Missing macro values are excluded from these totals.")
+    return lines
 
 
 async def _reply_html_line_chunks(
@@ -130,16 +221,21 @@ async def _daily_summary(message: Message, db, user_id: int) -> None:
         if local_date_from_utc(datetime.fromisoformat(row["logged_at"])) == today
     ]
     if diet_entries:
-        total_cal = sum(
-            row["calories"]
-            for row in diet_entries
-            if row["calories"] is not None
-        )
-        incomplete = any(row["calories"] is None for row in diet_entries)
-        cal_note = " ⚠️ (some meals missing calories)" if incomplete else ""
+        known_calories = _known_calorie_values(diet_entries)
+        missing_calories = len(diet_entries) - len(known_calories)
+        if not known_calories:
+            calorie_text = "calories not recorded"
+        elif missing_calories:
+            calorie_text = (
+                f"{sum(known_calories)} known cal ⚠️ "
+                f"({missing_calories}/{len(diet_entries)} meal(s) missing calories)"
+            )
+        else:
+            calorie_text = f"{sum(known_calories)} cal"
         lines.append(
-            f"🍽️ <b>Diet</b>: {len(diet_entries)} meal(s), {total_cal} cal{cal_note}"
+            f"🍽️ <b>Diet</b>: {len(diet_entries)} meal(s), {calorie_text}"
         )
+        lines.extend(_macro_summary_lines(diet_entries))
     else:
         lines.append("🍽️ <b>Diet</b>: —")
 
@@ -211,14 +307,30 @@ async def _weekly_summary(message: Message, db, user_id: int) -> None:
         <= today
     ]
     if diet_entries:
-        total_cal = sum(
-            row["calories"]
-            for row in diet_entries
-            if row["calories"] is not None
-        )
-        lines.append(
-            f"🍽️ <b>Diet</b>: {total_cal} cal total, ~{total_cal / 7:.0f} cal/day avg"
-        )
+        known_calories = _known_calorie_values(diet_entries)
+        missing_calories = len(diet_entries) - len(known_calories)
+        if not known_calories:
+            calorie_text = "calories not recorded"
+        else:
+            total_cal = sum(known_calories)
+            qualifier = "known " if missing_calories else ""
+            logged_days = len({
+                local_date_from_utc(datetime.fromisoformat(row["logged_at"]))
+                for row in diet_entries
+            })
+            avg_cal = total_cal / logged_days if logged_days else 0
+            calorie_text = (
+                f"{total_cal} {qualifier}cal total, "
+                f"~{avg_cal:.0f} {qualifier}cal/day avg "
+                f"({logged_days} day{'s' if logged_days != 1 else ''})"
+            )
+            if missing_calories:
+                calorie_text += (
+                    f" ⚠️ ({missing_calories}/{len(diet_entries)} "
+                    "meal(s) missing calories)"
+                )
+        lines.append(f"🍽️ <b>Diet</b>: {calorie_text}")
+        lines.extend(_macro_summary_lines(diet_entries))
     else:
         lines.append("🍽️ <b>Diet</b>: no meals logged this week")
 

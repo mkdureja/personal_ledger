@@ -43,3 +43,51 @@ def test_habit_chart_bounds_legacy_labels_to_valid_photo_dimensions() -> None:
     width, height = _png_dimensions(buffer)
     assert width + height <= 10_000
     assert max(width, height) / min(width, height) <= 20
+
+
+def test_empty_charts_generate_valid_png() -> None:
+    today = date(2026, 7, 19)
+    
+    study_buf = charts.study_chart([], days=7, end_date=today)
+    assert study_buf is not None
+    _png_dimensions(study_buf)
+    
+    gym_buf = charts.gym_chart([], days=7, end_date=today)
+    assert gym_buf is not None
+    _png_dimensions(gym_buf)
+    
+    diet_buf = charts.diet_chart([], days=7, end_date=today)
+    assert diet_buf is not None
+    _png_dimensions(diet_buf)
+    
+    habit_buf = charts.habits_chart([], [], [], days=7, end_date=today)
+    assert habit_buf is not None
+    _png_dimensions(habit_buf)
+
+
+def test_single_data_point_charts_generate_valid_png() -> None:
+    today = date(2026, 7, 19)
+    
+    study_buf = charts.study_chart(
+        [{"subject": "Math", "duration_min": 30, "local_date": today}], 
+        days=7, end_date=today
+    )
+    _png_dimensions(study_buf)
+    
+    gym_buf = charts.gym_chart(
+        [{"exercise": "Squat", "sets": 3, "reps": 5, "weight_kg": 100, "local_date": today}], 
+        days=7, end_date=today
+    )
+    _png_dimensions(gym_buf)
+    
+    diet_buf = charts.diet_chart(
+        [{"calories": 500, "protein_g": 20, "carbs_g": 50, "fat_g": 10, "local_date": today}], 
+        days=7, end_date=today
+    )
+    _png_dimensions(diet_buf)
+    
+    habit_buf = charts.habits_chart(
+        ["Read"], [1], [{"habit_id": 1, "log_date": today.isoformat()}], 
+        days=7, end_date=today
+    )
+    _png_dimensions(habit_buf)

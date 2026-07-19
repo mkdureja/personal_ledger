@@ -24,7 +24,8 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN not set in .env — get one from @BotFather")
 
-DB_PATH: str = os.getenv("DB_PATH", "ledger.db")
+_default_db_path = str(Path(__file__).resolve().parent.parent / "ledger.db")
+DB_PATH: str = os.getenv("DB_PATH", _default_db_path)
 
 # ---------------------------------------------------------------------------
 # Timezone
@@ -70,7 +71,20 @@ if not ALLOWED_USER_IDS:
 # ---------------------------------------------------------------------------
 # Reminders
 # ---------------------------------------------------------------------------
-REMINDER_HOUR: int = int(os.getenv("REMINDER_HOUR", "20"))
+try:
+    REMINDER_HOUR: int = int(os.getenv("REMINDER_HOUR", "20"))
+except (ValueError, TypeError) as exc:
+    raise RuntimeError(
+        "REMINDER_HOUR must be an integer 0–23 in .env"
+    ) from exc
+if not 0 <= REMINDER_HOUR <= 23:
+    raise RuntimeError(
+        f"REMINDER_HOUR must be 0–23, got {REMINDER_HOUR}"
+    )
+# Note: PTB handles DST-aware tzinfo correctly for ``run_daily``, but if
+# ``TZ`` is set to a zone with DST transitions the wall-clock hour of the
+# reminder may shift by one hour during the transition day.  Asia/Kolkata
+# (the default) has no DST, so this is a non-issue for the default config.
 REMINDER_TIME: time = time(hour=REMINDER_HOUR, minute=0, second=0, tzinfo=LOCAL_TZ)
 
 # ---------------------------------------------------------------------------

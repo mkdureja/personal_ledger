@@ -359,4 +359,7 @@ gym_conv_handler = ConversationHandler(
         CommandHandler("gym", active_conversation_hint, filters=AUTH_FILTER),
     ],
     conversation_timeout=CONVERSATION_TIMEOUT,
+    # per_message=False is correct: the code manually validates callback
+    # ownership via ``gym_more_message_id`` in user_data.
+    per_message=False,
 )

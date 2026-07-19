@@ -601,6 +601,7 @@
             <li><a href="#study">Logging Study Sessions</a></li>
             <li><a href="#gym">Logging Workouts</a></li>
             <li><a href="#diet">Logging Meals</a></li>
+            <li><a href="#catalog">Saved Foods &amp; Recipes</a></li>
             <li><a href="#habits">Tracking Habits</a></li>
             <li><a href="#analytics">Analytics &amp; Charts</a></li>
             <li><a href="#reminders">Daily Reminders</a></li>
@@ -686,7 +687,7 @@ DB_PATH=ledger.db</code></pre>
                 I'm your personal logging bot for tracking:<br>
                 📖 <strong>Study</strong> — subjects, duration, notes<br>
                 🏋️ <strong>Gym</strong> — exercises, sets, reps, weight<br>
-                🍽️ <strong>Diet</strong> — meals, food items, calories<br>
+                🍽️ <strong>Diet</strong> — meals, calories, and macros<br>
                 ✅ <strong>Habits</strong> — daily check-offs with streaks<br><br>
                 Use /menu for the main menu, or /help for all commands.
             </div>
@@ -840,10 +841,10 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <h2 id="diet" class="page-break">5. Logging Meals</h2>
 
-    <p>Track what you eat across four meal types: breakfast, lunch, dinner, and snacks. Calorie counts are optional.</p>
+    <p>Track what you eat across four meal types: breakfast, lunch, dinner, and snacks. Calories and protein/carbohydrate/fat macros are optional.</p>
 
     <h3>Quick Log</h3>
-    <pre><code><span class="cmd-prefix">/diet</span> <span class="cmd-arg">&lt;meal&gt;</span> <span class="cmd-arg">&lt;food&gt;</span> <span class="cmd-opt">[calories]</span></code></pre>
+    <pre><code><span class="cmd-prefix">/diet</span> <span class="cmd-arg">&lt;meal&gt;</span> <span class="cmd-arg">&lt;food&gt;</span> <span class="cmd-opt">[calories] [p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</span></code></pre>
 
     <p>Use <code>+</code> to separate multiple food items (they'll be converted to commas):</p>
 
@@ -853,13 +854,14 @@ DB_PATH=ledger.db</code></pre>
         </thead>
         <tbody>
             <tr><td><code>/diet lunch dal+rice 650</code></td><td>Lunch: dal, rice — 650 cal</td></tr>
+            <tr><td><code>/diet lunch dal+rice 650 p=25 c=80 f=15</code></td><td>Lunch: dal, rice — 650 cal; 25 g protein, 80 g carbs, 15 g fat</td></tr>
             <tr><td><code>/diet breakfast oats+banana</code></td><td>Breakfast: oats, banana — no cal</td></tr>
             <tr><td><code>/diet snack almonds 200</code></td><td>Snack: almonds — 200 cal</td></tr>
         </tbody>
     </table>
 
     <h3>Guided Log</h3>
-    <p>Send bare <code>/diet</code> and the bot presents a meal-type picker, then asks for food and calories:</p>
+    <p>Send bare <code>/diet</code> and the bot presents a meal-type picker, then asks for food, calories, and macros. At the macro prompt, send three decimal values in <strong>protein, carbs, fat</strong> order (for example, <code>25 80 15</code>) or send <code>/skip</code>.</p>
 
     <div class="chat no-break">
         <div class="chat-header">
@@ -886,7 +888,45 @@ DB_PATH=ledger.db</code></pre>
 
     <div class="box box-info no-break">
         <div class="box-title">💡 Calorie Tracking</div>
-        <p>Calories are optional. If you <code>/skip</code>, the bot records the meal but marks it as "incomplete" on charts. Days with skipped calories show a hatched pattern on the diet chart instead of a misleadingly low bar.</p>
+        <p>Calories are optional. At the calorie prompt, <code>/skip</code> moves on without a calorie estimate; answer or skip the following macro prompt to finish the log. Days with skipped calories show a hatched pattern on the diet chart instead of a misleadingly low bar. Daily and weekly summaries label partial calorie totals as known values only, and show "not recorded" when no meal has calorie data.</p>
+    </div>
+
+    <div class="box box-info no-break">
+        <div class="box-title">⚖️ Macro Tracking</div>
+        <p>Macros are optional and measured in grams. Quick logs use any subset of the case-insensitive labels <code>p=</code>, <code>c=</code>, and <code>f=</code>; guided logs accept all three values in protein/carbs/fat order. Daily and weekly summaries add only known macro values. Partial data shows coverage and an exclusion warning; if no meal has macros, the summary says they were not recorded instead of counting them as zero.</p>
+    </div>
+
+    <h3 id="catalog">Saved Foods &amp; Recipes</h3>
+    <p>Save nutrition once, then scale it by weight, volume, pieces, or a food-specific portion. Keys are a single token of ASCII letters and numbers; hyphens and underscores are also supported, and kebab-case is recommended for names with multiple words.</p>
+
+    <pre><code><span class="cmd-prefix">/food add</span> apple per=100g kcal=52 p=0.3 c=13.8 f=0.2
+<span class="cmd-prefix">/food portion</span> apple medium=182g
+<span class="cmd-prefix">/food unportion</span> apple medium
+<span class="cmd-prefix">/food list</span>
+<span class="cmd-prefix">/food show</span> apple
+<span class="cmd-prefix">/food remove</span> apple</code></pre>
+
+    <p>At least one of <code>kcal=</code>, <code>p=</code>, <code>c=</code>, or <code>f=</code> is required. Saving an existing key replaces its nutrition profile, so omitted nutrients become unknown. A named portion is specific to its food: for example, <code>medium=182g</code> belongs to the saved apple definition.</p>
+
+    <pre><code><span class="cmd-prefix">/recipe add</span> chicken-curry yield=4serving
+<span class="cmd-prefix">/recipe ingredient</span> chicken-curry food:chicken 500 g
+<span class="cmd-prefix">/recipe ingredient</span> chicken-curry food:oil 14g
+<span class="cmd-prefix">/recipe removeitem</span> chicken-curry food:oil
+<span class="cmd-prefix">/recipe list</span>
+<span class="cmd-prefix">/recipe show</span> chicken-curry
+<span class="cmd-prefix">/recipe remove</span> chicken-curry</code></pre>
+
+    <p>Recipe ingredients retain their resolved base quantity, so changing a named portion later does not silently rewrite a recipe. Updating a food's nutrition affects future recipe logs, while completed diet logs remain unchanged snapshots.</p>
+
+    <p>Use explicit <code>food:</code> and <code>recipe:</code> references when logging. This keeps the original quick-log syntax unambiguous:</p>
+
+    <pre><code><span class="cmd-prefix">/diet</span> snack food:apple 1 medium
+<span class="cmd-prefix">/diet</span> snack food:apple 220 gm
+<span class="cmd-prefix">/diet</span> dinner recipe:chicken-curry 1 serving</code></pre>
+
+    <div class="box box-info no-break">
+        <div class="box-title">📐 Unit Rules</div>
+        <p>Common aliases such as <code>g</code>, <code>gm</code>, <code>kg</code>, <code>ml</code>, and <code>litre</code> are normalized automatically. Named portions must exist on that food. Ledger never guesses a cross-dimension conversion; you must configure it explicitly on that food, for example <code>piece=50g</code> or <code>ml=1.4g</code>. A recipe can be logged by mass or volume only when its yield uses the same dimension.</p>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════ -->
@@ -987,11 +1027,11 @@ DB_PATH=ledger.db</code></pre>
         <tbody>
             <tr>
                 <td><code>/summary</code></td>
-                <td>Today's summary: study time, exercises, meals, habits done</td>
+                <td>Today's summary: study time, exercises, calories and known macro totals, habits done</td>
             </tr>
             <tr>
                 <td><code>/summary week</code></td>
-                <td>Last 7 days: total study hours, workout days, calorie average, habit completion %</td>
+                <td>Last 7 days: total study hours, workout days, calorie average, known macro totals, habit completion %</td>
             </tr>
         </tbody>
     </table>
@@ -1008,6 +1048,7 @@ DB_PATH=ledger.db</code></pre>
                 📖 <strong>Study</strong>: 105 min across Maths, Physics<br>
                 🏋️ <strong>Gym</strong>: 3 exercise(s) — Bench, Squats, Rows<br>
                 🍽️ <strong>Diet</strong>: 3 meal(s), 1850 cal<br>
+                ⚖️ <strong>Macros</strong>: P 110g · C 220g · F 55g<br>
                 ✅ <strong>Habits</strong>: 2/3 done
             </div>
         </div>
@@ -1165,9 +1206,19 @@ DB_PATH=ledger.db</code></pre>
                 <td>—</td>
             </tr>
             <tr>
-                <td><code>/diet &lt;meal&gt; &lt;food&gt; [cal]</code></td>
+                <td><code>/diet &lt;meal&gt; &lt;food&gt; [cal] [p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</code></td>
                 <td>Quick meal log</td>
-                <td><span class="badge badge-required">meal, food</span> <span class="badge badge-optional">calories</span></td>
+                <td><span class="badge badge-required">meal, food</span> <span class="badge badge-optional">calories, macros</span></td>
+            </tr>
+            <tr>
+                <td><code>/food &lt;action&gt; ...</code></td>
+                <td>Manage saved foods and named portions</td>
+                <td><span class="badge badge-required">add, portion, unportion, list, show, or remove</span></td>
+            </tr>
+            <tr>
+                <td><code>/recipe &lt;action&gt; ...</code></td>
+                <td>Manage saved recipes and ingredients</td>
+                <td><span class="badge badge-required">add, ingredient, removeitem, list, show, or remove</span></td>
             </tr>
         </tbody>
     </table>
