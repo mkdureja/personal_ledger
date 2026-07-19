@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import matplotlib
 matplotlib.use("Agg")  # MUST be before pyplot import — headless-safe
+matplotlib.rcParams["text.parse_math"] = False
 
 import io
 from collections import defaultdict
@@ -29,6 +30,18 @@ _ACCENT_COLORS = [
     "#00d2ff", "#7b2ff7", "#ff6b6b", "#ffd93d", "#6bcb77",
     "#4ecdc4", "#ff8a5c", "#a29bfe", "#fd79a8", "#55efc4",
 ]
+_MAX_CHART_LABEL_LENGTH = 50
+_MAX_STUDY_LEGEND_LABELS = 10
+
+
+def _display_label(value: object) -> str:
+    """Return a bounded label that Matplotlib cannot parse as math text."""
+    label = " ".join(str(value).split())
+    if not label:
+        return "(unnamed)"
+    if len(label) > _MAX_CHART_LABEL_LENGTH:
+        return label[: _MAX_CHART_LABEL_LENGTH - 1] + "…"
+    return label
 
 
 def _apply_theme(ax: plt.Axes, fig: plt.Figure) -> None:
@@ -77,10 +90,25 @@ def study_chart(
     # Aggregate: {subject: {date: total_minutes}}
     data: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
     for log in logs:
-        subj = log["subject"]
+        subj = _display_label(log["subject"])
         d = log["local_date"]
         if d in date_range:
             data[subj][d] += log["duration_min"] / 60.0
+
+    if len(data) > _MAX_STUDY_LEGEND_LABELS:
+        ranked = sorted(
+            data,
+            key=lambda subject: (-sum(data[subject].values()), subject.casefold()),
+        )
+        keep = set(ranked[: _MAX_STUDY_LEGEND_LABELS - 1])
+        collapsed: dict[str, dict[date, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )
+        for subject, daily_values in data.items():
+            display_subject = subject if subject in keep else "Other subjects"
+            for log_date, hours in daily_values.items():
+                collapsed[display_subject][log_date] += hours
+        data = collapsed
 
     subjects = sorted(data.keys())
     if not subjects:
@@ -102,7 +130,7 @@ def study_chart(
     ax.set_xticks(x)
     ax.set_xticklabels([d.strftime("%b %d") for d in date_range], rotation=45, ha="right")
     ax.set_ylabel("Hours")
-    ax.set_title("📖 Study — Last 7 Days")
+    ax.set_title("Study — Last 7 Days")
     ax.legend(loc="upper left", fontsize=8, facecolor=_BG_COLOR, edgecolor=_GRID_COLOR,
               labelcolor=_FG_COLOR)
 
@@ -156,7 +184,7 @@ def gym_chart(
     ax.set_xticks(x)
     ax.set_xticklabels([d.strftime("%b %d") for d in date_range], rotation=45, ha="right")
     ax.set_ylabel("Volume")
-    ax.set_title("🏋️ Gym — Last 7 Days")
+    ax.set_title("Gym — Last 7 Days")
     ax.legend(facecolor=_BG_COLOR, edgecolor=_GRID_COLOR, labelcolor=_FG_COLOR)
 
     return _to_buffer(fig)
@@ -220,7 +248,7 @@ def diet_chart(
     ax.set_xticks(x)
     ax.set_xticklabels([d.strftime("%b %d") for d in date_range], rotation=45, ha="right")
     ax.set_ylabel("Calories")
-    ax.set_title("🍽️ Diet — Last 7 Days")
+    ax.set_title("Diet — Last 7 Days")
 
     # Legend
     complete_patch = mpatches.Patch(facecolor="#6bcb77", label="Complete")
@@ -291,18 +319,18 @@ def habits_chart(
 
     # Labels
     ax.set_yticks(range(n_habits))
-    ax.set_yticklabels(habit_names, fontsize=9)
+    ax.set_yticklabels([_display_label(name) for name in habit_names], fontsize=9)
     ax.set_xticks(range(n_days))
     ax.set_xticklabels([d.strftime("%d") for d in date_range], fontsize=8)
 
     # Add ✅/⬜ text in cells
     for i in range(n_habits):
         for j in range(n_days):
-            symbol = "✅" if grid[i, j] == 1.0 else "·"
+            symbol = "✓" if grid[i, j] == 1.0 else "·"
             ax.text(j, i, symbol, ha="center", va="center", fontsize=10,
                     color="white" if grid[i, j] == 0 else "black")
 
-    ax.set_title("✅ Habits — Last 14 Days")
+    ax.set_title("Habits — Last 14 Days")
     ax.set_xlabel(f"{date_range[0].strftime('%b %d')} → {date_range[-1].strftime('%b %d')}")
 
     # Remove grid lines for the heatmap

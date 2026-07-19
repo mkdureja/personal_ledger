@@ -4,6 +4,10 @@ Tests for DatabaseManager — schema, CRUD, edge cases.
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
+from datetime import date, datetime, timedelta, timezone
+
 import pytest
 
 pytestmark = pytest.mark.asyncio
@@ -46,9 +50,53 @@ class TestSchema:
             "idx_study_user_date",
             "idx_gym_user_date",
             "idx_diet_user_date",
+            "idx_habit_logs_user_date",
             "idx_habits_active",
         }
         assert expected.issubset(indexes), f"Missing indexes: {expected - indexes}"
+
+    async def test_habit_log_validation_triggers_exist(self, db):
+        """Ownership validation is installed during normal schema initialization."""
+        cursor = await db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
+        )
+        triggers = {row["name"] for row in await cursor.fetchall()}
+        assert {
+            "trg_habit_logs_validate_insert",
+            "trg_habit_logs_validate_update",
+        }.issubset(triggers)
+
+    async def test_habit_logs_reference_users_and_habits(self, db):
+        """Fresh databases have direct foreign keys for both parent records."""
+        cursor = await db.conn.execute("PRAGMA foreign_key_list(habit_logs)")
+        referenced_tables = {row["table"] for row in await cursor.fetchall()}
+        assert {"users", "habits"}.issubset(referenced_tables)
+
+    async def test_init_adds_triggers_without_rewriting_history(
+        self, db_with_user, user_id
+    ):
+        """Re-initializing an existing database installs hardening safely."""
+        log_date = date(2026, 7, 18)
+        habit_id, _ = await db_with_user.add_habit(user_id, "Legacy habit")
+        await db_with_user.check_habit(user_id, habit_id, log_date)
+        await db_with_user.deactivate_habit(user_id, habit_id)
+        await db_with_user.conn.executescript(
+            """
+            DROP TRIGGER trg_habit_logs_validate_insert;
+            DROP TRIGGER trg_habit_logs_validate_update;
+            """
+        )
+        await db_with_user.conn.commit()
+
+        await db_with_user.init_db()
+
+        rows = await db_with_user.get_habit_logs_range(user_id, log_date, log_date)
+        assert [row["habit_id"] for row in rows] == [habit_id]
+        cursor = await db_with_user.conn.execute(
+            "SELECT COUNT(*) AS count FROM sqlite_master "
+            "WHERE type = 'trigger' AND name LIKE 'trg_habit_logs_validate_%'"
+        )
+        assert (await cursor.fetchone())["count"] == 2
 
 
 class TestUsers:
@@ -97,6 +145,45 @@ class TestStudy:
         assert found[0]["notes"] == "Chapter 3"
 
 
+@pytest.mark.parametrize(
+    ("insert_sql", "values", "getter_name"),
+    [
+        (
+            "INSERT INTO study_logs "
+            "(user_id, subject, duration_min, logged_at) VALUES (?, ?, ?, ?)",
+            ("Math", 30),
+            "get_study_logs",
+        ),
+        (
+            "INSERT INTO gym_logs "
+            "(user_id, exercise, sets, reps, logged_at) VALUES (?, ?, ?, ?, ?)",
+            ("Squat", 3, 5),
+            "get_gym_logs",
+        ),
+        (
+            "INSERT INTO diet_logs "
+            "(user_id, meal_type, food_items, logged_at) VALUES (?, ?, ?, ?)",
+            ("breakfast", "oats"),
+            "get_diet_logs",
+        ),
+    ],
+)
+async def test_current_timestamp_style_rows_are_in_local_day_buffer(
+    db_with_user, user_id, insert_sql, values, getter_name
+):
+    """Space-separated UTC timestamps near local midnight are not skipped."""
+    logged_at = "2026-07-17 19:00:00"  # 2026-07-18 00:30 in Asia/Kolkata
+    cursor = await db_with_user.conn.execute(
+        insert_sql, (user_id, *values, logged_at)
+    )
+    await db_with_user.conn.commit()
+
+    getter = getattr(db_with_user, getter_name)
+    rows = await getter(user_id, date(2026, 7, 18), date(2026, 7, 18))
+
+    assert [row["id"] for row in rows] == [cursor.lastrowid]
+
+
 class TestGym:
     """Gym log CRUD."""
 
@@ -134,9 +221,14 @@ class TestDiet:
 
     async def test_invalid_meal_type(self, db_with_user, user_id):
         """CHECK constraint rejects invalid meal types."""
-        import aiosqlite
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.IntegrityError):
             await db_with_user.log_diet(user_id, "brunch", "eggs", 300)
+        assert db_with_user.conn.in_transaction is False
+
+        # The failed write must release the mutation lock and leave the
+        # connection ready for the next operation.
+        row_id = await db_with_user.log_diet(user_id, "breakfast", "eggs", 300)
+        assert row_id is not None
 
 
 class TestHabits:
@@ -144,8 +236,24 @@ class TestHabits:
 
     async def test_add_habit(self, db_with_user, user_id):
         """Add a new habit."""
-        habit_id, reactivated = await db_with_user.add_habit(user_id, "Meditate")
+        habit_id, status = await db_with_user.add_habit(user_id, "Meditate")
         assert habit_id is not None
+        assert status == "added"
+
+    async def test_add_active_habit_returns_existing(self, db_with_user, user_id):
+        """Adding an active name is graceful and does not create a duplicate."""
+        habit_id, status = await db_with_user.add_habit(user_id, "Meditate")
+        same_id, duplicate_status = await db_with_user.add_habit(user_id, "Meditate")
+
+        assert status == "added"
+        assert same_id == habit_id
+        assert duplicate_status == "already_active"
+        cursor = await db_with_user.conn.execute(
+            "SELECT COUNT(*) AS count FROM habits "
+            "WHERE user_id = ? AND habit_name = ?",
+            (user_id, "Meditate"),
+        )
+        assert (await cursor.fetchone())["count"] == 1
 
     async def test_deactivate_and_reactivate(self, db_with_user, user_id):
         """Deactivate a habit, then re-add it — should reactivate, not create new."""
@@ -153,9 +261,9 @@ class TestHabits:
         await db_with_user.deactivate_habit(user_id, habit_id_1)
 
         # Re-add
-        habit_id_2, reactivated = await db_with_user.add_habit(user_id, "Read")
+        habit_id_2, status = await db_with_user.add_habit(user_id, "Read")
         assert habit_id_2 == habit_id_1, "Should reactivate, not create new"
-        assert reactivated is True
+        assert status == "reactivated"
 
         # Should be active again
         habits = await db_with_user.get_active_habits(user_id)
@@ -188,6 +296,7 @@ class TestHabits:
         # Duplicate check
         result = await db_with_user.check_habit(user_id, habit_id, today)
         assert result is False  # already checked
+        assert db_with_user.conn.in_transaction is False
 
         # Uncheck
         result = await db_with_user.uncheck_habit(user_id, habit_id, today)
@@ -195,6 +304,82 @@ class TestHabits:
 
         checked = await db_with_user.get_checked_habits(user_id, today)
         assert habit_id not in checked
+
+    async def test_cannot_check_another_users_habit(self, db_with_user, user_id):
+        """A callback cannot create a check-off for another user's habit ID."""
+        other_user_id = user_id + 1
+        await db_with_user.ensure_user(other_user_id, "other", "Other")
+        habit_id, _ = await db_with_user.add_habit(user_id, "Private habit")
+
+        inserted = await db_with_user.check_habit(
+            other_user_id, habit_id, date(2026, 7, 18)
+        )
+
+        assert inserted is False
+        assert await db_with_user.get_checked_habits(
+            other_user_id, date(2026, 7, 18)
+        ) == set()
+
+    async def test_cannot_check_inactive_habit(self, db_with_user, user_id):
+        """Stale buttons cannot add new rows for inactive habits."""
+        habit_id, _ = await db_with_user.add_habit(user_id, "Retired habit")
+        await db_with_user.deactivate_habit(user_id, habit_id)
+
+        inserted = await db_with_user.check_habit(
+            user_id, habit_id, date(2026, 7, 18)
+        )
+
+        assert inserted is False
+
+    async def test_inactive_habit_history_remains_readable_and_removable(
+        self, db_with_user, user_id
+    ):
+        """Hardening new writes does not hide or strand historical check-offs."""
+        log_date = date(2026, 7, 18)
+        habit_id, _ = await db_with_user.add_habit(user_id, "Archived habit")
+        assert await db_with_user.check_habit(user_id, habit_id, log_date) is True
+        await db_with_user.deactivate_habit(user_id, habit_id)
+
+        assert habit_id in await db_with_user.get_checked_habits(user_id, log_date)
+        rows = await db_with_user.get_habit_logs_range(user_id, log_date, log_date)
+        assert [row["habit_id"] for row in rows] == [habit_id]
+        assert await db_with_user.uncheck_habit(user_id, habit_id, log_date) is True
+
+    async def test_schema_trigger_rejects_mismatched_direct_insert(
+        self, db_with_user, user_id
+    ):
+        """The database itself rejects cross-user habit-log rows."""
+        other_user_id = user_id + 1
+        await db_with_user.ensure_user(other_user_id, "other", "Other")
+        habit_id, _ = await db_with_user.add_habit(user_id, "Owned habit")
+
+        with pytest.raises(sqlite3.IntegrityError, match="active and belong"):
+            await db_with_user.conn.execute(
+                "INSERT INTO habit_logs (user_id, habit_id, log_date) VALUES (?, ?, ?)",
+                (other_user_id, habit_id, "2026-07-18"),
+            )
+        await db_with_user.conn.rollback()
+
+    async def test_check_failure_rolls_back_and_propagates(
+        self, db_with_user, user_id
+    ):
+        """Real database failures are not mistaken for duplicate checks."""
+        habit_id, _ = await db_with_user.add_habit(user_id, "Trigger failure")
+        await db_with_user.conn.executescript(
+            """
+            CREATE TRIGGER force_habit_check_failure
+            BEFORE INSERT ON habit_logs
+            BEGIN
+                SELECT RAISE(ABORT, 'forced failure');
+            END;
+            """
+        )
+        await db_with_user.conn.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="forced failure"):
+            await db_with_user.check_habit(user_id, habit_id, date(2026, 7, 18))
+
+        assert db_with_user.conn.in_transaction is False
 
 
 class TestUndo:
@@ -211,3 +396,76 @@ class TestUndo:
         """Undo with no entries returns None."""
         entry = await db_with_user.undo_last(user_id)
         assert entry is None
+
+    async def test_concurrent_undos_delete_distinct_entries(
+        self, db_with_user, user_id
+    ):
+        """Concurrent calls serialize and never report one deletion twice."""
+        first_id = await db_with_user.log_study(user_id, "First", 10)
+        second_id = await db_with_user.log_study(user_id, "Second", 20)
+
+        results = await asyncio.gather(
+            db_with_user.undo_last(user_id),
+            db_with_user.undo_last(user_id),
+            db_with_user.undo_last(user_id),
+        )
+
+        deleted = [entry for entry in results if entry is not None]
+        assert {entry["id"] for entry in deleted} == {first_id, second_id}
+        assert len(deleted) == 2
+        assert results.count(None) == 1
+        cursor = await db_with_user.conn.execute(
+            "SELECT COUNT(*) AS count FROM study_logs WHERE user_id = ?", (user_id,)
+        )
+        assert (await cursor.fetchone())["count"] == 0
+
+    async def test_undo_uses_microseconds_across_categories(
+        self, db_with_user, user_id, monkeypatch
+    ):
+        """The latest cross-category insert wins even within one second."""
+        base = datetime.now(timezone.utc).replace(microsecond=100_000)
+        timestamps = [
+            (base + timedelta(microseconds=offset)).strftime(
+                "%Y-%m-%d %H:%M:%S.%f"
+            )
+            for offset in range(3)
+        ]
+        timestamp_iter = iter(timestamps)
+        monkeypatch.setattr(
+            "bot.database._utc_timestamp_now", timestamp_iter.__next__
+        )
+
+        await db_with_user.log_study(user_id, "First", 10)
+        await db_with_user.log_gym(user_id, "Second", 3, 5)
+        diet_id = await db_with_user.log_diet(user_id, "snack", "Third", 100)
+
+        entry = await db_with_user.undo_last(user_id)
+
+        assert entry is not None
+        assert entry["id"] == diet_id
+        assert entry["food_items"] == "Third"
+        assert entry["logged_at"] == timestamps[-1]
+
+    async def test_undo_uses_id_to_break_same_table_timestamp_ties(
+        self, db_with_user, user_id
+    ):
+        """Same-second rows in one table undo in reverse insertion order."""
+        logged_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        first = await db_with_user.conn.execute(
+            "INSERT INTO study_logs "
+            "(user_id, subject, duration_min, logged_at) VALUES (?, ?, ?, ?)",
+            (user_id, "First", 10, logged_at),
+        )
+        second = await db_with_user.conn.execute(
+            "INSERT INTO study_logs "
+            "(user_id, subject, duration_min, logged_at) VALUES (?, ?, ?, ?)",
+            (user_id, "Second", 20, logged_at),
+        )
+        await db_with_user.conn.commit()
+
+        entry = await db_with_user.undo_last(user_id)
+
+        assert first.lastrowid < second.lastrowid
+        assert entry is not None
+        assert entry["id"] == second.lastrowid
+        assert entry["subject"] == "Second"

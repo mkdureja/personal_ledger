@@ -6,8 +6,15 @@ Uses in-memory SQLite for fast, isolated tests.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 import pytest_asyncio
+
+# Keep tests independent from a developer's real .env and usable in CI.
+os.environ["BOT_TOKEN"] = "123456:TEST_TOKEN"
+os.environ["ALLOWED_USER_IDS"] = "123456789"
+os.environ["TZ"] = "Asia/Kolkata"
 
 from bot.database import DatabaseManager
 

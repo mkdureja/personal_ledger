@@ -10,21 +10,63 @@ from __future__ import annotations
 import logging
 
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import (
     CommandHandler,
     ConversationHandler,
     MessageHandler,
+    TypeHandler,
     ContextTypes,
     filters,
 )
 
-from .common import AUTH_FILTER, cancel_handler, timeout_handler, parse_int
+from .common import (
+    AUTH_FILTER,
+    activate_conversation,
+    active_conversation_hint,
+    cancel_handler,
+    conversation_available,
+    escape_html,
+    finish_conversation,
+    parse_int,
+    reply_html,
+    timeout_handler,
+)
 from ..config import CONVERSATION_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
 # Conversation states
 SUBJECT, DURATION, NOTES = range(3)
+MAX_STUDY_MINUTES = 24 * 60
+MAX_SUBJECT_LENGTH = 100
+MAX_NOTES_LENGTH = 500
+
+
+def _confirmation(subject: str, duration: int, notes: str | None = None) -> str:
+    """Build a safe HTML confirmation for a study log."""
+    notes_line = f"\n📝 Notes: <i>{escape_html(notes)}</i>" if notes else ""
+    return (
+        "✅ <b>Study logged!</b>\n"
+        f"📖 Subject: <b>{escape_html(subject)}</b>\n"
+        f"⏱️ Duration: <b>{duration} min</b>{notes_line}"
+    )
+
+
+async def _confirm_and_finish(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    subject: str,
+    duration: int,
+    notes: str | None = None,
+) -> int:
+    """End a persisted study flow even if Telegram cannot deliver its receipt."""
+    try:
+        await reply_html(update.message, _confirmation(subject, duration, notes))
+    except TelegramError:
+        logger.warning("Could not deliver study confirmation", exc_info=True)
+    finish_conversation(update, context, "study")
+    return ConversationHandler.END
 
 
 # ---------------------------------------------------------------------------
@@ -36,31 +78,47 @@ async def study_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user = update.effective_user
     await db.ensure_user(user.id, user.username, user.first_name)
 
+    if not await conversation_available(update, context, "study"):
+        return ConversationHandler.END
+
     args = context.args or []
 
     # Shortcut: /study <subject> <minutes> [notes...]
     if len(args) >= 2:
         subject = args[0]
-        duration, err = parse_int(args[1], "duration")
+        if len(subject) > MAX_SUBJECT_LENGTH:
+            await update.message.reply_text(
+                f"❌ Subject too long (max {MAX_SUBJECT_LENGTH} characters)."
+            )
+            return ConversationHandler.END
+        duration, err = parse_int(
+            args[1], "Duration", max_value=MAX_STUDY_MINUTES
+        )
         if err:
             await update.message.reply_text(err)
             return ConversationHandler.END
 
         notes = " ".join(args[2:]) if len(args) > 2 else None
-        row_id = await db.log_study(user.id, subject, duration, notes)
+        if notes and len(notes) > MAX_NOTES_LENGTH:
+            await update.message.reply_text(
+                f"❌ Notes too long (max {MAX_NOTES_LENGTH} characters)."
+            )
+            return ConversationHandler.END
+        await db.log_study(user.id, subject, duration, notes)
 
-        notes_line = f"\n📝 Notes: _{notes}_" if notes else ""
-        await update.message.reply_text(
-            f"✅ **Study logged!**\n"
-            f"📖 Subject: *{subject}*\n"
-            f"⏱️ Duration: *{duration} min*{notes_line}",
-            parse_mode="Markdown",
-        )
+        await reply_html(update.message, _confirmation(subject, duration, notes))
         return ConversationHandler.END
 
     # Guided flow
-    await update.message.reply_text("📖 **Log Study Session**\n\nWhat subject did you study?",
-                                     parse_mode="Markdown")
+    activate_conversation(update, context, "study")
+    try:
+        await reply_html(
+            update.message,
+            "📖 <b>Log Study Session</b>\n\nWhat subject did you study?",
+        )
+    except BaseException:
+        finish_conversation(update, context, "study")
+        raise
     return SUBJECT
 
 
@@ -73,15 +131,27 @@ async def receive_subject(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not subject:
         await update.message.reply_text("❌ Subject can't be empty. What subject?")
         return SUBJECT
+    if len(subject) > MAX_SUBJECT_LENGTH:
+        await update.message.reply_text(
+            f"❌ Subject too long (max {MAX_SUBJECT_LENGTH} characters)."
+        )
+        return SUBJECT
 
     context.user_data["study_subject"] = subject
-    await update.message.reply_text(f"📖 *{subject}* — how long did you study? (minutes)")
+    await reply_html(
+        update.message,
+        f"📖 <b>{escape_html(subject)}</b> — how long did you study? (minutes)",
+    )
     return DURATION
 
 
 async def receive_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive study duration in minutes."""
-    duration, err = parse_int(update.message.text, "Duration")
+    duration, err = parse_int(
+        update.message.text,
+        "Duration",
+        max_value=MAX_STUDY_MINUTES,
+    )
     if err:
         await update.message.reply_text(err)
         return DURATION
@@ -94,41 +164,37 @@ async def receive_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def receive_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive optional notes."""
     text = update.message.text.strip()
-    notes = None if text.lower() == "/skip" else text
+    notes = None if not text or text.lower() == "/skip" else text
+    if notes and len(notes) > MAX_NOTES_LENGTH:
+        await update.message.reply_text(
+            f"❌ Notes too long (max {MAX_NOTES_LENGTH} characters)."
+        )
+        return NOTES
 
     db = context.bot_data["db"]
     user_id = update.effective_user.id
-    subject = context.user_data.pop("study_subject")
-    duration = context.user_data.pop("study_duration")
+    subject = context.user_data["study_subject"]
+    duration = context.user_data["study_duration"]
 
     await db.log_study(user_id, subject, duration, notes)
+    context.user_data.pop("study_subject", None)
+    context.user_data.pop("study_duration", None)
 
-    notes_line = f"\n📝 Notes: _{notes}_" if notes else ""
-    await update.message.reply_text(
-        f"✅ **Study logged!**\n"
-        f"📖 Subject: *{subject}*\n"
-        f"⏱️ Duration: *{duration} min*{notes_line}",
-        parse_mode="Markdown",
-    )
-    return ConversationHandler.END
+    return await _confirm_and_finish(update, context, subject, duration, notes)
 
 
 async def skip_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /skip for notes."""
     db = context.bot_data["db"]
     user_id = update.effective_user.id
-    subject = context.user_data.pop("study_subject")
-    duration = context.user_data.pop("study_duration")
+    subject = context.user_data["study_subject"]
+    duration = context.user_data["study_duration"]
 
     await db.log_study(user_id, subject, duration, None)
+    context.user_data.pop("study_subject", None)
+    context.user_data.pop("study_duration", None)
 
-    await update.message.reply_text(
-        f"✅ **Study logged!**\n"
-        f"📖 Subject: *{subject}*\n"
-        f"⏱️ Duration: *{duration} min*",
-        parse_mode="Markdown",
-    )
-    return ConversationHandler.END
+    return await _confirm_and_finish(update, context, subject, duration)
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +209,11 @@ study_conv_handler = ConversationHandler(
             CommandHandler("skip", skip_notes),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_notes),
         ],
-        ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, timeout_handler)],
+        ConversationHandler.TIMEOUT: [TypeHandler(Update, timeout_handler)],
     },
-    fallbacks=[cancel_handler],
+    fallbacks=[
+        cancel_handler,
+        CommandHandler("study", active_conversation_hint, filters=AUTH_FILTER),
+    ],
     conversation_timeout=CONVERSATION_TIMEOUT,
 )

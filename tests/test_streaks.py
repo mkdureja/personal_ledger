@@ -11,9 +11,8 @@ from datetime import date, timedelta
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
 
-
+@pytest.mark.asyncio
 class TestStreaks:
     """Streak calculation."""
 

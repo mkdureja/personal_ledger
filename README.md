@@ -35,7 +35,7 @@ A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, and **Habit
 
 ```bash
 # Clone and enter the project
-cd 12_ledger
+cd personal_ledger
 
 # Create virtual environment
 python -m venv .venv
@@ -130,6 +130,8 @@ bot/
 - **Habit semantics**: Row presence = done (no "completed" column); streaks = consecutive days with rows
 - **Per-exercise persistence**: Gym loop saves each exercise immediately; abandoning loses only the current one
 - **Conversation safety**: `/cancel` fallback, 5-min timeout, input validation with re-prompt
+- **Bounded Telegram UI**: Habit checklists paginate legacy data and reminders split safely across messages
+- **Habit setup limit**: New setups support up to 49 active habits, matching Telegram's keyboard limits
 
 ## Testing
 
@@ -137,4 +139,4 @@ bot/
 python -m pytest tests/ -v
 ```
 
-Tests cover: schema/pragma verification, CRUD for all log types, streak calculation (consecutive, gap, today-unchecked, month-boundary), day-bucketing boundary cases (12:30 AM IST), and habit reactivation.
+Tests cover startup/job scheduling, schema upgrades and constraints, CRUD and undo ordering, timezone boundaries, streaks, authorization, callback expiry/ownership, guided-flow isolation, input bounds, legacy habit pagination, analytics routing, and reminder message limits.

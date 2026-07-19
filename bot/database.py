@@ -7,13 +7,18 @@ Row-presence semantics for habit_logs (no 'completed' column).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+HabitAddStatus = Literal["added", "reactivated", "already_active"]
 
 # ---------------------------------------------------------------------------
 # Schema DDL
@@ -72,6 +77,7 @@ CREATE TABLE IF NOT EXISTS habit_logs (
     habit_id    INTEGER NOT NULL,
     log_date    DATE NOT NULL,
     UNIQUE(user_id, habit_id, log_date),
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
     FOREIGN KEY (habit_id) REFERENCES habits(id)
 );
 """
@@ -80,6 +86,7 @@ _INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_study_user_date ON study_logs(user_id, logged_at);
 CREATE INDEX IF NOT EXISTS idx_gym_user_date ON gym_logs(user_id, logged_at);
 CREATE INDEX IF NOT EXISTS idx_diet_user_date ON diet_logs(user_id, logged_at);
+CREATE INDEX IF NOT EXISTS idx_habit_logs_user_date ON habit_logs(user_id, log_date);
 """
 
 # Partial unique index: only active habits must have unique names per user.
@@ -89,6 +96,56 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_habits_active
     ON habits(user_id, habit_name) WHERE is_active = 1;
 """
 
+# Existing databases cannot gain a new foreign key without rebuilding the table.
+# These triggers enforce the same ownership and active-habit invariant for both
+# existing and newly-created databases, without invalidating historical rows.
+_HABIT_LOG_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS trg_habit_logs_validate_insert
+BEFORE INSERT ON habit_logs
+FOR EACH ROW
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM habits AS h
+    JOIN users AS u ON u.user_id = h.user_id
+    WHERE h.id = NEW.habit_id
+      AND h.user_id = NEW.user_id
+      AND h.is_active = 1
+)
+BEGIN
+    SELECT RAISE(ABORT, 'habit must be active and belong to user');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_habit_logs_validate_update
+BEFORE UPDATE OF user_id, habit_id ON habit_logs
+FOR EACH ROW
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM habits AS h
+    JOIN users AS u ON u.user_id = h.user_id
+    WHERE h.id = NEW.habit_id
+      AND h.user_id = NEW.user_id
+      AND h.is_active = 1
+)
+BEGIN
+    SELECT RAISE(ABORT, 'habit must be active and belong to user');
+END;
+"""
+
+
+def _sqlite_timestamp(value: datetime) -> str:
+    """Format a timestamp like SQLite's ``CURRENT_TIMESTAMP``.
+
+    SQLite compares the TIMESTAMP values in this schema as text.  A space must
+    separate the date and time; ``datetime.isoformat()`` uses ``T`` and sorts
+    after same-day ``CURRENT_TIMESTAMP`` values.
+    """
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _utc_timestamp_now() -> str:
+    """Return the current UTC time in SQLite-sortable microsecond precision."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+
 
 class DatabaseManager:
     """Async SQLite manager holding a single shared connection."""
@@ -96,6 +153,7 @@ class DatabaseManager:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+        self._write_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """Open the connection and set pragmas."""
@@ -109,16 +167,17 @@ class DatabaseManager:
     async def init_db(self) -> None:
         """Create tables and indexes if they don't exist."""
         assert self._conn is not None, "Call connect() first"
-        await self._conn.executescript(_SCHEMA)
-        # Indexes must be created individually (executescript doesn't return
-        # cursors, but these are safe as IF NOT EXISTS).
-        for stmt in _INDEXES.strip().split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                await self._conn.execute(stmt)
-        # Partial unique index
-        await self._conn.execute(_PARTIAL_INDEX.strip())
-        await self._conn.commit()
+        async with self._write_operation():
+            await self._conn.executescript(_SCHEMA)
+            # Indexes must be created individually (executescript doesn't return
+            # cursors, but these are safe as IF NOT EXISTS).
+            for stmt in _INDEXES.strip().split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    await self._conn.execute(stmt)
+            # Partial unique index
+            await self._conn.execute(_PARTIAL_INDEX.strip())
+            await self._conn.executescript(_HABIT_LOG_TRIGGERS)
         logger.info("Database schema initialized")
 
     async def close(self) -> None:
@@ -132,6 +191,18 @@ class DatabaseManager:
         assert self._conn is not None, "Database not connected"
         return self._conn
 
+    @asynccontextmanager
+    async def _write_operation(self) -> AsyncIterator[None]:
+        """Serialize a complete mutation and close its transaction safely."""
+        async with self._write_lock:
+            try:
+                yield
+                await self.conn.commit()
+            except BaseException:
+                if self.conn.in_transaction:
+                    await self.conn.rollback()
+                raise
+
     # -------------------------------------------------------------------
     # Users
     # -------------------------------------------------------------------
@@ -139,17 +210,17 @@ class DatabaseManager:
         self, user_id: int, username: str | None, first_name: str | None
     ) -> None:
         """Insert or update user record."""
-        await self.conn.execute(
-            """
-            INSERT INTO users (user_id, username, first_name)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                username = excluded.username,
-                first_name = excluded.first_name
-            """,
-            (user_id, username, first_name),
-        )
-        await self.conn.commit()
+        async with self._write_operation():
+            await self.conn.execute(
+                """
+                INSERT INTO users (user_id, username, first_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = excluded.username,
+                    first_name = excluded.first_name
+                """,
+                (user_id, username, first_name),
+            )
 
     # -------------------------------------------------------------------
     # Study
@@ -162,13 +233,14 @@ class DatabaseManager:
         notes: str | None = None,
     ) -> int:
         """Log a study session. Returns the row ID."""
-        cursor = await self.conn.execute(
-            "INSERT INTO study_logs (user_id, subject, duration_min, notes) "
-            "VALUES (?, ?, ?, ?)",
-            (user_id, subject, duration_min, notes),
-        )
-        await self.conn.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "INSERT INTO study_logs "
+                "(user_id, subject, duration_min, notes, logged_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, subject, duration_min, notes, _utc_timestamp_now()),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
 
     async def get_study_logs(
         self, user_id: int, start_date: date, end_date: date
@@ -186,7 +258,7 @@ class DatabaseManager:
         cursor = await self.conn.execute(
             "SELECT * FROM study_logs WHERE user_id = ? AND logged_at >= ? AND logged_at < ? "
             "ORDER BY logged_at",
-            (user_id, start_utc.isoformat(), end_utc.isoformat()),
+            (user_id, _sqlite_timestamp(start_utc), _sqlite_timestamp(end_utc)),
         )
         return await cursor.fetchall()
 
@@ -202,13 +274,14 @@ class DatabaseManager:
         weight_kg: float | None = None,
     ) -> int:
         """Log a single gym exercise. Returns the row ID."""
-        cursor = await self.conn.execute(
-            "INSERT INTO gym_logs (user_id, exercise, sets, reps, weight_kg) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user_id, exercise, sets, reps, weight_kg),
-        )
-        await self.conn.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "INSERT INTO gym_logs "
+                "(user_id, exercise, sets, reps, weight_kg, logged_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, exercise, sets, reps, weight_kg, _utc_timestamp_now()),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
 
     async def get_gym_logs(
         self, user_id: int, start_date: date, end_date: date
@@ -219,7 +292,7 @@ class DatabaseManager:
         cursor = await self.conn.execute(
             "SELECT * FROM gym_logs WHERE user_id = ? AND logged_at >= ? AND logged_at < ? "
             "ORDER BY logged_at",
-            (user_id, start_utc.isoformat(), end_utc.isoformat()),
+            (user_id, _sqlite_timestamp(start_utc), _sqlite_timestamp(end_utc)),
         )
         return await cursor.fetchall()
 
@@ -234,13 +307,14 @@ class DatabaseManager:
         calories: int | None = None,
     ) -> int:
         """Log a diet entry. Returns the row ID."""
-        cursor = await self.conn.execute(
-            "INSERT INTO diet_logs (user_id, meal_type, food_items, calories) "
-            "VALUES (?, ?, ?, ?)",
-            (user_id, meal_type, food_items, calories),
-        )
-        await self.conn.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "INSERT INTO diet_logs "
+                "(user_id, meal_type, food_items, calories, logged_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, meal_type, food_items, calories, _utc_timestamp_now()),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
 
     async def get_diet_logs(
         self, user_id: int, start_date: date, end_date: date
@@ -251,48 +325,83 @@ class DatabaseManager:
         cursor = await self.conn.execute(
             "SELECT * FROM diet_logs WHERE user_id = ? AND logged_at >= ? AND logged_at < ? "
             "ORDER BY logged_at",
-            (user_id, start_utc.isoformat(), end_utc.isoformat()),
+            (user_id, _sqlite_timestamp(start_utc), _sqlite_timestamp(end_utc)),
         )
         return await cursor.fetchall()
 
     # -------------------------------------------------------------------
     # Habits
     # -------------------------------------------------------------------
-    async def add_habit(self, user_id: int, habit_name: str) -> tuple[int, bool]:
-        """Add a habit or reactivate a deactivated one.
+    async def add_habit(
+        self, user_id: int, habit_name: str
+    ) -> tuple[int, HabitAddStatus]:
+        """Add, reactivate, or find an active habit.
 
-        Returns (habit_id, reactivated: bool).
+        Returns ``(habit_id, status)`` where status is ``"added"``,
+        ``"reactivated"``, or ``"already_active"``.
         """
-        # Check if an inactive habit with the same name exists
-        cursor = await self.conn.execute(
-            "SELECT id FROM habits WHERE user_id = ? AND habit_name = ? AND is_active = 0",
-            (user_id, habit_name),
-        )
-        row = await cursor.fetchone()
-        if row:
-            habit_id = row["id"]
-            await self.conn.execute(
-                "UPDATE habits SET is_active = 1 WHERE id = ?", (habit_id,)
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "SELECT id, is_active FROM habits "
+                "WHERE user_id = ? AND habit_name = ? "
+                "ORDER BY is_active DESC, id LIMIT 1",
+                (user_id, habit_name),
             )
-            await self.conn.commit()
-            return habit_id, True
+            row = await cursor.fetchone()
+            if row is not None and row["is_active"]:
+                return row["id"], "already_active"
 
-        # Insert new
-        cursor = await self.conn.execute(
-            "INSERT INTO habits (user_id, habit_name) VALUES (?, ?)",
-            (user_id, habit_name),
-        )
-        await self.conn.commit()
-        return cursor.lastrowid, True  # type: ignore[return-value]
+            if row is not None:
+                cursor = await self.conn.execute(
+                    """
+                    UPDATE habits
+                    SET is_active = 1
+                    WHERE id = ?
+                      AND is_active = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM habits
+                          WHERE user_id = ? AND habit_name = ? AND is_active = 1
+                      )
+                    """,
+                    (row["id"], user_id, habit_name),
+                )
+                if cursor.rowcount > 0:
+                    return row["id"], "reactivated"
+
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO habits (user_id, habit_name)
+                VALUES (?, ?)
+                ON CONFLICT(user_id, habit_name) WHERE is_active = 1 DO NOTHING
+                RETURNING id
+                """,
+                (user_id, habit_name),
+            )
+            inserted = await cursor.fetchone()
+            if inserted is not None:
+                return inserted["id"], "added"
+
+            # This can occur if another database connection made the habit
+            # active between this operation's read and write.
+            cursor = await self.conn.execute(
+                "SELECT id FROM habits "
+                "WHERE user_id = ? AND habit_name = ? AND is_active = 1",
+                (user_id, habit_name),
+            )
+            active = await cursor.fetchone()
+            if active is None:
+                raise RuntimeError("Habit add completed without an active habit")
+            return active["id"], "already_active"
 
     async def deactivate_habit(self, user_id: int, habit_id: int) -> bool:
         """Soft-delete a habit. Returns True if a row was affected."""
-        cursor = await self.conn.execute(
-            "UPDATE habits SET is_active = 0 WHERE id = ? AND user_id = ? AND is_active = 1",
-            (habit_id, user_id),
-        )
-        await self.conn.commit()
-        return cursor.rowcount > 0
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "UPDATE habits SET is_active = 0 "
+                "WHERE id = ? AND user_id = ? AND is_active = 1",
+                (habit_id, user_id),
+            )
+            return cursor.rowcount > 0
 
     async def get_active_habits(self, user_id: int) -> list[aiosqlite.Row]:
         """Get all active habits for a user."""
@@ -305,30 +414,35 @@ class DatabaseManager:
     async def check_habit(self, user_id: int, habit_id: int, log_date: date) -> bool:
         """Mark a habit as done for a specific local date.
 
-        Returns True if inserted, False if already exists.
+        Returns True if inserted. Returns False if the row already exists or if
+        the habit is inactive, missing, or owned by another user.
         """
-        try:
-            await self.conn.execute(
-                "INSERT INTO habit_logs (user_id, habit_id, log_date) VALUES (?, ?, ?)",
-                (user_id, habit_id, log_date.isoformat()),
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO habit_logs (user_id, habit_id, log_date)
+                SELECT ?, h.id, ?
+                FROM habits AS h
+                JOIN users AS u ON u.user_id = h.user_id
+                WHERE h.id = ? AND h.user_id = ? AND h.is_active = 1
+                ON CONFLICT(user_id, habit_id, log_date) DO NOTHING
+                """,
+                (user_id, log_date.isoformat(), habit_id, user_id),
             )
-            await self.conn.commit()
-            return True
-        except Exception:
-            # UNIQUE constraint violation — already checked
-            return False
+            return cursor.rowcount > 0
 
     async def uncheck_habit(self, user_id: int, habit_id: int, log_date: date) -> bool:
         """Remove a habit check for a specific local date.
 
         Returns True if a row was deleted.
         """
-        cursor = await self.conn.execute(
-            "DELETE FROM habit_logs WHERE user_id = ? AND habit_id = ? AND log_date = ?",
-            (user_id, habit_id, log_date.isoformat()),
-        )
-        await self.conn.commit()
-        return cursor.rowcount > 0
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "DELETE FROM habit_logs "
+                "WHERE user_id = ? AND habit_id = ? AND log_date = ?",
+                (user_id, habit_id, log_date.isoformat()),
+            )
+            return cursor.rowcount > 0
 
     async def get_checked_habits(
         self, user_id: int, log_date: date
@@ -390,6 +504,11 @@ class DatabaseManager:
 
         Returns a dict with the deleted entry info, or None if nothing found.
         """
+        async with self._write_operation():
+            return await self._undo_last_locked(user_id)
+
+    async def _undo_last_locked(self, user_id: int) -> dict[str, Any] | None:
+        """Select and delete the latest entry while the write lock is held."""
         tables = [
             ("study_logs", "📖 Study"),
             ("gym_logs", "🏋️ Gym"),
@@ -401,7 +520,7 @@ class DatabaseManager:
         for table_name, label in tables:
             cursor = await self.conn.execute(
                 f"SELECT *, '{label}' as category FROM {table_name} "  # noqa: S608
-                f"WHERE user_id = ? ORDER BY logged_at DESC LIMIT 1",
+                f"WHERE user_id = ? ORDER BY logged_at DESC, id DESC LIMIT 1",
                 (user_id,),
             )
             row = await cursor.fetchone()
@@ -427,11 +546,12 @@ class DatabaseManager:
         if latest is None or latest_table is None:
             return None
 
-        await self.conn.execute(
-            f"DELETE FROM {latest_table} WHERE id = ?",  # noqa: S608
-            (latest["id"],),
+        cursor = await self.conn.execute(
+            f"DELETE FROM {latest_table} WHERE id = ? AND user_id = ?",  # noqa: S608
+            (latest["id"], user_id),
         )
-        await self.conn.commit()
+        if cursor.rowcount <= 0:
+            return None
         return latest
 
     # -------------------------------------------------------------------
