@@ -1,0 +1,1315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ledger Bot — User Guide</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+        :root {
+            --bg-primary: #0f0f1a;
+            --bg-secondary: #1a1a2e;
+            --bg-card: #16213e;
+            --bg-card-alt: #1a1a3e;
+            --accent-blue: #00d2ff;
+            --accent-purple: #7b2ff7;
+            --accent-pink: #ff6b9d;
+            --accent-green: #6bcb77;
+            --accent-yellow: #ffd93d;
+            --accent-orange: #ff8a5c;
+            --accent-red: #ff6b6b;
+            --text-primary: #e8e8f0;
+            --text-secondary: #a0a0b8;
+            --text-muted: #6a6a80;
+            --border-color: #2a2a4a;
+            --gradient-1: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --gradient-2: linear-gradient(135deg, #00d2ff 0%, #7b2ff7 100%);
+            --gradient-3: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.7;
+            font-size: 11pt;
+        }
+
+        /* ─── Page / Print Setup ─── */
+        @page {
+            size: A4;
+            margin: 18mm 20mm 20mm 20mm;
+        }
+
+        @media print {
+            body { background: var(--bg-primary); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .page-break { page-break-before: always; }
+            .no-break { page-break-inside: avoid; }
+            .cover { page-break-after: always; }
+        }
+
+        /* ─── Cover Page ─── */
+        .cover {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 40px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cover::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 40%, rgba(123, 47, 247, 0.15) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 60%, rgba(0, 210, 255, 0.1) 0%, transparent 50%),
+                        radial-gradient(circle at 50% 80%, rgba(255, 107, 157, 0.08) 0%, transparent 40%);
+            z-index: 0;
+        }
+
+        .cover > * { position: relative; z-index: 1; }
+
+        .cover-icon {
+            font-size: 72pt;
+            margin-bottom: 20px;
+            filter: drop-shadow(0 0 30px rgba(0, 210, 255, 0.3));
+        }
+
+        .cover h1 {
+            font-size: 42pt;
+            font-weight: 900;
+            background: var(--gradient-2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -1px;
+            margin-bottom: 8px;
+        }
+
+        .cover .subtitle {
+            font-size: 16pt;
+            font-weight: 300;
+            color: var(--text-secondary);
+            margin-bottom: 40px;
+        }
+
+        .cover-features {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+            max-width: 500px;
+            margin-bottom: 50px;
+        }
+
+        .cover-feature {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px 20px;
+            text-align: left;
+            backdrop-filter: blur(10px);
+        }
+
+        .cover-feature .emoji { font-size: 20pt; margin-bottom: 4px; display: block; }
+        .cover-feature .label { font-weight: 600; font-size: 11pt; }
+
+        .cover-meta {
+            color: var(--text-muted);
+            font-size: 10pt;
+            margin-top: 10px;
+        }
+
+        .cover-version {
+            display: inline-block;
+            background: var(--gradient-2);
+            color: white;
+            padding: 4px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 10pt;
+            margin-bottom: 10px;
+        }
+
+        /* ─── Content ─── */
+        .content {
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 0 30px;
+        }
+
+        /* ─── Section Headers ─── */
+        h2 {
+            font-size: 22pt;
+            font-weight: 800;
+            margin-top: 50px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--border-color);
+            position: relative;
+        }
+
+        h2::before {
+            content: '';
+            position: absolute;
+            bottom: -2px;
+            left: 0;
+            width: 60px;
+            height: 2px;
+            background: var(--gradient-2);
+        }
+
+        h3 {
+            font-size: 14pt;
+            font-weight: 700;
+            margin-top: 30px;
+            margin-bottom: 12px;
+            color: var(--accent-blue);
+        }
+
+        h4 {
+            font-size: 12pt;
+            font-weight: 600;
+            margin-top: 20px;
+            margin-bottom: 8px;
+            color: var(--accent-purple);
+        }
+
+        p {
+            margin-bottom: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* ─── Table of Contents ─── */
+        .toc {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 30px 35px;
+            margin: 30px 0;
+        }
+
+        .toc h2 {
+            margin-top: 0;
+            font-size: 16pt;
+            border: none;
+            padding-bottom: 0;
+        }
+
+        .toc h2::before { display: none; }
+
+        .toc-list {
+            list-style: none;
+            counter-reset: toc;
+        }
+
+        .toc-list li {
+            counter-increment: toc;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .toc-list li:last-child { border-bottom: none; }
+
+        .toc-list li::before {
+            content: counter(toc, decimal-leading-zero);
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            font-size: 10pt;
+            color: var(--accent-blue);
+            background: rgba(0, 210, 255, 0.1);
+            padding: 2px 10px;
+            border-radius: 6px;
+            min-width: 32px;
+            text-align: center;
+        }
+
+        .toc-list li a {
+            color: var(--text-primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        /* ─── Info Boxes ─── */
+        .box {
+            border-radius: 12px;
+            padding: 18px 22px;
+            margin: 16px 0;
+            border-left: 4px solid;
+        }
+
+        .box-info {
+            background: rgba(0, 210, 255, 0.06);
+            border-color: var(--accent-blue);
+        }
+
+        .box-warning {
+            background: rgba(255, 217, 61, 0.06);
+            border-color: var(--accent-yellow);
+        }
+
+        .box-success {
+            background: rgba(107, 203, 119, 0.06);
+            border-color: var(--accent-green);
+        }
+
+        .box-danger {
+            background: rgba(255, 107, 107, 0.06);
+            border-color: var(--accent-red);
+        }
+
+        .box-title {
+            font-weight: 700;
+            font-size: 10pt;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 6px;
+        }
+
+        .box-info .box-title { color: var(--accent-blue); }
+        .box-warning .box-title { color: var(--accent-yellow); }
+        .box-success .box-title { color: var(--accent-green); }
+        .box-danger .box-title { color: var(--accent-red); }
+
+        .box p { margin-bottom: 4px; }
+        .box p:last-child { margin-bottom: 0; }
+
+        /* ─── Code Blocks ─── */
+        code {
+            font-family: 'JetBrains Mono', 'Consolas', monospace;
+            font-size: 9.5pt;
+            background: rgba(123, 47, 247, 0.12);
+            color: var(--accent-purple);
+            padding: 2px 7px;
+            border-radius: 5px;
+        }
+
+        pre {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 18px 22px;
+            overflow-x: auto;
+            margin: 14px 0;
+            line-height: 1.6;
+        }
+
+        pre code {
+            background: none;
+            color: var(--text-primary);
+            padding: 0;
+            font-size: 9.5pt;
+        }
+
+        .cmd-prefix { color: var(--accent-green); font-weight: 600; }
+        .cmd-arg { color: var(--accent-yellow); }
+        .cmd-opt { color: var(--text-muted); }
+
+        /* ─── Tables ─── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0;
+            font-size: 10pt;
+        }
+
+        thead th {
+            background: var(--bg-card);
+            color: var(--accent-blue);
+            font-weight: 700;
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 9pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        thead th:first-child { border-radius: 8px 0 0 0; }
+        thead th:last-child { border-radius: 0 8px 0 0; }
+
+        tbody td {
+            padding: 10px 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            vertical-align: top;
+        }
+
+        tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+        /* ─── Step Cards ─── */
+        .steps {
+            counter-reset: step;
+        }
+
+        .step {
+            counter-increment: step;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin: 14px 0;
+            position: relative;
+            padding-left: 70px;
+        }
+
+        .step::before {
+            content: counter(step);
+            position: absolute;
+            left: 20px;
+            top: 18px;
+            width: 34px;
+            height: 34px;
+            background: var(--gradient-2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 14pt;
+            color: white;
+            line-height: 34px;
+            text-align: center;
+        }
+
+        .step-title {
+            font-weight: 700;
+            font-size: 12pt;
+            margin-bottom: 6px;
+        }
+
+        .step p { margin-bottom: 6px; }
+
+        /* ─── Chat Simulation ─── */
+        .chat {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            padding: 20px;
+            margin: 16px 0;
+            max-width: 420px;
+        }
+
+        .chat-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .chat-avatar {
+            width: 36px;
+            height: 36px;
+            background: var(--gradient-2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16pt;
+        }
+
+        .chat-name { font-weight: 700; font-size: 11pt; }
+        .chat-status { font-size: 8pt; color: var(--accent-green); }
+
+        .msg {
+            margin: 8px 0;
+            display: flex;
+        }
+
+        .msg-user { justify-content: flex-end; }
+        .msg-bot { justify-content: flex-start; }
+
+        .msg-bubble {
+            max-width: 80%;
+            padding: 10px 14px;
+            border-radius: 14px;
+            font-size: 10pt;
+            line-height: 1.5;
+        }
+
+        .msg-user .msg-bubble {
+            background: var(--accent-purple);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .msg-bot .msg-bubble {
+            background: rgba(255,255,255,0.08);
+            color: var(--text-primary);
+            border-bottom-left-radius: 4px;
+        }
+
+        .msg-bubble strong { color: white; }
+        .msg-bot .msg-bubble strong { color: var(--accent-blue); }
+
+        /* ─── Keyboard Simulation ─── */
+        .kb {
+            display: inline-grid;
+            gap: 6px;
+            margin: 8px 0;
+        }
+
+        .kb-row {
+            display: flex;
+            gap: 6px;
+        }
+
+        .kb-btn {
+            background: rgba(0, 210, 255, 0.12);
+            border: 1px solid rgba(0, 210, 255, 0.25);
+            color: var(--accent-blue);
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 9pt;
+            font-weight: 600;
+            text-align: center;
+            flex: 1;
+            white-space: nowrap;
+        }
+
+        /* ─── Feature Grid ─── */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 14px;
+            margin: 20px 0;
+        }
+
+        .feature-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 18px 20px;
+        }
+
+        .feature-card .icon {
+            font-size: 24pt;
+            margin-bottom: 8px;
+            display: block;
+        }
+
+        .feature-card .title {
+            font-weight: 700;
+            font-size: 11pt;
+            margin-bottom: 4px;
+        }
+
+        .feature-card .desc {
+            font-size: 9pt;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        /* ─── Divider ─── */
+        hr {
+            border: none;
+            height: 1px;
+            background: var(--border-color);
+            margin: 30px 0;
+        }
+
+        /* ─── Lists ─── */
+        ul, ol {
+            padding-left: 22px;
+            margin: 10px 0;
+            color: var(--text-secondary);
+        }
+
+        li { margin: 6px 0; }
+        li strong { color: var(--text-primary); }
+
+        /* ─── Badge ─── */
+        .badge {
+            display: inline-block;
+            font-size: 8pt;
+            font-weight: 700;
+            padding: 2px 10px;
+            border-radius: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .badge-required { background: rgba(255,107,107,0.15); color: var(--accent-red); }
+        .badge-optional { background: rgba(107,203,119,0.15); color: var(--accent-green); }
+
+        /* ─── Footer ─── */
+        .footer {
+            text-align: center;
+            padding: 40px 0;
+            color: var(--text-muted);
+            font-size: 9pt;
+            border-top: 1px solid var(--border-color);
+            margin-top: 50px;
+        }
+    </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- COVER PAGE                                                  -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="cover">
+    <div class="cover-icon">📒</div>
+    <div class="cover-version">v1.0</div>
+    <h1>Ledger</h1>
+    <p class="subtitle">Personal Logging Telegram Bot — User Guide</p>
+
+    <div class="cover-features">
+        <div class="cover-feature">
+            <span class="emoji">📖</span>
+            <span class="label">Study Tracker</span>
+        </div>
+        <div class="cover-feature">
+            <span class="emoji">🏋️</span>
+            <span class="label">Gym Logger</span>
+        </div>
+        <div class="cover-feature">
+            <span class="emoji">🍽️</span>
+            <span class="label">Diet Journal</span>
+        </div>
+        <div class="cover-feature">
+            <span class="emoji">✅</span>
+            <span class="label">Habit Tracker</span>
+        </div>
+    </div>
+
+    <p class="cover-meta">Built with Python · python-telegram-bot · SQLite<br>July 2026</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- TABLE OF CONTENTS                                           -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="content page-break">
+    <div class="toc">
+        <h2>📋 Table of Contents</h2>
+        <ul class="toc-list">
+            <li><a href="#getting-started">Getting Started</a></li>
+            <li><a href="#first-run">First Run &amp; Basic Navigation</a></li>
+            <li><a href="#study">Logging Study Sessions</a></li>
+            <li><a href="#gym">Logging Workouts</a></li>
+            <li><a href="#diet">Logging Meals</a></li>
+            <li><a href="#habits">Tracking Habits</a></li>
+            <li><a href="#analytics">Analytics &amp; Charts</a></li>
+            <li><a href="#reminders">Daily Reminders</a></li>
+            <li><a href="#utility">Utility Commands</a></li>
+            <li><a href="#quick-ref">Quick Reference Card</a></li>
+            <li><a href="#tips">Tips &amp; Best Practices</a></li>
+            <li><a href="#troubleshooting">Troubleshooting</a></li>
+        </ul>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 1. GETTING STARTED                                      -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="getting-started">1. Getting Started</h2>
+
+    <p>Ledger is a personal Telegram bot that helps you track four areas of daily life: <strong>study sessions</strong>, <strong>gym workouts</strong>, <strong>diet &amp; nutrition</strong>, and <strong>daily habits</strong>. It runs on your machine and stores everything locally in a SQLite database.</p>
+
+    <h3>Prerequisites</h3>
+    <ul>
+        <li><strong>Python 3.11+</strong> installed on your system</li>
+        <li>A <strong>Telegram account</strong></li>
+        <li>A <strong>Telegram Bot Token</strong> (free, from @BotFather)</li>
+        <li>Your <strong>Telegram User ID</strong> (from @userinfobot)</li>
+    </ul>
+
+    <h3>Setup Steps</h3>
+    <div class="steps no-break">
+        <div class="step">
+            <div class="step-title">Create Your Bot</div>
+            <p>Open Telegram and message <code>@BotFather</code>. Send <code>/newbot</code>, choose a name and username. Copy the <strong>bot token</strong> it gives you.</p>
+        </div>
+        <div class="step">
+            <div class="step-title">Get Your User ID</div>
+            <p>Message <code>@userinfobot</code> on Telegram. It will reply with your numeric user ID (e.g., <code>123456789</code>).</p>
+        </div>
+        <div class="step">
+            <div class="step-title">Install Dependencies</div>
+            <pre><code>cd 12_ledger
+python -m venv .venv
+.venv\Scripts\activate        <span class="cmd-opt"># Windows</span>
+pip install -r requirements.txt</code></pre>
+        </div>
+        <div class="step">
+            <div class="step-title">Configure .env</div>
+            <p>Copy <code>.env.example</code> to <code>.env</code> and fill in your values:</p>
+            <pre><code>BOT_TOKEN=<span class="cmd-arg">your-token-from-botfather</span>
+ALLOWED_USER_IDS=<span class="cmd-arg">your-numeric-user-id</span>
+TZ=Asia/Kolkata
+REMINDER_HOUR=20
+DB_PATH=ledger.db</code></pre>
+        </div>
+        <div class="step">
+            <div class="step-title">Start the Bot</div>
+            <pre><code>python -m bot</code></pre>
+            <p>The bot is now running. Open Telegram and message your bot!</p>
+        </div>
+    </div>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Security Note</div>
+        <p>Only user IDs listed in <code>ALLOWED_USER_IDS</code> can interact with your bot. Everyone else is silently ignored — they won't even know the bot is active.</p>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 2. FIRST RUN                                            -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="first-run" class="page-break">2. First Run &amp; Basic Navigation</h2>
+
+    <p>When you first message the bot, send <code>/start</code> to register and see the welcome message.</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div>
+                <div class="chat-name">Ledger Bot</div>
+                <div class="chat-status">● online</div>
+            </div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/start</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                👋 Hey! Welcome to <strong>Ledger</strong>.<br><br>
+                I'm your personal logging bot for tracking:<br>
+                📖 <strong>Study</strong> — subjects, duration, notes<br>
+                🏋️ <strong>Gym</strong> — exercises, sets, reps, weight<br>
+                🍽️ <strong>Diet</strong> — meals, food items, calories<br>
+                ✅ <strong>Habits</strong> — daily check-offs with streaks<br><br>
+                Use /menu for the main menu, or /help for all commands.
+            </div>
+        </div>
+    </div>
+
+    <h3>The Main Menu</h3>
+    <p>Send <code>/menu</code> to open the interactive main menu. Tap any button to get started with that category:</p>
+
+    <div class="chat no-break" style="max-width: 350px;">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div>
+                <div class="chat-name">Ledger Bot</div>
+                <div class="chat-status">● online</div>
+            </div>
+        </div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                📋 <strong>Main Menu</strong> — Pick a category:
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn">📖 Study</span>
+                        <span class="kb-btn">🏋️ Gym</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">🍽️ Diet</span>
+                        <span class="kb-btn">✅ Habits</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">📊 Analytics</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 3. STUDY                                                -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="study" class="page-break">3. Logging Study Sessions</h2>
+
+    <p>Track what you study, for how long, and add optional notes. Every session is stored with a timestamp.</p>
+
+    <h3>Quick Log (Shortcut)</h3>
+    <p>Log instantly with a single message — no back-and-forth:</p>
+    <pre><code><span class="cmd-prefix">/study</span> <span class="cmd-arg">&lt;subject&gt;</span> <span class="cmd-arg">&lt;minutes&gt;</span> <span class="cmd-opt">[notes]</span></code></pre>
+
+    <p><strong>Examples:</strong></p>
+    <table class="no-break">
+        <thead>
+            <tr><th>Command</th><th>What it logs</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><code>/study maths 45</code></td><td>45 min of Maths, no notes</td></tr>
+            <tr><td><code>/study physics 60 reviewed optics</code></td><td>60 min of Physics, with notes</td></tr>
+            <tr><td><code>/study DSA 90 linked lists and trees</code></td><td>90 min of DSA, with notes</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Guided Log</h3>
+    <p>Send bare <code>/study</code> and the bot walks you through three prompts:</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/study</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">📖 <strong>Log Study Session</strong><br><br>What subject did you study?</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">Linear Algebra</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">📖 <strong>Linear Algebra</strong> — how long did you study? (minutes)</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">45</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">📝 Any notes? (or /skip)</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">Reviewed eigenvalues chapter 4</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ✅ <strong>Study logged!</strong><br>
+                📖 Subject: <strong>Linear Algebra</strong><br>
+                ⏱️ Duration: <strong>45 min</strong><br>
+                📝 Notes: <em>Reviewed eigenvalues chapter 4</em>
+            </div>
+        </div>
+    </div>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Tips</div>
+        <p>• Use <code>/skip</code> at the notes step to log without notes</p>
+        <p>• Use <code>/cancel</code> at any step to abort the log</p>
+        <p>• If you enter text instead of a number for duration, the bot will ask again</p>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 4. GYM                                                  -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="gym" class="page-break">4. Logging Workouts</h2>
+
+    <p>Log individual exercises with sets, reps, and optional weight. You can log multiple exercises in one session — each is saved <strong>immediately</strong>, so nothing is lost if you abandon mid-workout.</p>
+
+    <h3>Quick Log (Single Exercise)</h3>
+    <pre><code><span class="cmd-prefix">/gym</span> <span class="cmd-arg">&lt;exercise&gt;</span> <span class="cmd-arg">&lt;sets&gt;</span> <span class="cmd-arg">&lt;reps&gt;</span> <span class="cmd-opt">[weight_kg]</span></code></pre>
+
+    <table class="no-break">
+        <thead>
+            <tr><th>Command</th><th>What it logs</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><code>/gym pushups 3 15</code></td><td>3×15 push-ups (bodyweight)</td></tr>
+            <tr><td><code>/gym bench 4 10 60</code></td><td>4×10 bench press @ 60kg</td></tr>
+            <tr><td><code>/gym squats 5 5 100</code></td><td>5×5 squats @ 100kg</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Guided Multi-Exercise Log</h3>
+    <p>Send bare <code>/gym</code> to enter a workout session with multiple exercises:</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/gym</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">🏋️ <strong>Log Workout</strong><br><br>What exercise did you do?</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">Bench Press</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">🏋️ <strong>Bench Press</strong> — how many sets?</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">4</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">How many reps per set?</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">10</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">Weight in kg? (/skip for bodyweight)</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">60</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ✅ Saved! (1 exercise logged)<br><br>Log another exercise?
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn">✅ Yes</span>
+                        <span class="kb-btn">❌ No</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="box box-success no-break">
+        <div class="box-title">✅ Per-Exercise Saving</div>
+        <p>Each exercise is saved to the database <strong>immediately</strong> after you enter the weight. If you log 3 exercises and then close Telegram, all 3 are safely stored. Only an incomplete exercise (where you haven't finished entering sets/reps/weight) is lost.</p>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 5. DIET                                                 -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="diet" class="page-break">5. Logging Meals</h2>
+
+    <p>Track what you eat across four meal types: breakfast, lunch, dinner, and snacks. Calorie counts are optional.</p>
+
+    <h3>Quick Log</h3>
+    <pre><code><span class="cmd-prefix">/diet</span> <span class="cmd-arg">&lt;meal&gt;</span> <span class="cmd-arg">&lt;food&gt;</span> <span class="cmd-opt">[calories]</span></code></pre>
+
+    <p>Use <code>+</code> to separate multiple food items (they'll be converted to commas):</p>
+
+    <table class="no-break">
+        <thead>
+            <tr><th>Command</th><th>What it logs</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><code>/diet lunch dal+rice 650</code></td><td>Lunch: dal, rice — 650 cal</td></tr>
+            <tr><td><code>/diet breakfast oats+banana</code></td><td>Breakfast: oats, banana — no cal</td></tr>
+            <tr><td><code>/diet snack almonds 200</code></td><td>Snack: almonds — 200 cal</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Guided Log</h3>
+    <p>Send bare <code>/diet</code> and the bot presents a meal-type picker, then asks for food and calories:</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/diet</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                🍽️ <strong>Log Meal</strong><br><br>Which meal?
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn">🌅 Breakfast</span>
+                        <span class="kb-btn">🌞 Lunch</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">🌙 Dinner</span>
+                        <span class="kb-btn">🍿 Snack</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Calorie Tracking</div>
+        <p>Calories are optional. If you <code>/skip</code>, the bot records the meal but marks it as "incomplete" on charts. Days with skipped calories show a hatched pattern on the diet chart instead of a misleadingly low bar.</p>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 6. HABITS                                               -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="habits" class="page-break">6. Tracking Habits</h2>
+
+    <p>Habits are predefined activities you want to do daily. You set them up once, then check them off each day. The bot tracks your <strong>streaks</strong> — consecutive days of completion.</p>
+
+    <h3>Setting Up Habits</h3>
+    <p>Send <code>/habits setup</code> to add or remove habits:</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/habits setup</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ⚙️ <strong>Habit Setup</strong><br><br>
+                You have no habits yet. Type a habit name to add one:<br>
+                (e.g., <em>Meditate</em>, <em>Read 30 min</em>, <em>No Sugar</em>)<br><br>
+                Use /cancel when done.
+            </div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">Meditate</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">✅ Added: <strong>Meditate</strong></div></div>
+        <div class="msg msg-user"><div class="msg-bubble">Read 30 min</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">✅ Added: <strong>Read 30 min</strong></div></div>
+        <div class="msg msg-user"><div class="msg-bubble">/cancel</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">✖️ Cancelled.</div></div>
+    </div>
+
+    <h3>Daily Check-Off</h3>
+    <p>Send <code>/habits</code> to see today's checklist. Tap <strong>Done ✓</strong> to mark a habit, or <strong>Undo ↩</strong> to un-mark:</p>
+
+    <div class="chat no-break" style="max-width: 380px;">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble" style="width: 100%;">
+                ✅ <strong>Habits</strong> — 1/3 done<br>Tap to check off:
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn" style="flex: 3; text-align: left;">✅ Meditate</span>
+                        <span class="kb-btn" style="flex: 1;">Undo ↩</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn" style="flex: 3; text-align: left;">⬜ Read 30 min</span>
+                        <span class="kb-btn" style="flex: 1;">Done ✓</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn" style="flex: 3; text-align: left;">⬜ No Sugar</span>
+                        <span class="kb-btn" style="flex: 1;">Done ✓</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">📅 Jul 18 (Today)</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">← Yesterday</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <h3>Yesterday Toggle</h3>
+    <p>Forgot to check off a habit before midnight? Tap <strong>← Yesterday</strong> to switch the checklist to yesterday's date. You can mark habits for yesterday just like today.</p>
+
+    <div class="box box-warning no-break">
+        <div class="box-title">⚠️ Streak Rules</div>
+        <p>• A <strong>streak</strong> counts consecutive days with a check, starting from today and going backward.</p>
+        <p>• If <strong>today is unchecked</strong>, your streak is <strong>0</strong> — even if you had 100 days before.</p>
+        <p>• <strong>Un-tapping</strong> a habit (Undo ↩) deletes the record for that day.</p>
+        <p>• Use the yesterday toggle to fix forgotten check-offs and save your streak!</p>
+    </div>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Re-adding Habits</div>
+        <p>If you remove a habit and later add one with the same name, the bot <strong>reactivates</strong> the original instead of creating a duplicate. Your historical data is preserved.</p>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 7. ANALYTICS                                            -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="analytics" class="page-break">7. Analytics &amp; Charts</h2>
+
+    <h3>Text Summaries</h3>
+
+    <table class="no-break">
+        <thead>
+            <tr><th>Command</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>/summary</code></td>
+                <td>Today's summary: study time, exercises, meals, habits done</td>
+            </tr>
+            <tr>
+                <td><code>/summary week</code></td>
+                <td>Last 7 days: total study hours, workout days, calorie average, habit completion %</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/summary</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                📋 <strong>Daily Summary</strong> — Jul 18, 2026<br><br>
+                📖 <strong>Study</strong>: 105 min across Maths, Physics<br>
+                🏋️ <strong>Gym</strong>: 3 exercise(s) — Bench, Squats, Rows<br>
+                🍽️ <strong>Diet</strong>: 3 meal(s), 1850 cal<br>
+                ✅ <strong>Habits</strong>: 2/3 done
+            </div>
+        </div>
+    </div>
+
+    <h3>Charts</h3>
+    <p>The bot generates beautiful dark-themed charts and sends them as images:</p>
+
+    <table class="no-break">
+        <thead>
+            <tr><th>Command</th><th>Chart Type</th><th>Time Range</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>/chart study</code></td>
+                <td>Stacked bar — hours by subject per day</td>
+                <td>Last 7 days</td>
+            </tr>
+            <tr>
+                <td><code>/chart gym</code></td>
+                <td>Side-by-side bar — weighted vs bodyweight volume</td>
+                <td>Last 7 days</td>
+            </tr>
+            <tr>
+                <td><code>/chart diet</code></td>
+                <td>Bar — daily calories (incomplete days hatched)</td>
+                <td>Last 7 days</td>
+            </tr>
+            <tr>
+                <td><code>/chart habits</code></td>
+                <td>Grid heatmap — ✅/⬜ per habit per day</td>
+                <td>Last 14 days</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>Streaks</h3>
+    <p>Send <code>/streak</code> to see your current consecutive-day streaks for all active habits:</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/streak</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                🔥 <strong>Current Streaks</strong><br><br>
+                🔥🔥 <strong>Meditate</strong>: 12 days<br>
+                🔥 <strong>Read 30 min</strong>: 5 days<br>
+                ⬜ <strong>No Sugar</strong>: 0 days
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 8. REMINDERS                                            -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="reminders">8. Daily Reminders</h2>
+
+    <p>Every evening (default: <strong>8:00 PM</strong> in your configured timezone), the bot sends you a reminder listing any unchecked habits:</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ⏰ <strong>Evening Reminder</strong><br><br>
+                You still have 2 habits unchecked today:<br><br>
+                ⬜ Read 30 min<br>
+                ⬜ No Sugar<br><br>
+                Tap /habits to check them off!
+            </div>
+        </div>
+    </div>
+
+    <p>If all habits are done, you get a congratulations message instead: 🎉 <strong>All habits done today!</strong></p>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Customizing Reminder Time</div>
+        <p>Change <code>REMINDER_HOUR</code> in your <code>.env</code> file. For example, <code>REMINDER_HOUR=21</code> for 9 PM. The time is in your configured timezone (default: IST).</p>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 9. UTILITY                                              -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="utility" class="page-break">9. Utility Commands</h2>
+
+    <h3>/undo — Delete Last Entry</h3>
+    <p>Made a mistake? Send <code>/undo</code> to delete your most recent log entry (study, gym, or diet). Only works within <strong>24 hours</strong> of the entry.</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/undo</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ↩️ <strong>Undone:</strong> 📖 Study<br>
+                📖 Physics — 30 min
+            </div>
+        </div>
+    </div>
+
+    <div class="box box-warning no-break">
+        <div class="box-title">⚠️ Undo Limitations</div>
+        <p>• <code>/undo</code> works on study, gym, and diet logs only — not habits (use the Undo ↩ button on the habit checklist instead)</p>
+        <p>• Only the <strong>single most recent</strong> entry is deleted</p>
+        <p>• Entries older than 24 hours cannot be undone</p>
+    </div>
+
+    <h3>/cancel — Abort Current Conversation</h3>
+    <p>If you're in the middle of a guided log and want to stop, send <code>/cancel</code>. This works in every conversation flow (study, gym, diet, habit setup).</p>
+
+    <h3>Conversation Timeout</h3>
+    <p>If you start a guided log and don't respond within <strong>5 minutes</strong>, the conversation automatically cancels. You'll see:</p>
+    <p>⏰ <em>Timed out. Send the command again to start over.</em></p>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 10. QUICK REFERENCE                                     -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="quick-ref" class="page-break">10. Quick Reference Card</h2>
+
+    <h3>Logging Commands</h3>
+    <table>
+        <thead><tr><th>Command</th><th>Action</th><th>Args</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><code>/study</code></td>
+                <td>Guided study log</td>
+                <td>—</td>
+            </tr>
+            <tr>
+                <td><code>/study &lt;subj&gt; &lt;min&gt; [notes]</code></td>
+                <td>Quick study log</td>
+                <td><span class="badge badge-required">subject, minutes</span> <span class="badge badge-optional">notes</span></td>
+            </tr>
+            <tr>
+                <td><code>/gym</code></td>
+                <td>Guided workout log</td>
+                <td>—</td>
+            </tr>
+            <tr>
+                <td><code>/gym &lt;ex&gt; &lt;sets&gt; &lt;reps&gt; [kg]</code></td>
+                <td>Quick exercise log</td>
+                <td><span class="badge badge-required">exercise, sets, reps</span> <span class="badge badge-optional">weight</span></td>
+            </tr>
+            <tr>
+                <td><code>/diet</code></td>
+                <td>Guided meal log</td>
+                <td>—</td>
+            </tr>
+            <tr>
+                <td><code>/diet &lt;meal&gt; &lt;food&gt; [cal]</code></td>
+                <td>Quick meal log</td>
+                <td><span class="badge badge-required">meal, food</span> <span class="badge badge-optional">calories</span></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>Habit Commands</h3>
+    <table>
+        <thead><tr><th>Command</th><th>Action</th></tr></thead>
+        <tbody>
+            <tr><td><code>/habits</code></td><td>Today's habit checklist (with yesterday toggle)</td></tr>
+            <tr><td><code>/habits setup</code></td><td>Add or remove habit definitions</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Analytics Commands</h3>
+    <table>
+        <thead><tr><th>Command</th><th>Action</th></tr></thead>
+        <tbody>
+            <tr><td><code>/summary</code></td><td>Today's text summary</td></tr>
+            <tr><td><code>/summary week</code></td><td>7-day text summary</td></tr>
+            <tr><td><code>/chart study</code></td><td>Study hours chart (7 days)</td></tr>
+            <tr><td><code>/chart gym</code></td><td>Gym volume chart (7 days)</td></tr>
+            <tr><td><code>/chart diet</code></td><td>Calorie intake chart (7 days)</td></tr>
+            <tr><td><code>/chart habits</code></td><td>Habit heatmap (14 days)</td></tr>
+            <tr><td><code>/streak</code></td><td>Habit streak counts</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Utility Commands</h3>
+    <table>
+        <thead><tr><th>Command</th><th>Action</th></tr></thead>
+        <tbody>
+            <tr><td><code>/undo</code></td><td>Delete last log entry (within 24h)</td></tr>
+            <tr><td><code>/cancel</code></td><td>Cancel current conversation</td></tr>
+            <tr><td><code>/menu</code></td><td>Open main menu</td></tr>
+            <tr><td><code>/help</code></td><td>Show all commands</td></tr>
+            <tr><td><code>/start</code></td><td>Welcome &amp; register</td></tr>
+        </tbody>
+    </table>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 11. TIPS                                                -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="tips" class="page-break">11. Tips &amp; Best Practices</h2>
+
+    <div class="feature-grid">
+        <div class="feature-card no-break">
+            <span class="icon">⚡</span>
+            <div class="title">Use Shortcuts</div>
+            <div class="desc">After the first week, you'll find shortcuts (<code>/study maths 45</code>) much faster than the guided flow. They're one message instead of three.</div>
+        </div>
+        <div class="feature-card no-break">
+            <span class="icon">🌙</span>
+            <div class="title">Check Habits Before Bed</div>
+            <div class="desc">The 8 PM reminder is your cue. If you miss it, use the <strong>← Yesterday</strong> toggle before tomorrow's midnight.</div>
+        </div>
+        <div class="feature-card no-break">
+            <span class="icon">📊</span>
+            <div class="title">Weekly Reviews</div>
+            <div class="desc">Run <code>/summary week</code> every Sunday. Check your study hours, gym frequency, and habit completion rate. Spot trends before they become problems.</div>
+        </div>
+        <div class="feature-card no-break">
+            <span class="icon">🔥</span>
+            <div class="title">Protect Your Streaks</div>
+            <div class="desc">Streaks are fragile — one missed day resets to zero. Start with easy habits (like "drink water") to build momentum.</div>
+        </div>
+        <div class="feature-card no-break">
+            <span class="icon">🍽️</span>
+            <div class="title">Log Meals As You Eat</div>
+            <div class="desc">Don't batch your diet logs at night — you'll forget items and undercount. The shortcut makes it a 5-second task.</div>
+        </div>
+        <div class="feature-card no-break">
+            <span class="icon">💾</span>
+            <div class="title">Backup Your Database</div>
+            <div class="desc">Your data lives in one file: <code>ledger.db</code>. Copy it to cloud storage periodically. It's usually under 1 MB.</div>
+        </div>
+    </div>
+
+    <h3>Suggested Habit Ideas</h3>
+    <table class="no-break">
+        <thead><tr><th>Category</th><th>Habit Ideas</th></tr></thead>
+        <tbody>
+            <tr><td>🧠 Mental</td><td>Meditate · Journal · Read 30 min · No social media before noon</td></tr>
+            <tr><td>💪 Physical</td><td>Morning stretch · Walk 10k steps · Sleep by 11 PM</td></tr>
+            <tr><td>🥗 Diet</td><td>No sugar · Drink 3L water · No late-night snacking</td></tr>
+            <tr><td>📖 Study</td><td>Review flashcards · Practice problems · Study 2+ hours</td></tr>
+        </tbody>
+    </table>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 12. TROUBLESHOOTING                                     -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="troubleshooting" class="page-break">12. Troubleshooting</h2>
+
+    <table>
+        <thead><tr><th style="width: 35%;">Problem</th><th>Solution</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><strong>Bot doesn't respond</strong></td>
+                <td>Check that the bot process is running (<code>python -m bot</code>). Check the terminal for errors. Verify your user ID is in <code>ALLOWED_USER_IDS</code>.</td>
+            </tr>
+            <tr>
+                <td><strong>"Something went wrong" error</strong></td>
+                <td>Check the terminal logs for the full traceback. Try <code>/cancel</code> to clear any stuck conversation state, then retry.</td>
+            </tr>
+            <tr>
+                <td><strong>Commands are unresponsive</strong></td>
+                <td>You might be in a stuck conversation. Send <code>/cancel</code> first, then try your command.</td>
+            </tr>
+            <tr>
+                <td><strong>Wrong date on entries</strong></td>
+                <td>Check that <code>TZ</code> in <code>.env</code> is set correctly (e.g., <code>Asia/Kolkata</code> for IST). Restart the bot after changing.</td>
+            </tr>
+            <tr>
+                <td><strong>Reminder not arriving</strong></td>
+                <td>Verify <code>REMINDER_HOUR</code> is correct (0–23, local time). The bot must be running at that time — it won't send if offline.</td>
+            </tr>
+            <tr>
+                <td><strong>Charts look empty</strong></td>
+                <td>Charts show data from the last 7 (or 14) days. If you just started, log a few days of data first.</td>
+            </tr>
+            <tr>
+                <td><strong>Bot dies when machine sleeps</strong></td>
+                <td>Expected behavior with polling mode on a desktop. Restart with <code>python -m bot</code> after waking. For 24/7 uptime, deploy to a server.</td>
+            </tr>
+            <tr>
+                <td><strong>Adding multiple users</strong></td>
+                <td>Add comma-separated user IDs to <code>ALLOWED_USER_IDS</code>. Each user's data is fully isolated.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="box box-info no-break">
+        <div class="box-title">📁 Your Data</div>
+        <p>All data is stored locally in <code>ledger.db</code> (SQLite). Nothing is sent to any external server. You can inspect the database directly with any SQLite browser (e.g., DB Browser for SQLite).</p>
+    </div>
+
+    <hr>
+
+    <div class="footer">
+        <p><strong>Ledger Bot</strong> v1.0 — User Guide</p>
+        <p>Built with Python · python-telegram-bot · SQLite · matplotlib</p>
+        <p>July 2026</p>
+    </div>
+</div>
+
+</body>
+</html>
