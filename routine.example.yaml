@@ -1,0 +1,48 @@
+# Routine anchors — optional motivational nudges.
+#
+# Copy this file to `routine.yaml` and edit it to match your day. When
+# `routine.yaml` is present it REPLACES the single REMINDER_HOUR reminder:
+# put your habit check in the evening anchor (see below). Delete the file to
+# go back to the legacy single reminder. Changes take effect on bot restart.
+
+# Motivational lines. One is chosen per day (rotates so it changes daily);
+# anchors with `quote: true` append it. Add as many as you like.
+quotes:
+  - "Discipline equals freedom."
+  - "You don't have to be extreme, just consistent."
+  - "Small hinges swing big doors."
+  - "Win the morning, win the day."
+  - "The work is the reward."
+
+# Optional context that makes nudges smarter instead of naggy.
+targets:
+  study_min: 60                    # counted "on track" once you log 60 min
+  gym_days: [Mon, Wed, Fri, Sat]   # gym is only nudged on these days; other
+                                   # days say "rest day". Omit to nudge daily.
+
+# Anchor moments. Each fires once per day at its local time (your TZ).
+#   time   : "HH:MM" 24-hour local time
+#   checks : any of [study, gym, diet, habits] — each adds a log-aware line
+#            (empty list = pure motivation)
+#   quote  : true to append the day's motivational line
+anchors:
+  - id: morning
+    time: "08:00"
+    emoji: "☀️"
+    title: "Morning kickoff"
+    checks: []
+    quote: true
+
+  - id: midday
+    time: "14:00"
+    emoji: "🔎"
+    title: "Midday check-in"
+    checks: [study, diet]
+    quote: false
+
+  - id: evening
+    time: "21:00"
+    emoji: "🌙"
+    title: "Evening review"
+    checks: [habits, study, gym, diet]
+    quote: true

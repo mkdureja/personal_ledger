@@ -27,6 +27,11 @@ if not BOT_TOKEN:
 _default_db_path = str(Path(__file__).resolve().parent.parent / "ledger.db")
 DB_PATH: str = os.getenv("DB_PATH", _default_db_path)
 
+# Optional routine file (motivational anchors). When absent, the bot falls
+# back to the single legacy reminder configured by REMINDER_HOUR below.
+_default_routine_path = str(Path(__file__).resolve().parent.parent / "routine.yaml")
+ROUTINE_PATH: str = os.getenv("ROUTINE_PATH", _default_routine_path)
+
 # ---------------------------------------------------------------------------
 # Timezone
 # ---------------------------------------------------------------------------

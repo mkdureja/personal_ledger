@@ -1,4 +1,5 @@
 .env
+routine.yaml
 *.db
 __pycache__/
 *.pyc

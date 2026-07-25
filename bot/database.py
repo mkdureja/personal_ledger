@@ -1377,6 +1377,28 @@ class DatabaseManager:
                     has_incomplete = True
         return total, has_incomplete
 
+    async def get_today_meal_count(self, user_id: int, local_today: date) -> int:
+        """Number of diet entries logged today (local date)."""
+        logs = await self.get_diet_logs(user_id, local_today, local_today)
+        from .config import local_date_from_utc
+
+        return sum(
+            1
+            for row in logs
+            if local_date_from_utc(datetime.fromisoformat(row["logged_at"])) == local_today
+        )
+
+    async def get_today_gym_count(self, user_id: int, local_today: date) -> int:
+        """Number of gym entries logged today (local date)."""
+        logs = await self.get_gym_logs(user_id, local_today, local_today)
+        from .config import local_date_from_utc
+
+        return sum(
+            1
+            for row in logs
+            if local_date_from_utc(datetime.fromisoformat(row["logged_at"])) == local_today
+        )
+
     async def get_users_with_unchecked_habits(
         self, allowed_ids: frozenset[int], local_today: date
     ) -> dict[int, list[str]]:

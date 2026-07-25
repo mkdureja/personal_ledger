@@ -13,6 +13,7 @@ from telegram.ext import ContextTypes
 
 from .common import escape_html
 from ..config import ALLOWED_USER_IDS, today_local
+from ..routine import Anchor, Targets, pick_quote
 
 logger = logging.getLogger(__name__)
 
@@ -51,20 +52,32 @@ def _split_habit_name(name: object, payload_limit: int) -> list[str]:
     return fragments
 
 
-def _build_reminder_messages(habit_names: Sequence[object]) -> list[str]:
-    """Build complete, independently valid HTML messages below Telegram's limit."""
+def _build_reminder_messages(
+    habit_names: Sequence[object],
+    *,
+    first_header: str | None = None,
+    continuation_header: str = _CONTINUATION_HEADER,
+    footer: str = _REMINDER_FOOTER,
+) -> list[str]:
+    """Build complete, independently valid HTML messages below Telegram's limit.
+
+    Headers/footer default to the legacy evening-reminder text. Callers (e.g.
+    routine anchors) may override them so the chunked habit list is branded to
+    match the message that precedes it.
+    """
     if not habit_names:
         return []
 
     count = len(habit_names)
-    first_header = (
-        "⏰ <b>Evening Reminder</b>\n\n"
-        f"You still have {count} habit{'s' if count > 1 else ''} unchecked today:\n\n"
-    )
+    if first_header is None:
+        first_header = (
+            "⏰ <b>Evening Reminder</b>\n\n"
+            f"You still have {count} habit{'s' if count > 1 else ''} unchecked today:\n\n"
+        )
     maximum_overhead = max(
         _telegram_text_units(first_header),
-        _telegram_text_units(_CONTINUATION_HEADER),
-    ) + _telegram_text_units(_REMINDER_FOOTER)
+        _telegram_text_units(continuation_header),
+    ) + _telegram_text_units(footer)
     payload_limit = _REMINDER_MESSAGE_LIMIT - maximum_overhead
 
     fragments = [
@@ -92,9 +105,9 @@ def _build_reminder_messages(habit_names: Sequence[object]) -> list[str]:
 
     messages: list[str] = []
     for index, payload in enumerate(payloads):
-        header = first_header if index == 0 else _CONTINUATION_HEADER
-        footer = _REMINDER_FOOTER if index == len(payloads) - 1 else ""
-        message = f"{header}{payload}{footer}"
+        header = first_header if index == 0 else continuation_header
+        chunk_footer = footer if index == len(payloads) - 1 else ""
+        message = f"{header}{payload}{chunk_footer}"
         if _telegram_text_units(message) > _REMINDER_MESSAGE_LIMIT:
             raise AssertionError("Reminder chunk exceeded the safe Telegram limit")
         messages.append(message)
@@ -145,3 +158,135 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
                     )
                 except Exception:
                     logger.exception("Failed to send completion msg to user %d", user_id)
+
+
+# ---------------------------------------------------------------------------
+# Routine anchors — log-aware nudges scheduled from routine.yaml
+# ---------------------------------------------------------------------------
+async def _study_line(db, user_id: int, today, targets: Targets) -> str:
+    """One-line study status, target-aware when a study target is set."""
+    total = await db.get_today_study_total(user_id, today)
+    target = targets.study_min
+    if target > 0:
+        if total >= target:
+            return f"📖 Study: {total}/{target} min — on track 🔥"
+        if total > 0:
+            return f"📖 Study: {total}/{target} min — {target - total} to go"
+        return f"📖 Study: 0/{target} min — a 25-min block?"
+    if total > 0:
+        return f"📖 Study: {total} min logged 🔥"
+    return "📖 Study: nothing logged yet — a 25-min block?"
+
+
+async def _gym_line(db, user_id: int, today, targets: Targets) -> str:
+    """One-line gym status, quiet-but-kind on configured rest days."""
+    count = await db.get_today_gym_count(user_id, today)
+    if count > 0:
+        return "🏋️ Gym: workout logged 💪"
+    if not targets.is_gym_day(today):
+        return "🏋️ Gym: rest day — recover well 😌"
+    return "🏋️ Gym: no workout logged yet"
+
+
+async def _diet_line(db, user_id: int, today) -> str:
+    """One-line diet status with meal count and known calories."""
+    meals = await db.get_today_meal_count(user_id, today)
+    if meals == 0:
+        return "🍽️ Diet: nothing logged — eat + log 🙂"
+    kcal, incomplete = await db.get_today_calories(user_id, today)
+    line = f"🍽️ Diet: {meals} {'meal' if meals == 1 else 'meals'}"
+    if kcal > 0:
+        line += f", ~{kcal:,} kcal"
+    if incomplete:
+        line += " (some missing calories)"
+    return line
+
+
+async def _habit_status(db, user_id: int, today) -> tuple[str, list[str]]:
+    """Return (summary_line, unchecked_names).
+
+    summary_line is empty when the user has no active habits, so the anchor
+    simply omits the habit line rather than nagging about nothing.
+    """
+    habits = await db.get_active_habits(user_id)
+    if not habits:
+        return "", []
+    checked = await db.get_checked_habits(user_id, today)
+    unchecked = [h["habit_name"] for h in habits if h["id"] not in checked]
+    if not unchecked:
+        return f"✅ Habits: all {len(habits)} done! 🎉", []
+    done = len(habits) - len(unchecked)
+    return f"⬜ Habits: {done}/{len(habits)} done — {len(unchecked)} left", unchecked
+
+
+async def build_anchor_message(
+    anchor: Anchor, db, user_id: int, today, targets: Targets, quotes
+) -> tuple[str, list[str]]:
+    """Compose one anchor's message for a user.
+
+    Returns ``(status_message, unchecked_habit_names)``. The caller sends the
+    status message, then (if any) the detailed unchecked-habit list via the
+    size-safe splitter shared with the legacy reminder.
+    """
+    header = f"{escape_html(anchor.emoji)} <b>{escape_html(anchor.title)}</b>".strip()
+    body_lines: list[str] = []
+    unchecked: list[str] = []
+
+    for check in anchor.checks:
+        if check == "study":
+            body_lines.append(await _study_line(db, user_id, today, targets))
+        elif check == "gym":
+            body_lines.append(await _gym_line(db, user_id, today, targets))
+        elif check == "diet":
+            body_lines.append(await _diet_line(db, user_id, today))
+        elif check == "habits":
+            summary, unchecked = await _habit_status(db, user_id, today)
+            if summary:
+                body_lines.append(summary)
+
+    segments = [header]
+    if body_lines:
+        segments.append("\n".join(body_lines))
+    if anchor.quote:
+        quote = pick_quote(quotes, anchor.id, today)
+        if quote:
+            segments.append(f"<i>{escape_html(quote)}</i>")
+
+    return "\n\n".join(segments), unchecked
+
+
+async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Scheduled routine anchor: send a log-aware nudge to each allowed user."""
+    anchor: Anchor = context.job.data
+    db = context.bot_data["db"]
+    targets: Targets = context.bot_data.get("routine_targets", Targets())
+    quotes = context.bot_data.get("routine_quotes", ())
+    today = today_local()
+
+    brand = f"{escape_html(anchor.emoji)} <b>{escape_html(anchor.title)}</b>".strip()
+    first_header = f"{brand} — habits still to check:\n\n"
+    continuation_header = f"{brand} (continued)\n\n"
+
+    for user_id in ALLOWED_USER_IDS:
+        try:
+            message, unchecked = await build_anchor_message(
+                anchor, db, user_id, today, targets, quotes
+            )
+            await context.bot.send_message(
+                chat_id=user_id, text=message, parse_mode="HTML"
+            )
+            # Follow up with the (possibly long) unchecked-habit list, branded to
+            # match this anchor instead of the legacy "Evening Reminder" text.
+            if unchecked:
+                habit_messages = _build_reminder_messages(
+                    unchecked,
+                    first_header=first_header,
+                    continuation_header=continuation_header,
+                )
+                for text in habit_messages:
+                    await context.bot.send_message(
+                        chat_id=user_id, text=text, parse_mode="HTML"
+                    )
+            logger.info("Sent '%s' anchor to user %d", anchor.id, user_id)
+        except Exception:
+            logger.exception("Failed to send '%s' anchor to user %d", anchor.id, user_id)

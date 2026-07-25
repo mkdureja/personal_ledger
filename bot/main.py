@@ -18,8 +18,9 @@ from telegram.ext import (
     CommandHandler,
 )
 
-from .config import BOT_TOKEN, DB_PATH, REMINDER_TIME, LOG_FORMAT
+from .config import BOT_TOKEN, DB_PATH, REMINDER_TIME, ROUTINE_PATH, LOCAL_TZ, LOG_FORMAT
 from .database import DatabaseManager
+from .routine import load_routine
 from .handlers.common import AUTH_FILTER, cancel_command, error_handler, undo_command
 from .handlers.start import start_command, help_command, menu_command, menu_callback
 from .handlers.study import study_conv_handler
@@ -43,7 +44,7 @@ from .handlers.analytics import (
     streak_command,
     analytics_callback,
 )
-from .handlers.reminders import daily_reminder
+from .handlers.reminders import anchor_job, daily_reminder
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -67,13 +68,31 @@ async def post_init(application) -> None:
     application.bot_data["db"] = db
     logger.info("Database ready")
 
-    # Schedule daily reminder
-    application.job_queue.run_daily(
-        daily_reminder,
-        time=REMINDER_TIME,
-        name="daily_habit_reminder",
-    )
-    logger.info("Daily reminder scheduled at %s", REMINDER_TIME)
+    # Schedule routine anchors when a routine file is present; otherwise fall
+    # back to the single legacy habit reminder (backward compatible).
+    routine = load_routine(ROUTINE_PATH)
+    if routine is not None:
+        application.bot_data["routine_targets"] = routine.targets
+        application.bot_data["routine_quotes"] = routine.quotes
+        for anchor in routine.anchors:
+            application.job_queue.run_daily(
+                anchor_job,
+                time=anchor.at.replace(tzinfo=LOCAL_TZ),
+                name=f"anchor_{anchor.id}",
+                data=anchor,
+            )
+        logger.info(
+            "Scheduled %d routine anchor(s): %s",
+            len(routine.anchors),
+            ", ".join(f"{a.id}@{a.at:%H:%M}" for a in routine.anchors),
+        )
+    else:
+        application.job_queue.run_daily(
+            daily_reminder,
+            time=REMINDER_TIME,
+            name="daily_habit_reminder",
+        )
+        logger.info("Daily reminder scheduled at %s (no routine file)", REMINDER_TIME)
 
 
 async def post_shutdown(application) -> None:

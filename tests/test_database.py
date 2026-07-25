@@ -587,40 +587,38 @@ class TestUndo:
     async def test_undo_timestamp_precision_differences(
         self, db_with_user, user_id
     ):
-        """String sorting of different precision timestamps can be wrong, datetime parsing fixes it."""
-        # SQLite CURRENT_TIMESTAMP uses "YYYY-MM-DD HH:MM:SS"
-        # Programmatic inserts use "YYYY-MM-DD HH:MM:SS.ffffff"
-        # "2026-07-19 12:00:00.999999" > "2026-07-19 12:00:00" is True
-        # "2026-07-19 12:00:00.000001" > "2026-07-19 12:00:00" is True
-        
-        # But wait! If we have:
-        # A: "2026-07-19 12:00:01"
-        # B: "2026-07-19 12:00:00.999999"
-        # String comparison: "2026-07-19 12:00:01" > "2026-07-19 12:00:00.999999" is True
-        # So string comparison is actually fine for ISO8601 if left-aligned.
-        # But wait, BUG-1 states there's an issue. 
-        # "2026-07-19 12:00:00" and "2026-07-19 12:00:00.999999"
-        # Actually, comparing datetimes is just safer. Let's make sure it picks the latest datetime.
-        
-        # Create an entry exactly on the second
+        """Undo must compare timestamps as datetimes, not strings.
+
+        SQLite CURRENT_TIMESTAMP stores second precision ("… 12:00:01") while
+        programmatic inserts store microseconds ("… 12:00:00.999999"). Naive
+        string sorting mixes the two up; parsing to datetime orders them
+        correctly. Timestamps are anchored to *now* so they stay inside undo's
+        24-hour window regardless of when the suite runs.
+        """
+        base = datetime.now(timezone.utc).replace(microsecond=0)
+        exact_second = base.strftime("%Y-%m-%d %H:%M:%S")  # no microseconds
+        just_before = (base - timedelta(microseconds=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
+        just_after = (base + timedelta(microseconds=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        # Entry exactly on the second (second precision, like CURRENT_TIMESTAMP)
         await db_with_user.conn.execute(
             "INSERT INTO study_logs "
             "(user_id, subject, duration_min, logged_at) VALUES (?, ?, ?, ?)",
-            (user_id, "Exact Second", 10, "2026-07-19 12:00:01"),
+            (user_id, "Exact Second", 10, exact_second),
         )
-        
-        # Create an entry just before it, but with microseconds
+
+        # Entry just before it, with microseconds
         await db_with_user.conn.execute(
             "INSERT INTO gym_logs "
             "(user_id, exercise, sets, reps, logged_at) VALUES (?, ?, ?, ?, ?)",
-            (user_id, "Microseconds", 3, 5, "2026-07-19 12:00:00.999999"),
+            (user_id, "Microseconds", 3, 5, just_before),
         )
-        
-        # Create an entry just after it, with microseconds
+
+        # Entry just after it, with microseconds
         await db_with_user.conn.execute(
             "INSERT INTO diet_logs "
             "(user_id, meal_type, food_items, logged_at) VALUES (?, ?, ?, ?)",
-            (user_id, "snack", "After", "2026-07-19 12:00:01.000001"),
+            (user_id, "snack", "After", just_after),
         )
         await db_with_user.conn.commit()
         

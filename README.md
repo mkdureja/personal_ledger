@@ -15,6 +15,7 @@ A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, and **Habit
 - 📊 Charts — Study hours, gym volume, calorie intake, habit heatmaps
 - 🔥 Streaks — Consecutive-day tracking for habits
 - ⏰ Reminders — Daily evening nudge for unchecked habits
+- 🌙 Routine — Optional log-aware anchor nudges + motivational quotes ([details](#routine--motivation))
 - ↩️ Undo — Delete last log entry (within 24h)
 - ⚡ Shortcuts — Quick-log via inline args (e.g., `/study maths 45`)
 
@@ -146,6 +147,34 @@ millilitres only when its recorded yield uses that unit dimension.
 | `/menu` | Interactive main menu |
 | `/help` | Command reference |
 
+## Routine & motivation
+
+Drop a `routine.yaml` in the project root (copy `routine.example.yaml`) to turn
+the bot from a passive logger into a daily feedback loop. Each **anchor** fires
+once per day at a fixed local time and can inspect that day's logs — celebrating
+what's done, nudging what isn't — and optionally append a rotating motivational
+quote.
+
+```yaml
+targets:
+  study_min: 60
+  gym_days: [Mon, Wed, Fri, Sat]
+anchors:
+  - { id: morning, time: "08:00", emoji: "☀️", title: "Morning kickoff", checks: [], quote: true }
+  - { id: evening, time: "21:00", emoji: "🌙", title: "Evening review", checks: [habits, study, gym, diet], quote: true }
+quotes:
+  - "Discipline equals freedom."
+```
+
+- `checks` accepts any of `study`, `gym`, `diet`, `habits`; an empty list is a
+  pure motivational push.
+- `targets.study_min` reports study as on-track vs. behind; `targets.gym_days`
+  keeps the gym line kind ("rest day") on non-gym days.
+- When `routine.yaml` is present it **replaces** the single `REMINDER_HOUR`
+  reminder — include `habits` in your evening anchor to keep the habit nudge.
+- Missing file → legacy single reminder. Malformed file → the bot refuses to
+  start with a clear error. Edits apply on restart.
+
 ## Architecture
 
 ```
@@ -156,6 +185,7 @@ bot/
 ├── nutrition.py     # Exact unit parsing and nutrition scaling
 ├── keyboards.py     # InlineKeyboard builders
 ├── charts.py        # matplotlib chart generation
+├── routine.py       # routine.yaml loader/validator + quote rotation
 └── handlers/
     ├── common.py    # Auth, errors, validators, /cancel, /undo
     ├── start.py     # /start, /help, /menu
@@ -165,7 +195,7 @@ bot/
     ├── catalog.py   # Saved food and recipe commands
     ├── habits.py    # Habit setup + check-off
     ├── analytics.py # Summaries, charts, streaks
-    └── reminders.py # Daily JobQueue reminder
+    └── reminders.py # Daily reminder + routine anchor jobs
 ```
 
 ## Key Design Decisions
@@ -178,6 +208,7 @@ bot/
 - **Conversation safety**: `/cancel` fallback, 5-min timeout, input validation with re-prompt
 - **Bounded Telegram UI**: Habit checklists paginate legacy data and reminders split safely across messages
 - **Habit setup limit**: New setups support up to 49 active habits, matching Telegram's keyboard limits
+- **Routine as data**: Anchors live in an optional `routine.yaml` validated at startup; a missing file falls back to the legacy reminder, so existing installs are unaffected
 
 ## Testing
 
@@ -185,4 +216,5 @@ bot/
 python -m pytest tests/ -v
 ```
 
-Tests cover startup/job scheduling, schema upgrades and constraints, CRUD and undo ordering, timezone boundaries, streaks, authorization, callback expiry/ownership, guided-flow isolation, input bounds, catalog ownership and unit conversion, recipe scaling and snapshots, legacy habit and diet-macro migrations, analytics aggregation/routing, and reminder message limits.
+Tests cover startup/job scheduling, schema upgrades and constraints, CRUD and undo ordering, timezone boundaries, streaks, authorization, callback expiry/ownership, guided-flow isolation, input bounds, catalog ownership and unit conversion, recipe scaling and snapshots, legacy habit and diet-macro migrations, analytics aggregation/routing, reminder message limits, routine config
+validation, and log-aware anchor composition.

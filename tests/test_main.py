@@ -12,6 +12,8 @@ from bot import main as main_module
 async def test_post_init_sets_up_database_and_reminder(tmp_path, monkeypatch):
     """A requirements-only install must provide a working JobQueue."""
     monkeypatch.setattr(main_module, "DB_PATH", str(tmp_path / "ledger-test.db"))
+    # Isolate from any real routine.yaml so the legacy reminder path is tested.
+    monkeypatch.setattr(main_module, "ROUTINE_PATH", str(tmp_path / "no-routine.yaml"))
     application = ApplicationBuilder().token("123456:TEST_TOKEN").build()
 
     assert application.job_queue is not None
@@ -41,6 +43,7 @@ async def test_post_shutdown_safe_without_init():
 async def test_post_init_is_idempotent(tmp_path, monkeypatch):
     """Calling post_init twice should not create duplicate connections or jobs."""
     monkeypatch.setattr(main_module, "DB_PATH", str(tmp_path / "ledger-test.db"))
+    monkeypatch.setattr(main_module, "ROUTINE_PATH", str(tmp_path / "no-routine.yaml"))
     application = ApplicationBuilder().token("123456:TEST_TOKEN").build()
 
     await main_module.post_init(application)
