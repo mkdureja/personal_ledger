@@ -563,7 +563,7 @@
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="cover">
     <div class="cover-icon">📒</div>
-    <div class="cover-version">v1.0</div>
+    <div class="cover-version">v1.1</div>
     <h1>Ledger</h1>
     <p class="subtitle">Personal Logging Telegram Bot — User Guide</p>
 
@@ -604,7 +604,7 @@
             <li><a href="#catalog">Saved Foods &amp; Recipes</a></li>
             <li><a href="#habits">Tracking Habits</a></li>
             <li><a href="#analytics">Analytics &amp; Charts</a></li>
-            <li><a href="#reminders">Daily Reminders</a></li>
+            <li><a href="#reminders">Reminders &amp; Routine</a></li>
             <li><a href="#utility">Utility Commands</a></li>
             <li><a href="#quick-ref">Quick Reference Card</a></li>
             <li><a href="#tips">Tips &amp; Best Practices</a></li>
@@ -661,8 +661,8 @@ DB_PATH=ledger.db</code></pre>
     </div>
 
     <div class="box box-info no-break">
-        <div class="box-title">💡 Security Note</div>
-        <p>Only user IDs listed in <code>ALLOWED_USER_IDS</code> can interact with your bot. Everyone else is silently ignored — they won't even know the bot is active.</p>
+        <div class="box-title">💡 Security &amp; Privacy</div>
+        <p>Only user IDs listed in <code>ALLOWED_USER_IDS</code> can interact with your bot, and only in a <strong>private (direct) chat</strong> — commands sent in a group are ignored, so your personal data never surfaces to other members. Everyone else is silently ignored.</p>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════ -->
@@ -747,6 +747,11 @@ DB_PATH=ledger.db</code></pre>
             <tr><td><code>/study DSA 90 linked lists and trees</code></td><td>90 min of DSA, with notes</td></tr>
         </tbody>
     </table>
+
+    <div class="box box-warning no-break">
+        <div class="box-title">🔢 One Clear Number</div>
+        <p>In a quick log the duration must be unambiguous. A single number works anywhere — <code>/study maths 45 revised trig</code>. If your notes <em>also</em> contain a number, mark the duration with <strong>m</strong> — <code>/study physics 60m reviewed chapter 2</code> — otherwise the bot asks you to clarify instead of silently guessing the wrong one.</p>
+    </div>
 
     <h3>Guided Log</h3>
     <p>Send bare <code>/study</code> and the bot walks you through three prompts:</p>
@@ -1010,7 +1015,7 @@ DB_PATH=ledger.db</code></pre>
 
     <div class="box box-info no-break">
         <div class="box-title">💡 Re-adding Habits</div>
-        <p>If you remove a habit and later add one with the same name, the bot <strong>reactivates</strong> the original instead of creating a duplicate. Your historical data is preserved.</p>
+        <p>If you remove a habit and later add one with the same name — <em>case and spacing don't matter</em>, so "read" matches "Read" — the bot <strong>reactivates</strong> the original instead of creating a duplicate. Your streak and history are preserved.</p>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════ -->
@@ -1107,9 +1112,12 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 8. REMINDERS                                            -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="reminders">8. Daily Reminders</h2>
+    <h2 id="reminders">8. Reminders &amp; Routine</h2>
 
-    <p>Every evening (default: <strong>8:00 PM</strong> in your configured timezone), the bot sends you a reminder listing any unchecked habits:</p>
+    <p>Ledger can nudge you, not just record you. Out of the box it sends one evening habit reminder; add an optional <code>routine.yaml</code> and it becomes a lightweight daily coach that reacts to what you have — and haven't — logged.</p>
+
+    <h3>The Evening Habit Reminder</h3>
+    <p>By default, every evening (<strong>8:00 PM</strong> in your configured timezone) the bot lists any unchecked habits:</p>
 
     <div class="chat no-break">
         <div class="chat-header">
@@ -1130,8 +1138,76 @@ DB_PATH=ledger.db</code></pre>
     <p>If all habits are done, you get a congratulations message instead: 🎉 <strong>All habits done today!</strong></p>
 
     <div class="box box-info no-break">
-        <div class="box-title">💡 Customizing Reminder Time</div>
-        <p>Change <code>REMINDER_HOUR</code> in your <code>.env</code> file. For example, <code>REMINDER_HOUR=21</code> for 9 PM. The time is in your configured timezone (default: IST).</p>
+        <div class="box-title">💡 Customizing the Time</div>
+        <p>Change <code>REMINDER_HOUR</code> in <code>.env</code> (0–23, local time) — e.g. <code>REMINDER_HOUR=21</code> for 9 PM. <strong>Note:</strong> if you add a routine (below), it replaces this single reminder, so put your habit check in the evening anchor instead.</p>
+    </div>
+
+    <h3>Routine Anchors <span class="badge badge-optional">Optional</span></h3>
+    <p>A routine turns the bot into a feedback loop. You define a few <strong>anchor</strong> moments in a <code>routine.yaml</code> file; at each one the bot checks that day's logs — celebrating what's done, nudging what isn't — and can add a rotating motivational quote. Copy <code>routine.example.yaml</code> to <code>routine.yaml</code>, edit it, and restart the bot.</p>
+
+    <pre><code><span class="cmd-opt"># routine.yaml</span>
+<span class="cmd-prefix">quotes:</span>
+  - "Discipline equals freedom."
+  - "You don't have to be extreme, just consistent."
+
+<span class="cmd-prefix">targets:</span>
+  study_min: <span class="cmd-arg">60</span>
+  gym_days: <span class="cmd-arg">[Mon, Wed, Fri, Sat]</span>
+
+<span class="cmd-prefix">anchors:</span>
+  - { id: morning, time: <span class="cmd-arg">"08:00"</span>, emoji: "☀️", title: "Morning kickoff", checks: [], quote: true }
+  - { id: midday,  time: <span class="cmd-arg">"14:00"</span>, emoji: "🔎", title: "Midday check-in", checks: [study, diet], quote: false }
+  - { id: evening, time: <span class="cmd-arg">"21:00"</span>, emoji: "🌙", title: "Evening review", checks: [habits, study, gym, diet], quote: true }</code></pre>
+
+    <table class="no-break">
+        <thead><tr><th>Field</th><th>What it does</th></tr></thead>
+        <tbody>
+            <tr><td><code>time</code></td><td>24-hour local time the anchor fires (once per day)</td></tr>
+            <tr><td><code>checks</code></td><td>Any of <code>study</code>, <code>gym</code>, <code>diet</code>, <code>habits</code> — each adds a log-aware line. An empty list is a pure motivational push.</td></tr>
+            <tr><td><code>quote</code></td><td><code>true</code> appends the day's rotating line from <code>quotes</code></td></tr>
+            <tr><td><code>targets.study_min</code></td><td>Reports study as on-track vs. behind against this daily goal</td></tr>
+            <tr><td><code>targets.gym_days</code></td><td>Only nudges the gym on these days; other days say "rest day"</td></tr>
+        </tbody>
+    </table>
+
+    <p>A pure-motivation morning anchor, and a log-aware evening review that reacts to your day:</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ☀️ <strong>Morning kickoff</strong><br><br>
+                <em>Discipline equals freedom.</em>
+            </div>
+        </div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                🌙 <strong>Evening review</strong><br><br>
+                ⬜ Habits: 1/3 done — 2 left<br>
+                📖 Study: 20/60 min — 40 to go<br>
+                🏋️ Gym: rest day — recover well 😌<br>
+                🍽️ Diet: nothing logged — eat + log 🙂<br><br>
+                <em>You don't have to be extreme, just consistent.</em>
+            </div>
+        </div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                🌙 <strong>Evening review</strong> — habits still to check:<br><br>
+                ⬜ Read 30 min<br>
+                ⬜ No Sugar<br><br>
+                Tap /habits to check them off!
+            </div>
+        </div>
+    </div>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Good to Know</div>
+        <p>• A routine <strong>replaces</strong> the single 8 PM reminder — include <code>habits</code> in your evening anchor to keep the habit nudge (it arrives as a second, tappable message, shown above).</p>
+        <p>• No <code>routine.yaml</code>? The default evening reminder is used instead.</p>
+        <p>• If the file has a mistake, the bot refuses to start and names the line to fix.</p>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════ -->
@@ -1139,8 +1215,8 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <h2 id="utility" class="page-break">9. Utility Commands</h2>
 
-    <h3>/undo — Delete Last Entry</h3>
-    <p>Made a mistake? Send <code>/undo</code> to delete your most recent log entry (study, gym, or diet). Only works within <strong>24 hours</strong> of the entry.</p>
+    <h3>/undo — Undo Last Entry</h3>
+    <p>Made a mistake? Send <code>/undo</code> to review your most recent log entry (study, gym, or diet). The bot shows it and waits for you to confirm — <strong>nothing is deleted until you tap “Yes, undo.”</strong> Only works within <strong>24 hours</strong> of the entry.</p>
 
     <div class="chat no-break">
         <div class="chat-header">
@@ -1150,18 +1226,34 @@ DB_PATH=ledger.db</code></pre>
         <div class="msg msg-user"><div class="msg-bubble">/undo</div></div>
         <div class="msg msg-bot">
             <div class="msg-bubble">
-                ↩️ <strong>Undone:</strong> 📖 Study<br>
+                ↩️ <strong>Undo this entry?</strong><br><br>
+                📖 <strong>Study</strong><br>
+                📖 Physics — 30 min
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn">✅ Yes, undo</span>
+                        <span class="kb-btn">✖️ Keep</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">(taps ✅ Yes, undo)</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ↩️ <strong>Undone</strong><br><br>
+                📖 <strong>Study</strong><br>
                 📖 Physics — 30 min
             </div>
         </div>
     </div>
 
     <div class="box box-warning no-break">
-        <div class="box-title">⚠️ Undo Limitations</div>
-        <p>• <code>/undo</code> works on study, gym, and diet logs only — not habits (use the Undo ↩ button on the habit checklist instead)</p>
-        <p>• Only the <strong>single most recent</strong> entry is deleted</p>
-        <p>• Entries older than 24 hours cannot be undone</p>
-        <p>• Finish or cancel a guided log before using <code>/undo</code></p>
+        <div class="box-title">⚠️ How Undo Works</div>
+        <p>• Preview first — <code>/undo</code> deletes only after you tap <strong>Yes, undo</strong>; tap <strong>Keep</strong> to dismiss.</p>
+        <p>• It removes that <strong>exact</strong> previewed entry, so tapping again (or after a network hiccup) is safe — it will never delete a newer entry by mistake.</p>
+        <p>• Works on study, gym, and diet logs only — not habits (use the Undo ↩ button on the habit checklist instead).</p>
+        <p>• Entries older than 24 hours cannot be undone.</p>
+        <p>• Finish or cancel a guided log before using <code>/undo</code>.</p>
     </div>
 
     <h3>/cancel — Abort Current Conversation</h3>
@@ -1250,7 +1342,7 @@ DB_PATH=ledger.db</code></pre>
     <table>
         <thead><tr><th>Command</th><th>Action</th></tr></thead>
         <tbody>
-            <tr><td><code>/undo</code></td><td>Delete last log entry (within 24h)</td></tr>
+            <tr><td><code>/undo</code></td><td>Undo last log — preview, then confirm (within 24h)</td></tr>
             <tr><td><code>/cancel</code></td><td>Cancel current conversation</td></tr>
             <tr><td><code>/menu</code></td><td>Open main menu</td></tr>
             <tr><td><code>/help</code></td><td>Show all commands</td></tr>
@@ -1320,6 +1412,10 @@ DB_PATH=ledger.db</code></pre>
                 <td>Check that the bot process is running (<code>python -m bot</code>). Check the terminal for errors. Verify your user ID is in <code>ALLOWED_USER_IDS</code>.</td>
             </tr>
             <tr>
+                <td><strong>Bot ignores me in a group</strong></td>
+                <td>By design — Ledger only responds in a <strong>private (direct) chat</strong>, so personal data can't leak into a group. Message the bot directly instead.</td>
+            </tr>
+            <tr>
                 <td><strong>"Something went wrong" error</strong></td>
                 <td>Check the terminal logs for the full traceback. Try <code>/cancel</code> to clear any stuck conversation state, then retry.</td>
             </tr>
@@ -1333,7 +1429,11 @@ DB_PATH=ledger.db</code></pre>
             </tr>
             <tr>
                 <td><strong>Reminder not arriving</strong></td>
-                <td>Verify <code>REMINDER_HOUR</code> is correct (0–23, local time). The bot must be running at that time — it won't send if offline.</td>
+                <td>Verify <code>REMINDER_HOUR</code> is correct (0–23, local time). The bot must be running at that time — it won't send if offline. A transient network blip is retried automatically.</td>
+            </tr>
+            <tr>
+                <td><strong>Routine not firing / bot won't start</strong></td>
+                <td>If <code>routine.yaml</code> exists it replaces the single reminder. On a mistake the bot refuses to start and names the bad line — fix it and restart. Delete the file to fall back to the 8 PM reminder.</td>
             </tr>
             <tr>
                 <td><strong>Charts look empty</strong></td>
@@ -1358,7 +1458,7 @@ DB_PATH=ledger.db</code></pre>
     <hr>
 
     <div class="footer">
-        <p><strong>Ledger Bot</strong> v1.0 — User Guide</p>
+        <p><strong>Ledger Bot</strong> v1.1 — User Guide</p>
         <p>Built with Python · python-telegram-bot · SQLite · matplotlib</p>
         <p>July 2026</p>
     </div>
