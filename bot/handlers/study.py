@@ -8,6 +8,7 @@ Guided:   /study → SUBJECT → DURATION → NOTES → done
 from __future__ import annotations
 
 import logging
+import re
 
 from telegram import Update
 from telegram.error import TelegramError
@@ -41,6 +42,42 @@ SUBJECT, DURATION, NOTES = range(3)
 MAX_STUDY_MINUTES = 24 * 60
 MAX_SUBJECT_LENGTH = 100
 MAX_NOTES_LENGTH = 500
+
+# Explicit duration marker, e.g. "45m" / "45min" / "45minutes".
+_DURATION_MARKER = re.compile(r"^(\d+)(?:m|min|mins|minute|minutes)$", re.IGNORECASE)
+# Sentinel returned when a shortcut has two or more plausible durations.
+_AMBIGUOUS = object()
+
+
+def _parse_study_shortcut(args: list[str]):
+    """Resolve the duration in a /study shortcut unambiguously.
+
+    Only tokens at index >= 1 may be the duration, so the subject is never
+    empty. An explicit ``<n>m`` marker always wins; otherwise a single bare
+    integer is accepted. Returns ``(duration_index, minutes)``, the
+    ``_AMBIGUOUS`` sentinel when more than one candidate exists, or ``None``
+    when there is no duration (fall back to the guided flow).
+    """
+    marker_hits = [
+        (i, int(m.group(1)))
+        for i in range(1, len(args))
+        if (m := _DURATION_MARKER.match(args[i]))
+    ]
+    if len(marker_hits) > 1:
+        return _AMBIGUOUS
+    if len(marker_hits) == 1:
+        return marker_hits[0]
+
+    bare_ints = [
+        (i, int(args[i]))
+        for i in range(1, len(args))
+        if args[i].isdigit() and int(args[i]) > 0
+    ]
+    if len(bare_ints) > 1:
+        return _AMBIGUOUS
+    if len(bare_ints) == 1:
+        return bare_ints[0]
+    return None
 
 
 def _confirmation(subject: str, duration: int, notes: str | None = None) -> str:
@@ -84,23 +121,28 @@ async def study_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     args = context.args or []
 
     # Shortcut: /study <subject words...> <minutes> [notes...]
-    # The duration is the first token from the end that looks like a positive
-    # integer.  Everything before it is the subject; everything after is notes.
+    # The duration must be unambiguous — a single bare integer, or any token
+    # explicitly marked with "m" (e.g. 45m). Two plausible numbers are rejected
+    # with a hint rather than silently guessed, which used to corrupt notes
+    # ending in a number (e.g. "…chapter 2").
     if len(args) >= 2:
-        duration_index: int | None = None
-        for idx in range(len(args) - 1, 0, -1):
-            candidate, err = parse_int(
-                args[idx], "Duration", max_value=MAX_STUDY_MINUTES
+        parsed = _parse_study_shortcut(args)
+        if parsed is _AMBIGUOUS:
+            await reply_html(
+                update.message,
+                "🤔 I can't tell which number is the duration. Mark it with "
+                "<b>m</b> — e.g. <code>/study physics 60m reviewed chapter 2</code>.",
             )
-            if err is None:
-                duration_index = idx
-                break
-        if duration_index is None:
-            # Fall through to guided flow when no valid duration is found.
-            pass
-        else:
+            return ConversationHandler.END
+        if parsed is not None:
+            duration_index, duration = parsed
+            if not 0 < duration <= MAX_STUDY_MINUTES:
+                await update.message.reply_text(
+                    f"❌ Duration must be between 1 and {MAX_STUDY_MINUTES} minutes."
+                )
+                return ConversationHandler.END
+
             subject = " ".join(args[:duration_index])
-            duration = candidate
             if len(subject) > MAX_SUBJECT_LENGTH:
                 await update.message.reply_text(
                     f"❌ Subject too long (max {MAX_SUBJECT_LENGTH} characters)."
