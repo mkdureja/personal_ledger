@@ -6,9 +6,11 @@ Sends an evening message listing unchecked habits.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError
 from telegram.ext import ContextTypes
 
 from .common import escape_html
@@ -16,6 +18,45 @@ from ..config import ALLOWED_USER_IDS, today_local
 from ..routine import Anchor, Targets, pick_quote
 
 logger = logging.getLogger(__name__)
+
+# Bounded delivery retry so a brief Telegram outage at the scheduled minute
+# doesn't silently drop the day's nudge.
+_MAX_SEND_ATTEMPTS = 3
+_MAX_RETRY_AFTER_SECONDS = 30.0
+
+
+async def _send_with_retry(bot, chat_id: int, text: str) -> bool:
+    """Send one HTML message, retrying transient failures with bounded backoff.
+
+    Honors Telegram's ``RetryAfter`` and retries a couple of ``NetworkError``s.
+    Returns True on success, False if every attempt fails or the error is
+    permanent (e.g. a bad request), which the caller uses to stop sending this
+    recipient's remaining chunks.
+    """
+    for attempt in range(1, _MAX_SEND_ATTEMPTS + 1):
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            return True
+        except RetryAfter as exc:
+            delay = min(
+                float(getattr(exc, "retry_after", 1)) + 0.5, _MAX_RETRY_AFTER_SECONDS
+            )
+        except (BadRequest, Forbidden):
+            # Permanent (bad chat, blocked bot, malformed message) — do not retry.
+            # Note: in PTB these subclass NetworkError, so catch them first.
+            logger.exception("Permanent send failure to chat %s", chat_id)
+            return False
+        except NetworkError:
+            delay = min(2.0**attempt, 5.0)
+        except TelegramError:
+            logger.exception("Permanent send failure to chat %s", chat_id)
+            return False
+        if attempt < _MAX_SEND_ATTEMPTS:
+            await asyncio.sleep(delay)
+    logger.warning(
+        "Gave up sending to chat %s after %d attempts", chat_id, _MAX_SEND_ATTEMPTS
+    )
+    return False
 
 # Keep a little headroom below Telegram's documented 4096-character ceiling.
 # Counting UTF-16 code units is conservative for emoji-heavy names and matches
@@ -128,21 +169,18 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         messages = _build_reminder_messages(habit_names)
 
-        try:
-            for text in messages:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=text,
-                    parse_mode="HTML",
-                )
-            logger.info(
-                "Sent reminder to user %d: %d unchecked across %d message(s)",
-                user_id,
-                len(habit_names),
-                len(messages),
-            )
-        except Exception:
-            logger.exception("Failed to send reminder to user %d", user_id)
+        delivered = 0
+        for text in messages:
+            if not await _send_with_retry(context.bot, user_id, text):
+                break  # stop this user's remaining chunks on a hard failure
+            delivered += 1
+        logger.info(
+            "Sent reminder to user %d: %d unchecked across %d/%d message(s)",
+            user_id,
+            len(habit_names),
+            delivered,
+            len(messages),
+        )
 
     # Also send a "well done" message to users who completed all habits
     for user_id in ALLOWED_USER_IDS:
@@ -150,14 +188,9 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
             # Check if they have any habits at all
             habits = await db.get_active_habits(user_id)
             if habits:
-                try:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text="🎉 <b>All habits done today!</b> Great job! 💪",
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    logger.exception("Failed to send completion msg to user %d", user_id)
+                await _send_with_retry(
+                    context.bot, user_id, "🎉 <b>All habits done today!</b> Great job! 💪"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -272,21 +305,22 @@ async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             message, unchecked = await build_anchor_message(
                 anchor, db, user_id, today, targets, quotes
             )
-            await context.bot.send_message(
-                chat_id=user_id, text=message, parse_mode="HTML"
-            )
-            # Follow up with the (possibly long) unchecked-habit list, branded to
-            # match this anchor instead of the legacy "Evening Reminder" text.
-            if unchecked:
-                habit_messages = _build_reminder_messages(
-                    unchecked,
-                    first_header=first_header,
-                    continuation_header=continuation_header,
-                )
-                for text in habit_messages:
-                    await context.bot.send_message(
-                        chat_id=user_id, text=text, parse_mode="HTML"
-                    )
-            logger.info("Sent '%s' anchor to user %d", anchor.id, user_id)
         except Exception:
-            logger.exception("Failed to send '%s' anchor to user %d", anchor.id, user_id)
+            logger.exception("Failed to build '%s' anchor for user %d", anchor.id, user_id)
+            continue
+
+        if not await _send_with_retry(context.bot, user_id, message):
+            continue  # hard failure — skip the follow-up for this user
+
+        # Follow up with the (possibly long) unchecked-habit list, branded to
+        # match this anchor instead of the legacy "Evening Reminder" text.
+        if unchecked:
+            habit_messages = _build_reminder_messages(
+                unchecked,
+                first_header=first_header,
+                continuation_header=continuation_header,
+            )
+            for text in habit_messages:
+                if not await _send_with_retry(context.bot, user_id, text):
+                    break
+        logger.info("Sent '%s' anchor to user %d", anchor.id, user_id)

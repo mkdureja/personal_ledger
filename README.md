@@ -72,11 +72,16 @@ python -m bot
 | Command | Description |
 |---|---|
 | `/study` | Guided study log |
-| `/study <subject> <min> [notes]` | Quick study log |
+| `/study <subject> <min> [notes]` | Quick study log (see note) |
 | `/gym` | Guided workout log (multi-exercise) |
 | `/gym <exercise> <sets> <reps> [kg]` | Quick single exercise |
 | `/diet` | Guided meal log |
 | `/diet <meal> <food> [calories] [p=<g> c=<g> f=<g>]` | Quick meal log |
+
+The study duration must be unambiguous: a single bare number
+(`/study maths 45 revised trig`), or — when notes also contain a number — a
+token marked with `m`, e.g. `/study physics 60m reviewed chapter 2`. Two bare
+numbers are rejected with a hint rather than guessed.
 
 Diet macros are optional decimal grams. For example,
 `/diet lunch dal+rice 650 p=25 c=80 f=15` records 25 g protein,
@@ -142,7 +147,7 @@ millilitres only when its recorded yield uses that unit dimension.
 ### Utility
 | Command | Description |
 |---|---|
-| `/undo` | Delete last log (within 24h) |
+| `/undo` | Undo last log — preview, then confirm (within 24h) |
 | `/cancel` | Cancel current conversation |
 | `/menu` | Interactive main menu |
 | `/help` | Command reference |
@@ -201,9 +206,12 @@ bot/
 ## Key Design Decisions
 
 - **IST day-bucketing**: Timestamps stored in UTC, all day math in `Asia/Kolkata` via `zoneinfo`
-- **Access control**: Only `ALLOWED_USER_IDS` can interact; everyone else is silently ignored
-- **SQLite hardening**: WAL mode, foreign keys ON, busy_timeout, composite indexes
-- **Habit semantics**: Row presence = done (no "completed" column); streaks = consecutive days with rows
+- **Access control**: Only `ALLOWED_USER_IDS` in **private chats** can interact; group and unauthorized use are silently ignored
+- **Secret hygiene**: HTTPX request logging (which embeds the bot token) is silenced and the token is redacted from any remaining log output
+- **SQLite hardening**: WAL mode, foreign keys ON, busy_timeout, composite indexes; reads and writes share one connection lock so a read never sees an uncommitted, later-rolled-back write
+- **Reversible undo**: `/undo` previews the exact entry and deletes only on confirm, via an idempotent delete-by-id — a failed retry can't delete a newer entry
+- **Durable delivery**: Pending updates survive restarts (`drop_pending_updates=False`) and scheduled nudges retry transient send failures with bounded backoff
+- **Habit semantics**: Row presence = done (no "completed" column); streaks = consecutive days with rows, scanned in pages with no fixed cap; case/format-insensitive `name_key` keeps a renamed-case habit's streak intact
 - **Per-exercise persistence**: Gym loop saves each exercise immediately; abandoning loses only the current one
 - **Conversation safety**: `/cancel` fallback, 5-min timeout, input validation with re-prompt
 - **Bounded Telegram UI**: Habit checklists paginate legacy data and reminders split safely across messages
@@ -213,6 +221,7 @@ bot/
 ## Testing
 
 ```bash
+pip install -r requirements-dev.txt   # runtime + pytest
 python -m pytest tests/ -v
 ```
 

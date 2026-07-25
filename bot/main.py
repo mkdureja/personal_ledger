@@ -219,8 +219,10 @@ def main() -> None:
     application.add_error_handler(error_handler)
 
     # --- Start polling ---
+    # Preserve updates accumulated during downtime so a study/gym/meal command
+    # sent while the process was restarting is not silently dropped.
     logger.info("Starting Ledger bot in polling mode...")
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling(drop_pending_updates=False)
 
 
 if __name__ == "__main__":

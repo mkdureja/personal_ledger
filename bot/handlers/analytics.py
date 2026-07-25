@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from telegram import Message, Update
 from telegram.error import TelegramError
@@ -31,6 +31,26 @@ _MACRO_FIELDS = (
     ("carbs_g", "C"),
     ("fat_g", "F"),
 )
+
+
+def _eligible_habit_days(habit: dict, week_start: date, today: date) -> int:
+    """Days in [week_start, today] on or after the habit's creation date (max 7).
+
+    A habit created mid-week is only accountable for the days it has existed, so
+    a habit made and done today reads as 1/1 rather than 1/7.
+    """
+    start = week_start
+    created = habit.get("created_at")
+    if created:
+        try:
+            created_date = local_date_from_utc(datetime.fromisoformat(str(created)))
+        except (ValueError, TypeError):
+            created_date = None
+        if created_date is not None and created_date > start:
+            start = created_date
+    if start > today:
+        return 0
+    return (today - start).days + 1
 
 
 def _safe_name(value: object) -> str:
@@ -341,7 +361,10 @@ async def _weekly_summary(message: Message, db, user_id: int) -> None:
         total_done = sum(
             1 for row in habit_logs if row["habit_id"] in active_ids
         )
-        total_possible = len(active_ids) * 7
+        # Count only the days each habit has actually existed this week.
+        total_possible = sum(
+            _eligible_habit_days(habit, week_start, today) for habit in habits
+        )
         pct = total_done / total_possible * 100 if total_possible else 0
         lines.append(
             f"✅ <b>Habits</b>: {total_done}/{total_possible} "

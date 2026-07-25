@@ -1,0 +1,6 @@
+# Development / test dependencies.
+# Installs the runtime set too:  pip install -r requirements-dev.txt
+-r requirements.txt
+
+pytest==9.0.3
+pytest-asyncio==1.4.0

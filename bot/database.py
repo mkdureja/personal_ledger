@@ -8,8 +8,10 @@ Row-presence semantics for habit_logs (no 'completed' column).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import math
+import unicodedata
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -29,6 +31,15 @@ from .nutrition import (
 )
 
 logger = logging.getLogger(__name__)
+
+# True while the current task holds the connection lock (set by _write_operation
+# or a standalone locked read). Lets reads nested inside an operation that
+# already holds the lock skip re-acquiring it, avoiding self-deadlock while still
+# serializing independent tasks. contextvars propagate through ``await`` within a
+# task but are isolated between tasks, so this is safe under concurrency.
+_conn_lock_held: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ledger_conn_lock_held", default=False
+)
 
 HabitAddStatus = Literal["added", "reactivated", "already_active"]
 
@@ -152,6 +163,7 @@ CREATE TABLE IF NOT EXISTS habits (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
     habit_name  TEXT NOT NULL,
+    name_key    TEXT,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_active   INTEGER DEFAULT 1,
     FOREIGN KEY (user_id) REFERENCES users(user_id)
@@ -183,11 +195,12 @@ CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_lookup
 CREATE INDEX IF NOT EXISTS idx_habit_logs_user_date ON habit_logs(user_id, log_date);
 """
 
-# Partial unique index: only active habits must have unique names per user.
-# This allows deactivate → re-add without collision.
+# Partial unique index: only active habits must have a unique case-insensitive
+# key per user. Keying on name_key (not the display name) means "Read" and
+# "read" collide, so reactivation restores the original habit and its streak.
 _PARTIAL_INDEX = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_habits_active
-    ON habits(user_id, habit_name) WHERE is_active = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_habits_active_key
+    ON habits(user_id, name_key) WHERE is_active = 1;
 """
 
 # ``CREATE TABLE IF NOT EXISTS`` does not add columns to an existing table.
@@ -294,6 +307,15 @@ def _optional_nutrient(value: float | None, field_name: str) -> float | None:
     return nutrient
 
 
+def _habit_key(name: str) -> str:
+    """Case-insensitive, Unicode-normalized key for habit de-duplication.
+
+    Matches the handler's ``casefold`` check but also NFKC-normalizes so visually
+    identical names collide, keeping the streak on one habit id.
+    """
+    return unicodedata.normalize("NFKC", str(name)).strip().casefold()
+
+
 def _sqlite_timestamp(value: datetime) -> str:
     """Format a timestamp like SQLite's ``CURRENT_TIMESTAMP``.
 
@@ -315,7 +337,10 @@ class DatabaseManager:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._conn: aiosqlite.Connection | None = None
-        self._write_lock = asyncio.Lock()
+        # One lock guards the shared connection for BOTH writes and reads, so a
+        # read can never observe another task's uncommitted (later rolled-back)
+        # write on the same connection.
+        self._conn_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """Open the connection and set pragmas."""
@@ -332,13 +357,14 @@ class DatabaseManager:
         async with self._write_operation():
             await self._conn.executescript(_SCHEMA)
             await self._add_missing_diet_macro_columns()
+            await self._migrate_habit_name_keys()
             # Indexes must be created individually (executescript doesn't return
             # cursors, but these are safe as IF NOT EXISTS).
             for stmt in _INDEXES.strip().split(";"):
                 stmt = stmt.strip()
                 if stmt:
                     await self._conn.execute(stmt)
-            # Partial unique index
+            # Partial unique index (keyed on name_key; must run after migration)
             await self._conn.execute(_PARTIAL_INDEX.strip())
             await self._conn.executescript(_HABIT_LOG_TRIGGERS)
         logger.info("Database schema initialized")
@@ -353,6 +379,55 @@ class DatabaseManager:
                 await self.conn.execute(
                     f"ALTER TABLE diet_logs ADD COLUMN {column_name} {column_type}"  # noqa: S608
                 )
+
+    async def _migrate_habit_name_keys(self) -> None:
+        """Add and backfill ``habits.name_key`` and drop the legacy name index.
+
+        Existing databases keyed active-habit uniqueness on the exact display
+        name; this switches to a case/format-insensitive key so reactivation
+        restores the original habit. Active case-variant duplicates that the old
+        index allowed are collapsed to the earliest so the new unique index holds.
+        """
+        cursor = await self.conn.execute("PRAGMA table_info(habits)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+        if "name_key" not in columns:
+            await self.conn.execute("ALTER TABLE habits ADD COLUMN name_key TEXT")
+
+        # Backfill keys for pre-migration rows (and any left NULL).
+        cursor = await self.conn.execute(
+            "SELECT id, habit_name FROM habits WHERE name_key IS NULL OR name_key = ''"
+        )
+        for row in await cursor.fetchall():
+            await self.conn.execute(
+                "UPDATE habits SET name_key = ? WHERE id = ?",
+                (_habit_key(row["habit_name"]), row["id"]),
+            )
+
+        # Retire the legacy exact-name partial index before creating the keyed one.
+        await self.conn.execute("DROP INDEX IF EXISTS idx_habits_active")
+
+        # Collapse active duplicates that share a key so the unique index applies.
+        cursor = await self.conn.execute(
+            """
+            SELECT user_id, name_key, MIN(id) AS keep_id, COUNT(*) AS n
+            FROM habits
+            WHERE is_active = 1
+            GROUP BY user_id, name_key
+            HAVING n > 1
+            """
+        )
+        for row in await cursor.fetchall():
+            await self.conn.execute(
+                "UPDATE habits SET is_active = 0 "
+                "WHERE user_id = ? AND name_key = ? AND is_active = 1 AND id != ?",
+                (row["user_id"], row["name_key"], row["keep_id"]),
+            )
+            logger.warning(
+                "Migration collapsed %d duplicate active habit(s) for user %s (key %r)",
+                row["n"] - 1,
+                row["user_id"],
+                row["name_key"],
+            )
 
     async def close(self) -> None:
         """Close the connection."""
@@ -369,13 +444,12 @@ class DatabaseManager:
     async def _write_operation(self) -> AsyncIterator[None]:
         """Serialize a complete mutation and close its transaction safely.
 
-        SQLite WAL mode with a single connection already serializes writes at
-        the database level.  This lock is a belt-and-suspenders measure that
-        makes the serialization explicit in application code and guarantees
-        that the commit/rollback lifecycle is never interleaved even if a
-        future change introduces concurrent connections.
+        Holds the connection lock for the whole BEGIN..COMMIT lifecycle so that
+        no concurrent read (which also takes this lock) can see the in-progress
+        transaction's uncommitted rows.
         """
-        async with self._write_lock:
+        async with self._conn_lock:
+            token = _conn_lock_held.set(True)
             try:
                 yield
                 await self.conn.commit()
@@ -383,6 +457,43 @@ class DatabaseManager:
                 if self.conn.in_transaction:
                     await self.conn.rollback()
                 raise
+            finally:
+                _conn_lock_held.reset(token)
+
+    @asynccontextmanager
+    async def _read_operation(self) -> AsyncIterator[None]:
+        """Serialize a read against writes, reentrant within a held operation.
+
+        A read that runs inside a task already holding the lock (e.g. a write
+        that inspects rows before mutating) proceeds without re-acquiring it;
+        an independent read waits for any in-progress write to finish and thus
+        only ever observes committed state.
+        """
+        if _conn_lock_held.get():
+            yield
+            return
+        async with self._conn_lock:
+            token = _conn_lock_held.set(True)
+            try:
+                yield
+            finally:
+                _conn_lock_held.reset(token)
+
+    async def _query_all(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> list[aiosqlite.Row]:
+        """Run a SELECT and fetch all rows under the connection lock."""
+        async with self._read_operation():
+            cursor = await self.conn.execute(query, params)
+            return await cursor.fetchall()
+
+    async def _query_one(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> aiosqlite.Row | None:
+        """Run a SELECT and fetch one row under the connection lock."""
+        async with self._read_operation():
+            cursor = await self.conn.execute(query, params)
+            return await cursor.fetchone()
 
     # -------------------------------------------------------------------
     # Users
@@ -436,12 +547,11 @@ class DatabaseManager:
         # Widen by 1 day on each side to handle TZ offset
         start_utc = datetime(start_date.year, start_date.month, start_date.day) - timedelta(days=1)
         end_utc = datetime(end_date.year, end_date.month, end_date.day) + timedelta(days=2)
-        cursor = await self.conn.execute(
+        return await self._query_all(
             "SELECT * FROM study_logs WHERE user_id = ? AND logged_at >= ? AND logged_at < ? "
             "ORDER BY logged_at",
             (user_id, _sqlite_timestamp(start_utc), _sqlite_timestamp(end_utc)),
         )
-        return await cursor.fetchall()
 
     # -------------------------------------------------------------------
     # Gym
@@ -470,12 +580,11 @@ class DatabaseManager:
         """Get gym logs within a local-date range (with ±1 day buffer)."""
         start_utc = datetime(start_date.year, start_date.month, start_date.day) - timedelta(days=1)
         end_utc = datetime(end_date.year, end_date.month, end_date.day) + timedelta(days=2)
-        cursor = await self.conn.execute(
+        return await self._query_all(
             "SELECT * FROM gym_logs WHERE user_id = ? AND logged_at >= ? AND logged_at < ? "
             "ORDER BY logged_at",
             (user_id, _sqlite_timestamp(start_utc), _sqlite_timestamp(end_utc)),
         )
-        return await cursor.fetchall()
 
     # -------------------------------------------------------------------
     # Diet
@@ -515,12 +624,11 @@ class DatabaseManager:
         """Get diet logs within a local-date range (with ±1 day buffer)."""
         start_utc = datetime(start_date.year, start_date.month, start_date.day) - timedelta(days=1)
         end_utc = datetime(end_date.year, end_date.month, end_date.day) + timedelta(days=2)
-        cursor = await self.conn.execute(
+        return await self._query_all(
             "SELECT * FROM diet_logs WHERE user_id = ? AND logged_at >= ? AND logged_at < ? "
             "ORDER BY logged_at",
             (user_id, _sqlite_timestamp(start_utc), _sqlite_timestamp(end_utc)),
         )
-        return await cursor.fetchall()
 
     # -------------------------------------------------------------------
     # Food catalog
@@ -1121,12 +1229,13 @@ class DatabaseManager:
         Returns ``(habit_id, status)`` where status is ``"added"``,
         ``"reactivated"``, or ``"already_active"``.
         """
+        name_key = _habit_key(habit_name)
         async with self._write_operation():
             cursor = await self.conn.execute(
                 "SELECT id, is_active FROM habits "
-                "WHERE user_id = ? AND habit_name = ? "
+                "WHERE user_id = ? AND name_key = ? "
                 "ORDER BY is_active DESC, id LIMIT 1",
-                (user_id, habit_name),
+                (user_id, name_key),
             )
             row = await cursor.fetchone()
             if row is not None and row["is_active"]:
@@ -1141,22 +1250,22 @@ class DatabaseManager:
                       AND is_active = 0
                       AND NOT EXISTS (
                           SELECT 1 FROM habits
-                          WHERE user_id = ? AND habit_name = ? AND is_active = 1
+                          WHERE user_id = ? AND name_key = ? AND is_active = 1
                       )
                     """,
-                    (row["id"], user_id, habit_name),
+                    (row["id"], user_id, name_key),
                 )
                 if cursor.rowcount > 0:
                     return row["id"], "reactivated"
 
             cursor = await self.conn.execute(
                 """
-                INSERT INTO habits (user_id, habit_name)
-                VALUES (?, ?)
-                ON CONFLICT(user_id, habit_name) WHERE is_active = 1 DO NOTHING
+                INSERT INTO habits (user_id, habit_name, name_key)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, name_key) WHERE is_active = 1 DO NOTHING
                 RETURNING id
                 """,
-                (user_id, habit_name),
+                (user_id, habit_name, name_key),
             )
             inserted = await cursor.fetchone()
             if inserted is not None:
@@ -1166,8 +1275,8 @@ class DatabaseManager:
             # active between this operation's read and write.
             cursor = await self.conn.execute(
                 "SELECT id FROM habits "
-                "WHERE user_id = ? AND habit_name = ? AND is_active = 1",
-                (user_id, habit_name),
+                "WHERE user_id = ? AND name_key = ? AND is_active = 1",
+                (user_id, name_key),
             )
             active = await cursor.fetchone()
             if active is None:
@@ -1186,11 +1295,11 @@ class DatabaseManager:
 
     async def get_active_habits(self, user_id: int) -> list[dict[str, Any]]:
         """Get all active habits for a user."""
-        cursor = await self.conn.execute(
+        rows = await self._query_all(
             "SELECT * FROM habits WHERE user_id = ? AND is_active = 1 ORDER BY id",
             (user_id,),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [dict(row) for row in rows]
 
     async def check_habit(self, user_id: int, habit_id: int, log_date: date) -> bool:
         """Mark a habit as done for a specific local date.
@@ -1229,51 +1338,59 @@ class DatabaseManager:
         self, user_id: int, log_date: date
     ) -> set[int]:
         """Get the set of habit_ids checked on a specific local date."""
-        cursor = await self.conn.execute(
+        rows = await self._query_all(
             "SELECT habit_id FROM habit_logs WHERE user_id = ? AND log_date = ?",
             (user_id, log_date.isoformat()),
         )
-        rows = await cursor.fetchall()
         return {row["habit_id"] for row in rows}
 
     async def get_habit_logs_range(
         self, user_id: int, start_date: date, end_date: date
     ) -> list[dict[str, Any]]:
         """Get habit logs in a date range (inclusive)."""
-        cursor = await self.conn.execute(
+        rows = await self._query_all(
             "SELECT * FROM habit_logs WHERE user_id = ? AND log_date >= ? AND log_date <= ? "
             "ORDER BY log_date",
             (user_id, start_date.isoformat(), end_date.isoformat()),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [dict(row) for row in rows]
+
+    _STREAK_PAGE_SIZE = 500
 
     async def get_streak(self, user_id: int, habit_id: int, today: date) -> int:
-        """Calculate current streak for a habit.
+        """Calculate the current streak for a habit.
 
-        Streak = number of consecutive days with a row in habit_logs,
-        counting backward from today.  If today is not checked, streak is 0.
-        The query is bounded to 366 rows so that long-running habits don't
-        load unbounded history into memory.
+        Streak = number of consecutive days with a row in habit_logs, counting
+        backward from today. If today is not checked, streak is 0. History is
+        scanned in bounded pages until the first gap, so the streak is never
+        capped at a fixed length while memory stays bounded.
         """
-        cursor = await self.conn.execute(
-            "SELECT log_date FROM habit_logs "
-            "WHERE user_id = ? AND habit_id = ? AND log_date <= ? "
-            "ORDER BY log_date DESC LIMIT 366",
-            (user_id, habit_id, today.isoformat()),
-        )
-        rows = await cursor.fetchall()
-        if not rows:
-            return 0
-
         streak = 0
         expected = today
-        for row in rows:
-            row_date = date.fromisoformat(row["log_date"])
-            if row_date == expected:
+        offset = 0
+        while True:
+            rows = await self._query_all(
+                "SELECT log_date FROM habit_logs "
+                "WHERE user_id = ? AND habit_id = ? AND log_date <= ? "
+                "ORDER BY log_date DESC LIMIT ? OFFSET ?",
+                (
+                    user_id,
+                    habit_id,
+                    today.isoformat(),
+                    self._STREAK_PAGE_SIZE,
+                    offset,
+                ),
+            )
+            if not rows:
+                break
+            for row in rows:
+                if date.fromisoformat(row["log_date"]) != expected:
+                    return streak  # first gap ends the streak
                 streak += 1
                 expected -= timedelta(days=1)
-            else:
+            if len(rows) < self._STREAK_PAGE_SIZE:
                 break
+            offset += self._STREAK_PAGE_SIZE
         return streak
 
     # -------------------------------------------------------------------
@@ -1297,13 +1414,12 @@ class DatabaseManager:
 
         for table_name, label in self._UNDO_LABELS.items():
             assert table_name in self._UNDO_TABLES  # guard against injection
-            cursor = await self.conn.execute(
+            row = await self._query_one(
                 f"SELECT *, '{label}' as category, '{table_name}' as _table "  # noqa: S608
                 f"FROM {table_name} "
                 f"WHERE user_id = ? ORDER BY logged_at DESC, id DESC LIMIT 1",
                 (user_id,),
             )
-            row = await cursor.fetchone()
             if row is None:
                 continue
 

@@ -351,6 +351,7 @@ def test_main_registers_food_and_recipe_commands(monkeypatch) -> None:
     class FakeApplication:
         def __init__(self) -> None:
             self.handlers = []
+            self.polling_kwargs = None
 
         def add_handler(self, handler) -> None:
             self.handlers.append(handler)
@@ -358,8 +359,8 @@ def test_main_registers_food_and_recipe_commands(monkeypatch) -> None:
         def add_error_handler(self, _handler) -> None:
             pass
 
-        def run_polling(self, **_kwargs) -> None:
-            pass
+        def run_polling(self, **kwargs) -> None:
+            self.polling_kwargs = kwargs
 
     application = FakeApplication()
 
@@ -386,6 +387,8 @@ def test_main_registers_food_and_recipe_commands(monkeypatch) -> None:
         for command in handler.commands
     }
     assert {"food", "recipe"} <= commands
+    # Pending updates must be preserved across restarts, not dropped.
+    assert application.polling_kwargs.get("drop_pending_updates") is False
 
 
 def test_catalog_nutrient_display_bounds_repeating_decimals() -> None:

@@ -51,7 +51,7 @@ class TestSchema:
             "idx_gym_user_date",
             "idx_diet_user_date",
             "idx_habit_logs_user_date",
-            "idx_habits_active",
+            "idx_habits_active_key",
         }
         assert expected.issubset(indexes), f"Missing indexes: {expected - indexes}"
 
@@ -478,22 +478,42 @@ class TestHabits:
 
         assert db_with_user.conn.in_transaction is False
 
-    async def test_get_streak_is_bounded(self, db_with_user, user_id):
-        """get_streak does not load more than 366 rows into memory."""
-        habit_id, _ = await db_with_user.add_habit(user_id, "Bounded Streak")
-        
-        # Insert 400 consecutive logs
+    async def test_get_streak_counts_full_history_beyond_one_page(
+        self, db_with_user, user_id
+    ):
+        """get_streak pages past its window and is not capped at a fixed length."""
+        habit_id, _ = await db_with_user.add_habit(user_id, "Long Streak")
+
+        # Insert 900 consecutive logs — more than one 500-row page.
         base_date = date(2026, 7, 18)
-        logs = [(user_id, habit_id, (base_date - timedelta(days=i)).isoformat()) for i in range(400)]
+        logs = [
+            (user_id, habit_id, (base_date - timedelta(days=i)).isoformat())
+            for i in range(900)
+        ]
         await db_with_user.conn.executemany(
             "INSERT INTO habit_logs (user_id, habit_id, log_date) VALUES (?, ?, ?)",
-            logs
+            logs,
         )
         await db_with_user.conn.commit()
 
-        # The streak should evaluate to 366 because the query limits to 366 rows
         streak = await db_with_user.get_streak(user_id, habit_id, base_date)
-        assert streak == 366
+        assert streak == 900
+
+    async def test_get_streak_stops_at_first_gap(self, db_with_user, user_id):
+        """A missing day ends the streak even with older history present."""
+        habit_id, _ = await db_with_user.add_habit(user_id, "Gappy")
+        base_date = date(2026, 7, 18)
+        # Today, yesterday present; day-before missing; then more history.
+        present = [base_date, base_date - timedelta(days=1),
+                   base_date - timedelta(days=3), base_date - timedelta(days=4)]
+        await db_with_user.conn.executemany(
+            "INSERT INTO habit_logs (user_id, habit_id, log_date) VALUES (?, ?, ?)",
+            [(user_id, habit_id, d.isoformat()) for d in present],
+        )
+        await db_with_user.conn.commit()
+
+        streak = await db_with_user.get_streak(user_id, habit_id, base_date)
+        assert streak == 2
 
 
 class TestUndo:
