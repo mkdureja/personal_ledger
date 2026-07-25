@@ -57,5 +57,33 @@ async def test_post_init_is_idempotent(tmp_path, monkeypatch):
     
     assert db_first is db_second  # Same instance
     assert jobs_first == jobs_second  # No new jobs added
-    
+
     await main_module.post_shutdown(application)
+
+
+@pytest.mark.asyncio
+async def test_post_init_closes_db_when_init_fails(tmp_path, monkeypatch):
+    """If init_db raises, the just-opened connection must be closed, not leaked."""
+    from bot import database as db_module
+
+    closed = {"value": False}
+    original_close = db_module.DatabaseManager.close
+
+    async def failing_init(self):
+        raise RuntimeError("schema init failed")
+
+    async def spy_close(self):
+        closed["value"] = True
+        await original_close(self)
+
+    monkeypatch.setattr(db_module.DatabaseManager, "init_db", failing_init)
+    monkeypatch.setattr(db_module.DatabaseManager, "close", spy_close)
+    monkeypatch.setattr(main_module, "DB_PATH", str(tmp_path / "ledger-test.db"))
+    monkeypatch.setattr(main_module, "ROUTINE_PATH", str(tmp_path / "no-routine.yaml"))
+    application = ApplicationBuilder().token("123456:TEST_TOKEN").build()
+
+    with pytest.raises(RuntimeError):
+        await main_module.post_init(application)
+
+    assert closed["value"] is True
+    assert "db" not in application.bot_data

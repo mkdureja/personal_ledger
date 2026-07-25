@@ -38,3 +38,19 @@ def test_reminder_hour_invalid(invalid_hour):
         import bot.config
         with pytest.raises(RuntimeError):
             importlib.reload(bot.config)
+
+
+def test_relative_paths_resolve_under_project_root():
+    """Relative DB_PATH/ROUTINE_PATH values are anchored to the project root."""
+    from bot.config import _PROJECT_ROOT, _resolve_under_root
+
+    assert Path(_resolve_under_root("ledger.db")) == _PROJECT_ROOT / "ledger.db"
+    assert Path(_resolve_under_root("data/x.yaml")) == _PROJECT_ROOT / "data" / "x.yaml"
+
+
+def test_absolute_and_memory_paths_pass_through():
+    from bot.config import _PROJECT_ROOT, _resolve_under_root
+
+    absolute = str(_PROJECT_ROOT / "somewhere" / "ledger.db")
+    assert _resolve_under_root(absolute) == absolute
+    assert _resolve_under_root(":memory:") == ":memory:"

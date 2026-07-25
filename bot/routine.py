@@ -28,6 +28,14 @@ VALID_CHECKS = ("study", "gym", "diet", "habits")
 # Weekday abbreviations, indexed by ``date.weekday()`` (Mon=0).
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
+# Field size caps. These keep a composed anchor message provably well under
+# Telegram's 4096 UTF-16 limit (even all-emoji quotes stay within budget),
+# so a stray long value fails at load time rather than at delivery time.
+MAX_QUOTE_LENGTH = 500
+MAX_ANCHOR_ID_LENGTH = 32
+MAX_ANCHOR_TITLE_LENGTH = 64
+MAX_ANCHOR_EMOJI_LENGTH = 16
+
 
 class RoutineConfigError(ValueError):
     """Raised when a routine file exists but is structurally invalid."""
@@ -127,7 +135,12 @@ def _parse_quotes(value: object) -> tuple[str, ...]:
     for index, item in enumerate(value, start=1):
         if not isinstance(item, str) or not item.strip():
             raise RoutineConfigError(f"quote #{index} must be a non-empty string")
-        quotes.append(item.strip())
+        cleaned = item.strip()
+        if len(cleaned) > MAX_QUOTE_LENGTH:
+            raise RoutineConfigError(
+                f"quote #{index} is too long (max {MAX_QUOTE_LENGTH} characters)"
+            )
+        quotes.append(cleaned)
     return tuple(quotes)
 
 
@@ -182,6 +195,10 @@ def _parse_anchors(value: object) -> tuple[Anchor, ...]:
         if not isinstance(anchor_id, str) or not anchor_id.strip():
             raise RoutineConfigError(f"anchor #{index} needs a non-empty 'id'")
         anchor_id = anchor_id.strip()
+        if len(anchor_id) > MAX_ANCHOR_ID_LENGTH:
+            raise RoutineConfigError(
+                f"anchor id {anchor_id!r} is too long (max {MAX_ANCHOR_ID_LENGTH})"
+            )
         if anchor_id in seen_ids:
             raise RoutineConfigError(f"duplicate anchor id {anchor_id!r}")
         seen_ids.add(anchor_id)
@@ -209,6 +226,14 @@ def _parse_anchors(value: object) -> tuple[Anchor, ...]:
         if not isinstance(emoji, str) or not isinstance(title, str):
             raise RoutineConfigError(
                 f"anchor {anchor_id!r}: 'emoji' and 'title' must be strings"
+            )
+        if len(emoji.strip()) > MAX_ANCHOR_EMOJI_LENGTH:
+            raise RoutineConfigError(
+                f"anchor {anchor_id!r}: 'emoji' too long (max {MAX_ANCHOR_EMOJI_LENGTH})"
+            )
+        if len(title.strip()) > MAX_ANCHOR_TITLE_LENGTH:
+            raise RoutineConfigError(
+                f"anchor {anchor_id!r}: 'title' too long (max {MAX_ANCHOR_TITLE_LENGTH})"
             )
 
         quote = item.get("quote", False)

@@ -11,8 +11,8 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any, TypeVar
 
-from telegram import Update
-from telegram.constants import ParseMode
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import (
     ContextTypes,
@@ -30,7 +30,9 @@ CallbackResult = TypeVar("CallbackResult")
 # ---------------------------------------------------------------------------
 # Auth filter — compose into every handler
 # ---------------------------------------------------------------------------
-AUTH_FILTER = filters.User(user_id=ALLOWED_USER_IDS)
+# Restrict to the allowlist AND to private chats, so a command accidentally
+# sent in a group never exposes personal activity to other members.
+AUTH_FILTER = filters.User(user_id=ALLOWED_USER_IDS) & filters.ChatType.PRIVATE
 
 _ACTIVE_CONVERSATION_KEY = "_ledger_active_conversation"
 _CONVERSATION_LABELS = {
@@ -181,8 +183,15 @@ def authorized_callback(
         update: Update, context: ContextTypes.DEFAULT_TYPE, *args: Any, **kwargs: Any
     ) -> CallbackResult | None:
         user = update.effective_user
-        if user is None or user.id not in ALLOWED_USER_IDS:
-            query = update.callback_query
+        query = update.callback_query
+        chat = getattr(update, "effective_chat", None)
+        chat_type = getattr(chat, "type", None)
+        denied = (
+            user is None
+            or user.id not in ALLOWED_USER_IDS
+            or (chat_type is not None and chat_type != ChatType.PRIVATE)
+        )
+        if denied:
             if query is not None:
                 # Acknowledge the press to stop Telegram's loading spinner, but
                 # preserve the repository's silent-denial access-control policy.
@@ -288,29 +297,17 @@ async def timeout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ---------------------------------------------------------------------------
 # /undo — delete most recent log entry
 # ---------------------------------------------------------------------------
-async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Delete the most recent log entry (within 24h)."""
-    if active_conversation_flow(context) is not None:
-        await update.message.reply_text(
-            "⏳ Finish the current guided log or use /cancel in the chat where "
-            "it started before /undo."
-        )
-        return
+# Compact single-character tokens keep undo callback data well under Telegram's
+# 64-byte limit while still naming the exact source table.
+_UNDO_TABLE_TOKENS = {"study_logs": "s", "gym_logs": "g", "diet_logs": "d"}
+_UNDO_TOKEN_TABLES = {token: table for table, token in _UNDO_TABLE_TOKENS.items()}
 
-    db = context.bot_data["db"]
-    user_id = update.effective_user.id
 
-    entry = await db.undo_last(user_id)
-    if entry is None:
-        await update.message.reply_text(
-            "🤷 Nothing to undo — no entries in the last 24 hours."
-        )
-        return
-
+def _undo_detail_lines(entry: dict[str, Any]) -> list[str]:
+    """Describe an undoable entry: a bold category line plus its specifics."""
     category = _bounded_html(entry.get("category", "Unknown"), 64)
-    lines = [f"↩️ <b>Undone:</b> {category}"]
+    lines = [f"<b>{category}</b>"]
 
-    # Build detail based on category
     if "subject" in entry:
         subject = _bounded_html(entry["subject"], _MAX_UNDO_TEXT_LENGTH)
         duration = _bounded_html(entry["duration_min"], _MAX_UNDO_VALUE_LENGTH)
@@ -351,7 +348,107 @@ async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if macro_parts:
             lines.append(f"⚖️ {' · '.join(macro_parts)}")
 
-    await reply_html(update.message, "\n".join(lines))
+    return lines
+
+
+async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Preview the most recent log entry (within 24h) and ask to confirm.
+
+    Nothing is deleted until the user taps Confirm, and the deletion targets
+    that exact row — so a transient failure can never make a retry delete a
+    different, newer entry.
+    """
+    if active_conversation_flow(context) is not None:
+        await update.message.reply_text(
+            "⏳ Finish the current guided log or use /cancel in the chat where "
+            "it started before /undo."
+        )
+        return
+
+    db = context.bot_data["db"]
+    user_id = update.effective_user.id
+
+    entry = await db.peek_last(user_id)
+    if entry is None:
+        await update.message.reply_text(
+            "🤷 Nothing to undo — no entries in the last 24 hours."
+        )
+        return
+
+    token = _UNDO_TABLE_TOKENS.get(entry.get("_table", ""))
+    if token is None:
+        # Defensive: an unrecognized source table should never offer a button
+        # whose confirmation could not be routed.
+        await update.message.reply_text("🤷 Nothing to undo right now.")
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Yes, undo",
+                    callback_data=f"undo_do_{user_id}_{token}_{entry['id']}",
+                ),
+                InlineKeyboardButton("✖️ Keep", callback_data=f"undo_keep_{user_id}"),
+            ]
+        ]
+    )
+    text = "↩️ <b>Undo this entry?</b>\n\n" + "\n".join(_undo_detail_lines(entry))
+    await reply_html(update.message, text, reply_markup=keyboard)
+
+
+@authorized_callback
+async def undo_confirm_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Delete the exact previewed entry; idempotent on repeated taps."""
+    query = update.callback_query
+    await query.answer()
+
+    payload = (query.data or "").removeprefix("undo_do_")
+    parts = payload.split("_")
+    if len(parts) != 3:
+        return
+    owner_id, token, entry_id_raw = parts
+    if str(update.effective_user.id) != owner_id:
+        return
+    table = _UNDO_TOKEN_TABLES.get(token)
+    if table is None:
+        return
+    try:
+        entry_id = int(entry_id_raw)
+    except ValueError:
+        return
+
+    db = context.bot_data["db"]
+    entry = await db.delete_log_by_id(update.effective_user.id, table, entry_id)
+    if entry is None:
+        text = "🤷 Already undone — nothing changed."
+    else:
+        text = "↩️ <b>Undone</b>\n\n" + "\n".join(_undo_detail_lines(entry))
+
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+    except TelegramError:
+        logger.warning("Could not update undo confirmation", exc_info=True)
+
+
+@authorized_callback
+async def undo_cancel_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Dismiss an undo prompt without deleting anything."""
+    query = update.callback_query
+    await query.answer()
+
+    payload = (query.data or "").removeprefix("undo_keep_")
+    if payload and str(update.effective_user.id) != payload:
+        return
+
+    try:
+        await query.edit_message_text("✖️ Kept — nothing was undone.")
+    except TelegramError:
+        logger.warning("Could not update undo cancellation", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +462,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         exc_info=(type(error), error, error.__traceback__),
     )
 
-    # Notify user (if we have an update with a message)
+    # Notify user (if we have an update with a message). Never let the
+    # notification itself raise — the same outage that caused the error can
+    # also break this reply.
     if isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text(
-            "⚠️ Something went wrong. The error has been logged. "
-            "Try again or use /cancel if you're stuck in a conversation."
-        )
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ Something went wrong. The error has been logged. "
+                "Try again or use /cancel if you're stuck in a conversation."
+            )
+        except TelegramError:
+            logger.warning("Could not deliver error notification", exc_info=True)

@@ -1277,38 +1277,29 @@ class DatabaseManager:
         return streak
 
     # -------------------------------------------------------------------
-    # Undo (delete most recent log across all tables)
+    # Undo (preview + delete a recent log across all tables)
     # -------------------------------------------------------------------
-    _UNDO_TABLES: frozenset[str] = frozenset(
-        {"study_logs", "gym_logs", "diet_logs"}
-    )
+    _UNDO_LABELS: dict[str, str] = {
+        "study_logs": "📖 Study",
+        "gym_logs": "🏋️ Gym",
+        "diet_logs": "🍽️ Diet",
+    }
+    _UNDO_TABLES: frozenset[str] = frozenset(_UNDO_LABELS)
 
-    async def undo_last(self, user_id: int) -> dict[str, Any] | None:
-        """Delete the most recent log entry for this user (within 24h).
+    async def _select_last_entry(self, user_id: int) -> dict[str, Any] | None:
+        """Read-only: find the most recent undoable entry (within 24h).
 
-        Checks study_logs, gym_logs, diet_logs. habit_logs use a different
-        undo path (uncheck_habit).
-
-        Returns a dict with the deleted entry info, or None if nothing found.
+        Returns a dict of the row plus a ``category`` label and a private
+        ``_table`` key naming its source table, or ``None``.
         """
-        async with self._write_operation():
-            return await self._undo_last_locked(user_id)
-
-    async def _undo_last_locked(self, user_id: int) -> dict[str, Any] | None:
-        """Select and delete the latest entry while the write lock is held."""
-        tables = [
-            ("study_logs", "📖 Study"),
-            ("gym_logs", "🏋️ Gym"),
-            ("diet_logs", "🍽️ Diet"),
-        ]
         latest: dict[str, Any] | None = None
-        latest_table: str | None = None
         latest_dt: datetime | None = None
 
-        for table_name, label in tables:
+        for table_name, label in self._UNDO_LABELS.items():
             assert table_name in self._UNDO_TABLES  # guard against injection
             cursor = await self.conn.execute(
-                f"SELECT *, '{label}' as category FROM {table_name} "  # noqa: S608
+                f"SELECT *, '{label}' as category, '{table_name}' as _table "  # noqa: S608
+                f"FROM {table_name} "
                 f"WHERE user_id = ? ORDER BY logged_at DESC, id DESC LIMIT 1",
                 (user_id,),
             )
@@ -1330,20 +1321,68 @@ class DatabaseManager:
 
             if latest_dt is None or logged_at > latest_dt:
                 latest = dict(row)
-                latest_table = table_name
                 latest_dt = logged_at
 
-        if latest is None or latest_table is None:
-            return None
-
-        assert latest_table in self._UNDO_TABLES  # guard against injection
-        cursor = await self.conn.execute(
-            f"DELETE FROM {latest_table} WHERE id = ? AND user_id = ?",  # noqa: S608
-            (latest["id"], user_id),
-        )
-        if cursor.rowcount <= 0:
-            return None
         return latest
+
+    async def peek_last(self, user_id: int) -> dict[str, Any] | None:
+        """Return the most recent undoable entry (within 24h) WITHOUT deleting.
+
+        ``/undo`` previews this exact row and deletes it only on confirmation
+        via :meth:`delete_log_by_id`, so a failed confirmation can never delete
+        a different, newer entry on retry.
+        """
+        return await self._select_last_entry(user_id)
+
+    async def undo_last(self, user_id: int) -> dict[str, Any] | None:
+        """Select and delete the most recent log entry for this user (within 24h).
+
+        Checks study_logs, gym_logs, diet_logs. habit_logs use a different
+        undo path (uncheck_habit). Returns the deleted entry, or None.
+        """
+        async with self._write_operation():
+            entry = await self._select_last_entry(user_id)
+            if entry is None:
+                return None
+            table = entry["_table"]
+            assert table in self._UNDO_TABLES  # guard against injection
+            cursor = await self.conn.execute(
+                f"DELETE FROM {table} WHERE id = ? AND user_id = ?",  # noqa: S608
+                (entry["id"], user_id),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            return entry
+
+    async def delete_log_by_id(
+        self, user_id: int, table: str, entry_id: int
+    ) -> dict[str, Any] | None:
+        """Idempotently delete one log row by exact id.
+
+        Returns the deleted row (with a ``category`` label) or ``None`` when no
+        such row exists — so a repeated confirmation is a harmless no-op rather
+        than deleting a different, newer entry.
+        """
+        if table not in self._UNDO_TABLES:
+            raise ValueError(f"Refusing to delete from unknown table {table!r}")
+        label = self._UNDO_LABELS[table]
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                f"SELECT *, '{label}' as category FROM {table} "  # noqa: S608
+                f"WHERE id = ? AND user_id = ?",
+                (entry_id, user_id),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            entry = dict(row)
+            cursor = await self.conn.execute(
+                f"DELETE FROM {table} WHERE id = ? AND user_id = ?",  # noqa: S608
+                (entry_id, user_id),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            return entry
 
     # -------------------------------------------------------------------
     # Summary helpers

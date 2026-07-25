@@ -21,7 +21,14 @@ from telegram.ext import (
 from .config import BOT_TOKEN, DB_PATH, REMINDER_TIME, ROUTINE_PATH, LOCAL_TZ, LOG_FORMAT
 from .database import DatabaseManager
 from .routine import load_routine
-from .handlers.common import AUTH_FILTER, cancel_command, error_handler, undo_command
+from .handlers.common import (
+    AUTH_FILTER,
+    cancel_command,
+    error_handler,
+    undo_cancel_callback,
+    undo_command,
+    undo_confirm_callback,
+)
 from .handlers.start import start_command, help_command, menu_command, menu_callback
 from .handlers.study import study_conv_handler
 from .handlers.gym import gym_conv_handler, stale_gym_callback
@@ -50,6 +57,33 @@ from .handlers.reminders import anchor_job, daily_reminder
 # Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(format=LOG_FORMAT, level=logging.INFO)
+
+# PTB's HTTPX transport logs the full Bot API request URL — which embeds the
+# bot token — at INFO. Silence that layer, and redact the token from any
+# remaining log output as defense in depth (e.g. exceptions, other libraries).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+class _TokenRedactingFilter(logging.Filter):
+    """Scrub the bot token from formatted log records before they are emitted."""
+
+    def __init__(self, secret: str) -> None:
+        super().__init__()
+        self._secret = secret
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        if self._secret:
+            message = record.getMessage()
+            if self._secret in message:
+                record.msg = message.replace(self._secret, "***")
+                record.args = None
+        return True
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_TokenRedactingFilter(BOT_TOKEN))
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +98,13 @@ async def post_init(application) -> None:
 
     db = DatabaseManager(DB_PATH)
     await db.connect()
-    await db.init_db()
+    try:
+        await db.init_db()
+    except BaseException:
+        # Close the connection we just opened; it is not yet registered in
+        # bot_data, so post_shutdown would not otherwise clean it up.
+        await db.close()
+        raise
     application.bot_data["db"] = db
     logger.info("Database ready")
 
@@ -164,6 +204,13 @@ def main() -> None:
     # Also handle a setup button after its conversation has timed out.
     application.add_handler(
         CallbackQueryHandler(habit_setup_done_callback, pattern=r"^habit_setup_done_")
+    )
+    # Undo confirm/cancel callbacks
+    application.add_handler(
+        CallbackQueryHandler(undo_confirm_callback, pattern=r"^undo_do_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(undo_cancel_callback, pattern=r"^undo_keep_")
     )
     # Analytics callbacks
     application.add_handler(CallbackQueryHandler(analytics_callback, pattern=r"^(analytics_|chart_)"))

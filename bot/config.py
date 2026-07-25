@@ -24,13 +24,30 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN not set in .env — get one from @BotFather")
 
-_default_db_path = str(Path(__file__).resolve().parent.parent / "ledger.db")
-DB_PATH: str = os.getenv("DB_PATH", _default_db_path)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_under_root(raw: str) -> str:
+    """Resolve a configured path against the project root when it is relative.
+
+    Keeps history in one place no matter which working directory the process is
+    launched from. ``:memory:`` (SQLite in-memory) is passed through untouched.
+    """
+    if raw == ":memory:":
+        return raw
+    path = Path(raw)
+    if not path.is_absolute():
+        path = _PROJECT_ROOT / path
+    return str(path)
+
+
+DB_PATH: str = _resolve_under_root(os.getenv("DB_PATH", str(_PROJECT_ROOT / "ledger.db")))
 
 # Optional routine file (motivational anchors). When absent, the bot falls
 # back to the single legacy reminder configured by REMINDER_HOUR below.
-_default_routine_path = str(Path(__file__).resolve().parent.parent / "routine.yaml")
-ROUTINE_PATH: str = os.getenv("ROUTINE_PATH", _default_routine_path)
+ROUTINE_PATH: str = _resolve_under_root(
+    os.getenv("ROUTINE_PATH", str(_PROJECT_ROOT / "routine.yaml"))
+)
 
 # ---------------------------------------------------------------------------
 # Timezone

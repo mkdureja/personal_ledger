@@ -212,7 +212,7 @@ async def test_cancel_in_another_chat_does_not_release_active_flow() -> None:
 
 @pytest.mark.asyncio
 async def test_undo_is_blocked_during_active_guided_flow() -> None:
-    db = SimpleNamespace(undo_last=AsyncMock())
+    db = SimpleNamespace(peek_last=AsyncMock())
     context = _context(db)
     message = _message()
     update = SimpleNamespace(
@@ -224,13 +224,13 @@ async def test_undo_is_blocked_during_active_guided_flow() -> None:
 
     await undo_command(update, context)
 
-    db.undo_last.assert_not_awaited()
+    db.peek_last.assert_not_awaited()
     assert "before /undo" in message.reply_text.await_args.args[0]
 
 
 @pytest.mark.asyncio
 async def test_undo_is_blocked_when_flow_is_active_in_another_chat() -> None:
-    db = SimpleNamespace(undo_last=AsyncMock())
+    db = SimpleNamespace(peek_last=AsyncMock())
     context = _context(db)
     owner_update = SimpleNamespace(effective_chat=SimpleNamespace(id=10))
     activate_conversation(owner_update, context, "gym")
@@ -243,7 +243,7 @@ async def test_undo_is_blocked_when_flow_is_active_in_another_chat() -> None:
 
     await undo_command(other_chat_update, context)
 
-    db.undo_last.assert_not_awaited()
+    db.peek_last.assert_not_awaited()
     assert "where it started" in message.reply_text.await_args.args[0]
 
 

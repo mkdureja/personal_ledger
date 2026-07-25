@@ -10,8 +10,25 @@ from telegram.constants import ParseMode
 from telegram.ext import ConversationHandler
 
 from bot.config import today_local
-from bot.handlers.common import activate_conversation, cancel_command, undo_command
+from bot.handlers.common import (
+    activate_conversation,
+    cancel_command,
+    undo_cancel_callback,
+    undo_command,
+    undo_confirm_callback,
+)
 from bot.handlers.diet import diet_command
+
+
+def _callback_update(data: str, user):
+    """Build a callback-query update/context pair for undo callbacks."""
+    query = SimpleNamespace(
+        data=data,
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    update = SimpleNamespace(callback_query=query, effective_user=user)
+    return update, query
 
 
 @pytest.mark.asyncio
@@ -54,11 +71,29 @@ async def test_quick_macro_log_persists_and_undo_reports_macros(
         user_data={},
     )
 
+    # /undo previews the entry (with macros) and asks to confirm — no deletion yet.
     await undo_command(undo_update, undo_context)
 
-    text = undo_message.reply_text.await_args.args[0]
-    assert "P 25.5g · C 80g · F 15.25g" in text
+    preview = undo_message.reply_text.await_args.args[0]
+    assert "Undo this entry?" in preview
+    assert "P 25.5g · C 80g · F 15.25g" in preview
     assert undo_message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
+    still_present = await db_with_user.get_diet_logs(
+        user_id, today_local(), today_local()
+    )
+    assert any(item["id"] == row["id"] for item in still_present)
+
+    # Confirming deletes that exact entry.
+    keyboard = undo_message.reply_text.await_args.kwargs["reply_markup"]
+    confirm_data = keyboard.inline_keyboard[0][0].callback_data
+    confirm_update, confirm_query = _callback_update(confirm_data, user)
+    await undo_confirm_callback(
+        confirm_update, SimpleNamespace(bot_data={"db": db_with_user})
+    )
+
+    edited = confirm_query.edit_message_text.await_args.args[0]
+    assert "Undone" in edited
+    assert "P 25.5g · C 80g · F 15.25g" in edited
     remaining = await db_with_user.get_diet_logs(
         user_id, today_local(), today_local()
     )
@@ -94,8 +129,10 @@ async def test_undo_confirmation_bounds_oversized_legacy_diet_values(
 ) -> None:
     oversized = "&" * 10_000
     db = SimpleNamespace(
-        undo_last=AsyncMock(
+        peek_last=AsyncMock(
             return_value={
+                "id": 1,
+                "_table": "diet_logs",
                 "category": oversized,
                 "meal_type": oversized,
                 "food_items": oversized,
@@ -121,3 +158,53 @@ async def test_undo_confirmation_bounds_oversized_legacy_diet_values(
     assert utf16_units < 4_096
     assert oversized not in text
     assert "…" in text
+
+
+@pytest.mark.asyncio
+async def test_undo_confirm_is_idempotent(db_with_user, user_id: int) -> None:
+    user = SimpleNamespace(id=user_id)
+    row_id = await db_with_user.log_study(user_id, "Math", 30)
+    context = SimpleNamespace(bot_data={"db": db_with_user})
+
+    first_update, first_query = _callback_update(f"undo_do_{user_id}_s_{row_id}", user)
+    await undo_confirm_callback(first_update, context)
+    assert "Undone" in first_query.edit_message_text.await_args.args[0]
+
+    # A repeated confirmation must not delete a different, newer entry.
+    second_update, second_query = _callback_update(f"undo_do_{user_id}_s_{row_id}", user)
+    await undo_confirm_callback(second_update, context)
+    assert "Already undone" in second_query.edit_message_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_undo_confirm_rejects_non_allowlisted_user(
+    db_with_user, user_id: int
+) -> None:
+    row_id = await db_with_user.log_study(user_id, "Math", 30)
+    intruder = SimpleNamespace(id=user_id + 1)  # not in the allowlist
+    context = SimpleNamespace(bot_data={"db": db_with_user})
+
+    update, query = _callback_update(f"undo_do_{user_id}_s_{row_id}", intruder)
+    await undo_confirm_callback(update, context)
+
+    query.edit_message_text.assert_not_awaited()
+    remaining = await db_with_user.get_study_logs(
+        user_id, today_local(), today_local()
+    )
+    assert any(r["id"] == row_id for r in remaining)
+
+
+@pytest.mark.asyncio
+async def test_undo_cancel_keeps_entry(db_with_user, user_id: int) -> None:
+    user = SimpleNamespace(id=user_id)
+    row_id = await db_with_user.log_study(user_id, "Math", 30)
+    context = SimpleNamespace(bot_data={"db": db_with_user})
+
+    update, query = _callback_update(f"undo_keep_{user_id}", user)
+    await undo_cancel_callback(update, context)
+
+    assert "Kept" in query.edit_message_text.await_args.args[0]
+    remaining = await db_with_user.get_study_logs(
+        user_id, today_local(), today_local()
+    )
+    assert any(r["id"] == row_id for r in remaining)

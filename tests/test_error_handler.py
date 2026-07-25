@@ -40,9 +40,25 @@ async def test_error_handler_handles_non_update_objects(caplog):
     """Test error handler doesn't crash when update is not an Update object."""
     update = object()  # Not a telegram Update
     context = SimpleNamespace(error=KeyError("Missing key"))
-    
+
     with caplog.at_level(logging.ERROR):
         await error_handler(update, context)
-        
+
     assert "Exception while handling an update" in caplog.text
     assert "KeyError" in caplog.text
+
+
+async def test_error_handler_swallows_notification_failure(user_id, caplog):
+    """A failing notification (same outage) must not raise from the handler."""
+    from telegram.error import NetworkError
+
+    update = create_update("msg", user_id=user_id)
+    update.effective_message.reply_text = AsyncMock(side_effect=NetworkError("down"))
+    context = SimpleNamespace(error=ValueError("boom"))
+
+    with caplog.at_level(logging.WARNING), patch(
+        "bot.handlers.common.Update", type(update)
+    ):
+        await error_handler(update, context)  # must not raise
+
+    assert "Could not deliver error notification" in caplog.text
