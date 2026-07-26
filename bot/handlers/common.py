@@ -22,6 +22,7 @@ from telegram.ext import (
 )
 
 from ..config import ALLOWED_USER_IDS
+from ..database import MutationSource
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,27 @@ def authorized_callback(
         return await handler(update, context, *args, **kwargs)
 
     return wrapped
+
+
+def mutation_source(update: Update) -> MutationSource | None:
+    """Build a replay-idempotency source from the update that triggered a write.
+
+    Returns ``None`` when the update carries no ``update_id`` (e.g. a synthetic
+    test update or a programmatic call), so the mutation falls back to plain,
+    non-idempotent behavior. Real Telegram updates always have a globally unique
+    ``update_id``.
+    """
+    update_id = getattr(update, "update_id", None)
+    if update_id is None:
+        return None
+    chat = getattr(update, "effective_chat", None)
+    message = getattr(update, "effective_message", None)
+    return MutationSource(
+        update_id=update_id,
+        chat_id=getattr(chat, "id", None),
+        message_id=getattr(message, "message_id", None),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Input validators

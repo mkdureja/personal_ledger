@@ -53,6 +53,7 @@ from .handlers.analytics import (
     analytics_callback,
 )
 from .handlers.reminders import anchor_job, daily_reminder
+from .handlers.recent import recent_command
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -178,6 +179,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("chart", chart_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("streak", streak_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("undo", undo_command, filters=AUTH_FILTER))
+    application.add_handler(CommandHandler("recent", recent_command, filters=AUTH_FILTER))
     # Conversation fallbacks consume /cancel while active; this catches a
     # stale marker or a cancel command sent outside an active conversation.
     application.add_handler(CommandHandler("cancel", cancel_command, filters=AUTH_FILTER))

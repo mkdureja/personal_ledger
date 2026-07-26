@@ -108,6 +108,18 @@ async def test_fresh_database_reaches_latest_version():
         await mgr.close()
 
 
+async def test_mutation_receipts_table_added_at_v2():
+    mgr = await _fresh_manager()
+    try:
+        await mgr.init_db()
+        names = {name for _t, name in await _schema_objects(mgr.conn)}
+        assert "mutation_receipts" in names
+        assert LATEST_VERSION >= 2
+        assert await migrations.get_user_version(mgr.conn) == LATEST_VERSION
+    finally:
+        await mgr.close()
+
+
 async def test_running_init_twice_makes_no_further_changes():
     mgr = await _fresh_manager()
     try:

@@ -75,6 +75,7 @@ async def test_shortcut_without_macros_remains_backward_compatible(
         protein_g=None,
         carbs_g=None,
         fat_g=None,
+        source=None,
     )
 
 
@@ -98,6 +99,7 @@ async def test_shortcut_accepts_case_insensitive_decimal_macro_suffix() -> None:
         protein_g=25.5,
         carbs_g=80.0,
         fat_g=15.25,
+        source=None,
     )
     confirmation = message.reply_text.await_args.args[0]
     assert "P 25.5 g · C 80 g · F 15.25 g" in confirmation
@@ -119,6 +121,7 @@ async def test_shortcut_allows_partial_macros_without_calories() -> None:
         protein_g=30.0,
         carbs_g=None,
         fat_g=12.0,
+        source=None,
     )
 
 
@@ -241,6 +244,7 @@ async def test_guided_macros_are_saved_and_conversation_is_cleaned() -> None:
         protein_g=40.5,
         carbs_g=90.0,
         fat_g=20.0,
+        source=None,
     )
     assert context.user_data == {}
     assert "tofu &amp; rice" in message.reply_text.await_args.args[0]
@@ -298,6 +302,7 @@ async def test_guided_skip_macros_saves_null_macro_values() -> None:
         protein_g=None,
         carbs_g=None,
         fat_g=None,
+        source=None,
     )
     assert context.user_data == {}
 

@@ -29,6 +29,7 @@ from .common import (
     conversation_available,
     escape_html,
     finish_conversation,
+    mutation_source,
     parse_int,
     reply_html,
     timeout_handler,
@@ -155,9 +156,18 @@ async def study_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                     f"❌ Notes too long (max {MAX_NOTES_LENGTH} characters)."
                 )
                 return ConversationHandler.END
-            await db.log_study(user.id, subject, duration, notes)
+            await db.log_study(
+                user.id, subject, duration, notes, source=mutation_source(update)
+            )
 
-            await reply_html(update.message, _confirmation(subject, duration, notes))
+            # The row is committed; a failed confirmation must not surface as an
+            # error (the user can reconcile via /recent). A genuine resend is a
+            # new update and logs again by design; a Telegram-level replay of this
+            # update is deduplicated by the receipt above.
+            try:
+                await reply_html(update.message, _confirmation(subject, duration, notes))
+            except TelegramError:
+                logger.warning("Could not deliver study confirmation", exc_info=True)
             return ConversationHandler.END
 
     # Guided flow
@@ -227,7 +237,9 @@ async def receive_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     subject = context.user_data["study_subject"]
     duration = context.user_data["study_duration"]
 
-    await db.log_study(user_id, subject, duration, notes)
+    await db.log_study(
+        user_id, subject, duration, notes, source=mutation_source(update)
+    )
     context.user_data.pop("study_subject", None)
     context.user_data.pop("study_duration", None)
 
@@ -241,7 +253,9 @@ async def skip_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     subject = context.user_data["study_subject"]
     duration = context.user_data["study_duration"]
 
-    await db.log_study(user_id, subject, duration, None)
+    await db.log_study(
+        user_id, subject, duration, None, source=mutation_source(update)
+    )
     context.user_data.pop("study_subject", None)
     context.user_data.pop("study_duration", None)
 

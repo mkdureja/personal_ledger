@@ -32,6 +32,7 @@ from .common import (
     conversation_available,
     escape_html,
     finish_conversation,
+    mutation_source,
     parse_int,
     reply_html,
     timeout_handler,
@@ -234,6 +235,7 @@ async def diet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 protein_g=entry.protein_g,
                 carbs_g=entry.carbs_g,
                 fat_g=entry.fat_g,
+                source=mutation_source(update),
             )
             try:
                 await reply_html(
@@ -291,6 +293,7 @@ async def diet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             protein_g=macros["protein_g"],
             carbs_g=macros["carbs_g"],
             fat_g=macros["fat_g"],
+            source=mutation_source(update),
         )
 
         try:
@@ -553,6 +556,7 @@ async def _save_diet(
         protein_g=protein_g,
         carbs_g=carbs_g,
         fat_g=fat_g,
+        source=mutation_source(update),
     )
     context.user_data.pop("diet_meal_type", None)
     context.user_data.pop("diet_food_items", None)

@@ -34,6 +34,7 @@ from .common import (
     conversation_available,
     escape_html,
     finish_conversation,
+    mutation_source,
     parse_float,
     parse_int,
     reply_html,
@@ -155,12 +156,18 @@ async def gym_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                 await update.message.reply_text(err)
                 return ConversationHandler.END
 
-        await db.log_gym(user.id, exercise, sets, reps, weight)
-        await reply_html(
-            update.message,
-            "✅ <b>Exercise logged!</b>\n"
-            f"{_exercise_summary(exercise, sets, reps, weight)}",
+        await db.log_gym(
+            user.id, exercise, sets, reps, weight, source=mutation_source(update)
         )
+        # Row committed; a failed confirmation is recoverable via /recent.
+        try:
+            await reply_html(
+                update.message,
+                "✅ <b>Exercise logged!</b>\n"
+                f"{_exercise_summary(exercise, sets, reps, weight)}",
+            )
+        except TelegramError:
+            logger.warning("Could not deliver gym confirmation", exc_info=True)
         return ConversationHandler.END
 
     # Guided flow
@@ -266,7 +273,7 @@ async def _save_current_exercise(
     sets = context.user_data["gym_current_sets"]
     reps = context.user_data["gym_current_reps"]
 
-    await db.log_gym(user_id, exercise, sets, reps, weight)
+    await db.log_gym(user_id, exercise, sets, reps, weight, source=mutation_source(update))
 
     # Track for final summary
     context.user_data.setdefault("gym_exercises", []).append(

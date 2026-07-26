@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this (and register a new function in ``_MIGRATIONS``) for every schema
 # change. Version N is produced by ``_MIGRATIONS[N]``.
-LATEST_VERSION = 1
+LATEST_VERSION = 2
 
 
 class MigrationCollisionError(RuntimeError):
@@ -355,8 +355,39 @@ async def _migration_0001_baseline(conn: aiosqlite.Connection) -> None:
         await conn.execute(statement)
 
 
+async def _migration_0002_mutation_receipts(conn: aiosqlite.Connection) -> None:
+    """Add ``mutation_receipts`` for at-least-once → exactly-once idempotency.
+
+    Keyed on ``(telegram_update_id, operation_key)``. Telegram message IDs are
+    only unique within a chat, so idempotency never keys on ``message_id`` alone;
+    the owner ``user_id`` is stored and verified on replay so a receipt can never
+    cross a tenant boundary.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mutation_receipts (
+            telegram_update_id INTEGER NOT NULL,
+            operation_key      TEXT NOT NULL,
+            user_id            INTEGER NOT NULL,
+            chat_id            INTEGER,
+            message_id         INTEGER,
+            entity_type        TEXT NOT NULL,
+            entity_id          INTEGER NOT NULL,
+            created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (telegram_update_id, operation_key),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mutation_receipts_user "
+        "ON mutation_receipts(user_id, created_at)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
+    2: _migration_0002_mutation_receipts,
 }
 
 

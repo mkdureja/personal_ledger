@@ -15,7 +15,7 @@ import unicodedata
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import aiosqlite
 
@@ -42,6 +42,21 @@ _conn_lock_held: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 HabitAddStatus = Literal["added", "reactivated", "already_active"]
+
+
+class MutationSource(NamedTuple):
+    """Identity of the Telegram update that triggered a mutation.
+
+    Threaded into the log methods to make a write idempotent under at-least-once
+    delivery (``drop_pending_updates=False``): replaying the *same* update returns
+    the original row instead of inserting a duplicate. ``update_id`` is globally
+    unique per bot; ``message_id`` is only unique within a chat, so it is stored
+    for reconciliation but never used as the idempotency key on its own.
+    """
+
+    update_id: int
+    chat_id: int | None = None
+    message_id: int | None = None
 
 MAX_DISPLAY_UNIT_LENGTH = MAX_PORTION_NAME_LENGTH
 MAX_ACTIVE_FOODS = 500
@@ -270,6 +285,59 @@ class DatabaseManager:
             )
 
     # -------------------------------------------------------------------
+    # Mutation idempotency (replay-safety)
+    # -------------------------------------------------------------------
+    async def _replayed_entity_id(
+        self, source: MutationSource | None, user_id: int, operation_key: str
+    ) -> int | None:
+        """Return an existing entity id if this exact update was already applied.
+
+        Assumes the caller holds the write lock. Raises if a receipt exists for a
+        *different* owner (impossible for a genuine Telegram update, whose id is
+        globally unique) so a replay can never return another user's row.
+        """
+        if source is None:
+            return None
+        cursor = await self.conn.execute(
+            "SELECT user_id, entity_id FROM mutation_receipts "
+            "WHERE telegram_update_id = ? AND operation_key = ?",
+            (source.update_id, operation_key),
+        )
+        existing = await cursor.fetchone()
+        if existing is None:
+            return None
+        if existing["user_id"] != user_id:
+            raise RuntimeError(
+                "mutation receipt owner mismatch — refusing cross-user replay"
+            )
+        return existing["entity_id"]
+
+    async def _record_receipt(
+        self,
+        source: MutationSource,
+        user_id: int,
+        operation_key: str,
+        entity_type: str,
+        entity_id: int,
+    ) -> None:
+        """Persist a receipt in the same transaction as its domain insert."""
+        await self.conn.execute(
+            "INSERT INTO mutation_receipts "
+            "(telegram_update_id, operation_key, user_id, chat_id, message_id, "
+            "entity_type, entity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                source.update_id,
+                operation_key,
+                user_id,
+                source.chat_id,
+                source.message_id,
+                entity_type,
+                entity_id,
+                _utc_timestamp_now(),
+            ),
+        )
+
+    # -------------------------------------------------------------------
     # Study
     # -------------------------------------------------------------------
     async def log_study(
@@ -278,16 +346,28 @@ class DatabaseManager:
         subject: str,
         duration_min: int,
         notes: str | None = None,
+        *,
+        source: MutationSource | None = None,
     ) -> int:
-        """Log a study session. Returns the row ID."""
+        """Log a study session. Returns the row ID.
+
+        When ``source`` is given the write is idempotent: replaying the same
+        Telegram update returns the original row id instead of inserting again.
+        """
         async with self._write_operation():
+            replayed = await self._replayed_entity_id(source, user_id, "study_log")
+            if replayed is not None:
+                return replayed
             cursor = await self.conn.execute(
                 "INSERT INTO study_logs "
                 "(user_id, subject, duration_min, notes, logged_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (user_id, subject, duration_min, notes, _utc_timestamp_now()),
             )
-            return cursor.lastrowid  # type: ignore[return-value]
+            row_id: int = cursor.lastrowid  # type: ignore[assignment]
+            if source is not None:
+                await self._record_receipt(source, user_id, "study_log", "study", row_id)
+            return row_id
 
     async def get_study_logs(
         self, user_id: int, start_date: date, end_date: date
@@ -318,16 +398,27 @@ class DatabaseManager:
         sets: int,
         reps: int,
         weight_kg: float | None = None,
+        *,
+        source: MutationSource | None = None,
     ) -> int:
-        """Log a single gym exercise. Returns the row ID."""
+        """Log a single gym exercise. Returns the row ID.
+
+        Idempotent when ``source`` is supplied (see :meth:`log_study`).
+        """
         async with self._write_operation():
+            replayed = await self._replayed_entity_id(source, user_id, "gym_log")
+            if replayed is not None:
+                return replayed
             cursor = await self.conn.execute(
                 "INSERT INTO gym_logs "
                 "(user_id, exercise, sets, reps, weight_kg, logged_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (user_id, exercise, sets, reps, weight_kg, _utc_timestamp_now()),
             )
-            return cursor.lastrowid  # type: ignore[return-value]
+            row_id: int = cursor.lastrowid  # type: ignore[assignment]
+            if source is not None:
+                await self._record_receipt(source, user_id, "gym_log", "gym", row_id)
+            return row_id
 
     async def get_gym_logs(
         self, user_id: int, start_date: date, end_date: date
@@ -353,9 +444,17 @@ class DatabaseManager:
         protein_g: float | None = None,
         carbs_g: float | None = None,
         fat_g: float | None = None,
+        *,
+        source: MutationSource | None = None,
     ) -> int:
-        """Log a diet entry. Returns the row ID."""
+        """Log a diet entry. Returns the row ID.
+
+        Idempotent when ``source`` is supplied (see :meth:`log_study`).
+        """
         async with self._write_operation():
+            replayed = await self._replayed_entity_id(source, user_id, "diet_log")
+            if replayed is not None:
+                return replayed
             cursor = await self.conn.execute(
                 "INSERT INTO diet_logs "
                 "(user_id, meal_type, food_items, calories, protein_g, carbs_g, "
@@ -371,7 +470,10 @@ class DatabaseManager:
                     _utc_timestamp_now(),
                 ),
             )
-            return cursor.lastrowid  # type: ignore[return-value]
+            row_id: int = cursor.lastrowid  # type: ignore[assignment]
+            if source is not None:
+                await self._record_receipt(source, user_id, "diet_log", "diet", row_id)
+            return row_id
 
     async def get_diet_logs(
         self, user_id: int, start_date: date, end_date: date
@@ -384,6 +486,35 @@ class DatabaseManager:
             "ORDER BY logged_at",
             (user_id, _sqlite_timestamp(start_utc), _sqlite_timestamp(end_utc)),
         )
+
+    # -------------------------------------------------------------------
+    # Recent activity (reconciliation for /recent)
+    # -------------------------------------------------------------------
+    async def get_recent_entries(
+        self, user_id: int, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Return a user's most recent study/gym/diet entries, newest first.
+
+        Lets a user confirm a save landed even when Telegram could not deliver
+        the confirmation. Strictly owner-scoped.
+        """
+        rows = await self._query_all(
+            """
+            SELECT 'study' AS kind, id, logged_at,
+                   subject AS summary, duration_min AS n1, NULL AS n2
+            FROM study_logs WHERE user_id = ?
+            UNION ALL
+            SELECT 'gym', id, logged_at, exercise, sets, reps
+            FROM gym_logs WHERE user_id = ?
+            UNION ALL
+            SELECT 'diet', id, logged_at, food_items, calories, NULL
+            FROM diet_logs WHERE user_id = ?
+            ORDER BY logged_at DESC, kind, id DESC
+            LIMIT ?
+            """,
+            (user_id, user_id, user_id, limit),
+        )
+        return [dict(row) for row in rows]
 
     # -------------------------------------------------------------------
     # Food catalog
