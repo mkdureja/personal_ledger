@@ -20,6 +20,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     db = context.bot_data["db"]
     user = update.effective_user
     await db.ensure_user(user.id, user.username, user.first_name)
+    # New users default to reminder opt-out; they enable via /reminders on.
+    await db.ensure_user_settings(user.id, default_enabled=False)
 
     first_name = escape_html(user.first_name or "there")
     text = (
@@ -63,7 +65,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/chart habits</code> — Habit heatmap (14 days)\n"
         "<code>/streak</code> — Current habit streaks\n\n"
         "<b>Other</b>\n"
+        "<code>/recent</code> — Your latest logged entries\n"
         "<code>/undo</code> — Delete last log entry (within 24h)\n"
+        "<code>/reminders on|off</code> — Turn reminders on or off\n"
+        "<code>/settings</code> — View your settings\n"
         "<code>/cancel</code> — Cancel current conversation\n"
         "<code>/menu</code> — Main menu\n"
         "<code>/help</code> — This message"

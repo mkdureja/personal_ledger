@@ -12,7 +12,7 @@ import contextvars
 import logging
 import math
 import unicodedata
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, NamedTuple
@@ -515,6 +515,58 @@ class DatabaseManager:
             (user_id, user_id, user_id, limit),
         )
         return [dict(row) for row in rows]
+
+    # -------------------------------------------------------------------
+    # Per-user settings (reminder opt-in, routine profile)
+    # -------------------------------------------------------------------
+    async def get_user_settings(self, user_id: int) -> dict[str, Any] | None:
+        """Return a user's settings row, or ``None`` if they have none yet."""
+        row = await self._query_one(
+            "SELECT * FROM user_settings WHERE user_id = ?", (user_id,)
+        )
+        return dict(row) if row is not None else None
+
+    async def ensure_user_settings(
+        self, user_id: int, *, default_enabled: bool = False
+    ) -> None:
+        """Create a settings row if absent (new users default to opt-in = off)."""
+        async with self._write_operation():
+            await self.conn.execute(
+                "INSERT INTO user_settings (user_id, reminders_enabled) "
+                "VALUES (?, ?) ON CONFLICT(user_id) DO NOTHING",
+                (user_id, 1 if default_enabled else 0),
+            )
+
+    async def set_reminders_enabled(self, user_id: int, enabled: bool) -> None:
+        """Turn a user's reminders on or off (upsert, owner-scoped)."""
+        async with self._write_operation():
+            await self.conn.execute(
+                "INSERT INTO user_settings (user_id, reminders_enabled, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET "
+                "reminders_enabled = excluded.reminders_enabled, "
+                "updated_at = excluded.updated_at",
+                (user_id, 1 if enabled else 0, _utc_timestamp_now()),
+            )
+
+    async def get_reminder_enabled_users(
+        self, candidate_ids: Iterable[int]
+    ) -> set[int]:
+        """Subset of ``candidate_ids`` whose reminders are enabled.
+
+        A user with no settings row is treated as opted out, so a new authorized
+        user receives nothing until they explicitly opt in.
+        """
+        candidates = list(candidate_ids)
+        if not candidates:
+            return set()
+        placeholders = ",".join("?" for _ in candidates)
+        rows = await self._query_all(
+            "SELECT user_id FROM user_settings "
+            f"WHERE reminders_enabled = 1 AND user_id IN ({placeholders})",  # noqa: S608
+            tuple(candidates),
+        )
+        return {row["user_id"] for row in rows}
 
     # -------------------------------------------------------------------
     # Food catalog

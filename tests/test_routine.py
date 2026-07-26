@@ -340,6 +340,7 @@ def _job_context(db, anchor, targets=None, quotes=()):
 
 @pytest.mark.asyncio
 async def test_anchor_job_sends_status(db_with_user, user_id):
+    await db_with_user.set_reminders_enabled(user_id, True)
     anchor = _anchor(anchor_id="morning", title="Morning kickoff", quote=True)
     ctx = _job_context(db_with_user, anchor, quotes=("Go",))
     await anchor_job(ctx)
@@ -353,6 +354,7 @@ async def test_anchor_job_sends_status(db_with_user, user_id):
 
 @pytest.mark.asyncio
 async def test_anchor_job_follows_up_with_unchecked_habits(db_with_user, user_id):
+    await db_with_user.set_reminders_enabled(user_id, True)
     for name in ["Read", "Meditate", "Walk"]:
         await db_with_user.add_habit(user_id, name)
     anchor = _anchor(anchor_id="evening", title="Evening review", checks=["habits"])
@@ -374,6 +376,7 @@ async def test_anchor_job_follows_up_with_unchecked_habits(db_with_user, user_id
 @pytest.mark.asyncio
 async def test_non_evening_anchor_habit_followup_is_branded(db_with_user, user_id):
     """A midday anchor that checks habits must not label itself 'Evening Reminder'."""
+    await db_with_user.set_reminders_enabled(user_id, True)
     await db_with_user.add_habit(user_id, "Stretch")
     anchor = _anchor(anchor_id="midday", title="Midday check-in", checks=["habits"])
     ctx = _job_context(db_with_user, anchor)

@@ -53,6 +53,7 @@ def test_one_legacy_long_name_is_split_without_data_or_entity_loss():
 async def test_daily_reminder_sends_every_chunk_as_html(user_id):
     habit_names = [f"Habit <{index}> & {'z' * 60}" for index in range(180)]
     db = SimpleNamespace(
+        get_reminder_enabled_users=AsyncMock(return_value={user_id}),
         get_users_with_unchecked_habits=AsyncMock(
             return_value={user_id: habit_names}
         ),

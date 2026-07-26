@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this (and register a new function in ``_MIGRATIONS``) for every schema
 # change. Version N is produced by ``_MIGRATIONS[N]``.
-LATEST_VERSION = 2
+LATEST_VERSION = 3
 
 
 class MigrationCollisionError(RuntimeError):
@@ -385,9 +385,40 @@ async def _migration_0002_mutation_receipts(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0003_user_settings(conn: aiosqlite.Connection) -> None:
+    """Add per-user ``user_settings`` (reminder opt-in, optional routine profile).
+
+    Existing users are backfilled with ``reminders_enabled = 1`` to preserve the
+    current global behavior; new users default to opt-in (disabled) at the
+    application layer. A settings row is never a grant of access — authentication
+    stays in ``.env``.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id           INTEGER PRIMARY KEY,
+            reminders_enabled INTEGER NOT NULL DEFAULT 1 CHECK(reminders_enabled IN (0, 1)),
+            routine_profile   TEXT,
+            created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    # Preserve current behavior: every existing user keeps receiving reminders.
+    await conn.execute(
+        """
+        INSERT INTO user_settings (user_id, reminders_enabled)
+        SELECT user_id, 1 FROM users
+        WHERE user_id NOT IN (SELECT user_id FROM user_settings)
+        """
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
+    3: _migration_0003_user_settings,
 }
 
 

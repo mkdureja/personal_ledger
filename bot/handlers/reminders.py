@@ -161,7 +161,12 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
     db = context.bot_data["db"]
     today = today_local()
 
-    unchecked_map = await db.get_users_with_unchecked_habits(ALLOWED_USER_IDS, today)
+    # Only users who have opted in receive reminders (Phase 4 opt-in model).
+    enabled = await db.get_reminder_enabled_users(ALLOWED_USER_IDS)
+    if not enabled:
+        return
+
+    unchecked_map = await db.get_users_with_unchecked_habits(enabled, today)
 
     for user_id, habit_names in unchecked_map.items():
         if not habit_names:
@@ -183,7 +188,7 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
     # Also send a "well done" message to users who completed all habits
-    for user_id in ALLOWED_USER_IDS:
+    for user_id in enabled:
         if user_id not in unchecked_map:
             # Check if they have any habits at all
             habits = await db.get_active_habits(user_id)
@@ -300,7 +305,9 @@ async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     first_header = f"{brand} — habits still to check:\n\n"
     continuation_header = f"{brand} (continued)\n\n"
 
-    for user_id in ALLOWED_USER_IDS:
+    # Owner-scoped opt-in: only users who enabled reminders get anchors.
+    enabled = await db.get_reminder_enabled_users(ALLOWED_USER_IDS)
+    for user_id in enabled:
         try:
             message, unchecked = await build_anchor_message(
                 anchor, db, user_id, today, targets, quotes
