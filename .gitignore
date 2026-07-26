@@ -2,6 +2,11 @@
 routine.yaml
 codex_review.md
 *.db
+# SQLite WAL sidecar files carry live, uncommitted state. Never commit them, and
+# never back up ledger.db without them (see docs/backup_runbook.md).
+*.db-wal
+*.db-shm
+*.db-journal
 __pycache__/
 *.pyc
 *.pyo
