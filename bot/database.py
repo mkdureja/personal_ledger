@@ -52,200 +52,9 @@ MAX_CATALOG_AMOUNT = float(NUTRITION_MAX_CATALOG_AMOUNT)
 MAX_NUTRIENT_VALUE = float(NUTRITION_MAX_NUTRIENT_VALUE)
 
 # ---------------------------------------------------------------------------
-# Schema DDL
+# Schema DDL and migrations now live in bot/migrations.py, keyed on
+# PRAGMA user_version. init_db() delegates to migrations.run_migrations().
 # ---------------------------------------------------------------------------
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id     INTEGER PRIMARY KEY,
-    username    TEXT,
-    first_name  TEXT,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS study_logs (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      INTEGER NOT NULL,
-    subject      TEXT NOT NULL,
-    duration_min INTEGER NOT NULL,
-    notes        TEXT,
-    logged_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
-CREATE TABLE IF NOT EXISTS gym_logs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL,
-    exercise    TEXT NOT NULL,
-    sets        INTEGER NOT NULL,
-    reps        INTEGER NOT NULL,
-    weight_kg   REAL,
-    logged_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
-CREATE TABLE IF NOT EXISTS diet_logs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL,
-    meal_type   TEXT NOT NULL CHECK(meal_type IN ('breakfast','lunch','dinner','snack')),
-    food_items  TEXT NOT NULL,
-    calories    INTEGER,
-    protein_g   REAL,
-    carbs_g     REAL,
-    fat_g       REAL,
-    logged_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
-CREATE TABLE IF NOT EXISTS foods (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      INTEGER NOT NULL,
-    name         TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 100),
-    name_key     TEXT NOT NULL CHECK(length(name_key) BETWEEN 1 AND 100),
-    base_unit    TEXT NOT NULL CHECK(base_unit IN ('g','ml','piece')),
-    basis_amount REAL NOT NULL CHECK(basis_amount > 0 AND basis_amount <= 1000000),
-    calories     REAL CHECK(calories IS NULL OR (calories >= 0 AND calories <= 1000000)),
-    protein_g    REAL CHECK(protein_g IS NULL OR (protein_g >= 0 AND protein_g <= 1000000)),
-    carbs_g      REAL CHECK(carbs_g IS NULL OR (carbs_g >= 0 AND carbs_g <= 1000000)),
-    fat_g        REAL CHECK(fat_g IS NULL OR (fat_g >= 0 AND fat_g <= 1000000)),
-    is_active    INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(id, user_id),
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
-CREATE TABLE IF NOT EXISTS food_portions (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      INTEGER NOT NULL,
-    food_id      INTEGER NOT NULL,
-    name         TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 50),
-    name_key     TEXT NOT NULL CHECK(length(name_key) BETWEEN 1 AND 50),
-    base_amount  REAL NOT NULL CHECK(base_amount > 0 AND base_amount <= 1000000),
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(food_id, name_key),
-    FOREIGN KEY (food_id, user_id)
-        REFERENCES foods(id, user_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS recipes (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      INTEGER NOT NULL,
-    name         TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 100),
-    name_key     TEXT NOT NULL CHECK(length(name_key) BETWEEN 1 AND 100),
-    yield_amount REAL NOT NULL CHECK(yield_amount > 0 AND yield_amount <= 1000000),
-    yield_unit   TEXT NOT NULL CHECK(yield_unit IN ('g','ml','piece','serving')),
-    is_active    INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(id, user_id),
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
-CREATE TABLE IF NOT EXISTS recipe_ingredients (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id        INTEGER NOT NULL,
-    recipe_id      INTEGER NOT NULL,
-    food_id        INTEGER NOT NULL,
-    base_amount    REAL NOT NULL CHECK(base_amount > 0 AND base_amount <= 1000000),
-    display_amount REAL NOT NULL CHECK(display_amount > 0 AND display_amount <= 1000000),
-    display_unit   TEXT NOT NULL CHECK(length(display_unit) BETWEEN 1 AND 50),
-    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(recipe_id, food_id),
-    FOREIGN KEY (recipe_id, user_id)
-        REFERENCES recipes(id, user_id) ON DELETE CASCADE,
-    FOREIGN KEY (food_id, user_id)
-        REFERENCES foods(id, user_id) ON DELETE RESTRICT
-);
-
-CREATE TABLE IF NOT EXISTS habits (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL,
-    habit_name  TEXT NOT NULL,
-    name_key    TEXT,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_active   INTEGER DEFAULT 1,
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
-CREATE TABLE IF NOT EXISTS habit_logs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL,
-    habit_id    INTEGER NOT NULL,
-    log_date    DATE NOT NULL,
-    UNIQUE(user_id, habit_id, log_date),
-    FOREIGN KEY (user_id) REFERENCES users(user_id),
-    FOREIGN KEY (habit_id) REFERENCES habits(id)
-);
-"""
-
-_INDEXES = """
-CREATE INDEX IF NOT EXISTS idx_study_user_date ON study_logs(user_id, logged_at);
-CREATE INDEX IF NOT EXISTS idx_gym_user_date ON gym_logs(user_id, logged_at);
-CREATE INDEX IF NOT EXISTS idx_diet_user_date ON diet_logs(user_id, logged_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_foods_active_name
-    ON foods(user_id, name_key) WHERE is_active = 1;
-CREATE INDEX IF NOT EXISTS idx_food_portions_lookup
-    ON food_portions(user_id, food_id, name_key);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_recipes_active_name
-    ON recipes(user_id, name_key) WHERE is_active = 1;
-CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_lookup
-    ON recipe_ingredients(user_id, recipe_id, id);
-CREATE INDEX IF NOT EXISTS idx_habit_logs_user_date ON habit_logs(user_id, log_date);
-"""
-
-# Partial unique index: only active habits must have a unique case-insensitive
-# key per user. Keying on name_key (not the display name) means "Read" and
-# "read" collide, so reactivation restores the original habit and its streak.
-_PARTIAL_INDEX = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_habits_active_key
-    ON habits(user_id, name_key) WHERE is_active = 1;
-"""
-
-# ``CREATE TABLE IF NOT EXISTS`` does not add columns to an existing table.
-# Keep these declarations simple so SQLite can add them without rebuilding the
-# table or changing existing rows.
-_DIET_MACRO_COLUMNS = (
-    ("protein_g", "REAL"),
-    ("carbs_g", "REAL"),
-    ("fat_g", "REAL"),
-)
-
-# Existing databases cannot gain a new foreign key without rebuilding the table.
-# These triggers enforce the same ownership and active-habit invariant for both
-# existing and newly-created databases, without invalidating historical rows.
-_HABIT_LOG_TRIGGERS = """
-CREATE TRIGGER IF NOT EXISTS trg_habit_logs_validate_insert
-BEFORE INSERT ON habit_logs
-FOR EACH ROW
-WHEN NOT EXISTS (
-    SELECT 1
-    FROM habits AS h
-    JOIN users AS u ON u.user_id = h.user_id
-    WHERE h.id = NEW.habit_id
-      AND h.user_id = NEW.user_id
-      AND h.is_active = 1
-)
-BEGIN
-    SELECT RAISE(ABORT, 'habit must be active and belong to user');
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_habit_logs_validate_update
-BEFORE UPDATE OF user_id, habit_id ON habit_logs
-FOR EACH ROW
-WHEN NOT EXISTS (
-    SELECT 1
-    FROM habits AS h
-    JOIN users AS u ON u.user_id = h.user_id
-    WHERE h.id = NEW.habit_id
-      AND h.user_id = NEW.user_id
-      AND h.is_active = 1
-)
-BEGIN
-    SELECT RAISE(ABORT, 'habit must be active and belong to user');
-END;
-"""
 
 
 def _normalize_catalog_text(value: str, field_name: str, max_length: int) -> str:
@@ -352,82 +161,28 @@ class DatabaseManager:
         logger.info("Database connected: %s", self.db_path)
 
     async def init_db(self) -> None:
-        """Create tables and indexes if they don't exist."""
+        """Bring the schema to the latest version via ordered migrations.
+
+        Schema evolution lives in :mod:`bot.migrations`, keyed on
+        ``PRAGMA user_version``. Runs under the connection lock so no concurrent
+        read can observe a half-applied migration.
+        """
         assert self._conn is not None, "Call connect() first"
-        async with self._write_operation():
-            await self._conn.executescript(_SCHEMA)
-            await self._add_missing_diet_macro_columns()
-            await self._migrate_habit_name_keys()
-            # Indexes must be created individually (executescript doesn't return
-            # cursors, but these are safe as IF NOT EXISTS).
-            for stmt in _INDEXES.strip().split(";"):
-                stmt = stmt.strip()
-                if stmt:
-                    await self._conn.execute(stmt)
-            # Partial unique index (keyed on name_key; must run after migration)
-            await self._conn.execute(_PARTIAL_INDEX.strip())
-            await self._conn.executescript(_HABIT_LOG_TRIGGERS)
+        from . import migrations
+
+        async with self._conn_lock:
+            token = _conn_lock_held.set(True)
+            try:
+                await migrations.run_migrations(self._conn)
+            finally:
+                _conn_lock_held.reset(token)
         logger.info("Database schema initialized")
 
-    async def _add_missing_diet_macro_columns(self) -> None:
-        """Add nullable macro columns to a pre-macro ``diet_logs`` table."""
-        cursor = await self.conn.execute("PRAGMA table_info(diet_logs)")
-        existing_columns = {row["name"] for row in await cursor.fetchall()}
-
-        for column_name, column_type in _DIET_MACRO_COLUMNS:
-            if column_name not in existing_columns:
-                await self.conn.execute(
-                    f"ALTER TABLE diet_logs ADD COLUMN {column_name} {column_type}"  # noqa: S608
-                )
-
     async def _migrate_habit_name_keys(self) -> None:
-        """Add and backfill ``habits.name_key`` and drop the legacy name index.
+        """Backfill ``habits.name_key`` (kept for targeted migration tests)."""
+        from . import migrations
 
-        Existing databases keyed active-habit uniqueness on the exact display
-        name; this switches to a case/format-insensitive key so reactivation
-        restores the original habit. Active case-variant duplicates that the old
-        index allowed are collapsed to the earliest so the new unique index holds.
-        """
-        cursor = await self.conn.execute("PRAGMA table_info(habits)")
-        columns = {row["name"] for row in await cursor.fetchall()}
-        if "name_key" not in columns:
-            await self.conn.execute("ALTER TABLE habits ADD COLUMN name_key TEXT")
-
-        # Backfill keys for pre-migration rows (and any left NULL).
-        cursor = await self.conn.execute(
-            "SELECT id, habit_name FROM habits WHERE name_key IS NULL OR name_key = ''"
-        )
-        for row in await cursor.fetchall():
-            await self.conn.execute(
-                "UPDATE habits SET name_key = ? WHERE id = ?",
-                (_habit_key(row["habit_name"]), row["id"]),
-            )
-
-        # Retire the legacy exact-name partial index before creating the keyed one.
-        await self.conn.execute("DROP INDEX IF EXISTS idx_habits_active")
-
-        # Collapse active duplicates that share a key so the unique index applies.
-        cursor = await self.conn.execute(
-            """
-            SELECT user_id, name_key, MIN(id) AS keep_id, COUNT(*) AS n
-            FROM habits
-            WHERE is_active = 1
-            GROUP BY user_id, name_key
-            HAVING n > 1
-            """
-        )
-        for row in await cursor.fetchall():
-            await self.conn.execute(
-                "UPDATE habits SET is_active = 0 "
-                "WHERE user_id = ? AND name_key = ? AND is_active = 1 AND id != ?",
-                (row["user_id"], row["name_key"], row["keep_id"]),
-            )
-            logger.warning(
-                "Migration collapsed %d duplicate active habit(s) for user %s (key %r)",
-                row["n"] - 1,
-                row["user_id"],
-                row["name_key"],
-            )
+        await migrations.backfill_habit_name_keys(self._conn)
 
     async def close(self) -> None:
         """Close the connection."""

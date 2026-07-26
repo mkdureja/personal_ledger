@@ -110,10 +110,13 @@ class TestSchema:
             "VALUES (?, ?, ?, ?, ?)",
             (user_id, "lunch", "Legacy meal", 725, "2026-07-18 06:30:00"),
         )
+        # Reverting to a pre-macro table means reverting to the legacy schema
+        # version so the versioned baseline migration re-runs and repairs it.
+        await db.conn.execute("PRAGMA user_version = 0")
         await db.conn.commit()
 
         await db.init_db()
-        await db.init_db()
+        await db.init_db()  # idempotent: already at latest, second run is a no-op
 
         cursor = await db.conn.execute("PRAGMA table_info(diet_logs)")
         column_names = [row["name"] for row in await cursor.fetchall()]
@@ -146,6 +149,9 @@ class TestSchema:
             DROP TRIGGER trg_habit_logs_validate_update;
             """
         )
+        # Simulate a legacy database missing the hardening triggers: revert the
+        # schema version so the versioned baseline migration re-installs them.
+        await db_with_user.conn.execute("PRAGMA user_version = 0")
         await db_with_user.conn.commit()
 
         await db_with_user.init_db()
