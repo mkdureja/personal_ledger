@@ -66,3 +66,23 @@ async def test_authorized_callback_denies_non_allowlisted_user():
     await handler(update, SimpleNamespace())
     assert calls == []
     query.answer.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authorized_callback_fails_closed_on_missing_chat_context():
+    """A callback without a resolvable chat/type is denied, not allowed."""
+    calls = []
+
+    @authorized_callback
+    async def handler(update, context):
+        calls.append(True)
+
+    query = SimpleNamespace(answer=AsyncMock(), data="x")
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=_ALLOWED_ID),
+        callback_query=query,
+        effective_chat=None,  # missing chat context must fail closed
+    )
+    await handler(update, SimpleNamespace())
+    assert calls == []  # handler never ran
+    query.answer.assert_awaited()  # spinner acknowledged, silent denial

@@ -4,6 +4,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from telegram.constants import ChatType
 from telegram.ext import ContextTypes
 
 from bot.handlers.start import start_command, help_command, menu_command, menu_callback
@@ -24,6 +25,7 @@ def create_callback_query(data, user_id=1):
             edit_message_reply_markup=AsyncMock()
         ),
         effective_user=SimpleNamespace(id=user_id),
+        effective_chat=SimpleNamespace(id=user_id, type=ChatType.PRIVATE),
     )
 
 

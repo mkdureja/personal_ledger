@@ -186,10 +186,13 @@ def authorized_callback(
         query = update.callback_query
         chat = getattr(update, "effective_chat", None)
         chat_type = getattr(chat, "type", None)
+        # Fail closed: require an explicit private chat. Missing chat context
+        # (chat_type is None) is denied rather than allowed, so a callback that
+        # arrives without a resolvable private chat can never act on user data.
         denied = (
             user is None
             or user.id not in ALLOWED_USER_IDS
-            or (chat_type is not None and chat_type != ChatType.PRIVATE)
+            or chat_type != ChatType.PRIVATE
         )
         if denied:
             if query is not None:

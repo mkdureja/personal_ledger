@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram.constants import ParseMode
+from telegram.constants import ChatType, ParseMode
 from telegram.error import NetworkError
 from telegram.ext import ConversationHandler
 
@@ -58,7 +58,7 @@ def _update(user_id: int, query):
     return SimpleNamespace(
         callback_query=query,
         effective_user=SimpleNamespace(id=user_id),
-        effective_chat=SimpleNamespace(id=query.message.chat_id),
+        effective_chat=SimpleNamespace(id=query.message.chat_id, type=ChatType.PRIVATE),
     )
 
 
@@ -358,14 +358,19 @@ async def test_analytics_callback_reuses_message_helper_without_update_mutation(
     user_id, monkeypatch
 ):
     class FrozenUpdate:
-        __slots__ = ("callback_query", "effective_user")
+        __slots__ = ("callback_query", "effective_user", "effective_chat")
 
-        def __init__(self, callback_query, effective_user):
+        def __init__(self, callback_query, effective_user, effective_chat):
             self.callback_query = callback_query
             self.effective_user = effective_user
+            self.effective_chat = effective_chat
 
     query = _query("analytics_summary")
-    update = FrozenUpdate(query, SimpleNamespace(id=user_id))
+    update = FrozenUpdate(
+        query,
+        SimpleNamespace(id=user_id),
+        SimpleNamespace(type=ChatType.PRIVATE),
+    )
     context = SimpleNamespace(bot_data={"db": object()})
     daily_summary = AsyncMock()
     monkeypatch.setattr(analytics, "_daily_summary", daily_summary)

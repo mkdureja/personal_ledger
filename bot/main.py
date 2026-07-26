@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
@@ -146,8 +147,13 @@ async def post_shutdown(application) -> None:
 # ---------------------------------------------------------------------------
 # Build and run
 # ---------------------------------------------------------------------------
-def main() -> None:
-    """Build the application and start polling."""
+def build_application() -> Application:
+    """Construct the Application with all handlers registered, without polling.
+
+    Separated from :func:`main` so tests can register the real handlers and drive
+    ``Application.process_update(...)`` through genuine handler order, filters,
+    and error routing without starting the network loop.
+    """
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
@@ -218,7 +224,13 @@ def main() -> None:
     # --- Error handler ---
     application.add_error_handler(error_handler)
 
-    # --- Start polling ---
+    return application
+
+
+def main() -> None:
+    """Build the application and start polling."""
+    application = build_application()
+
     # Preserve updates accumulated during downtime so a study/gym/meal command
     # sent while the process was restarting is not silently dropped.
     logger.info("Starting Ledger bot in polling mode...")

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from telegram import Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatType, ParseMode
 from telegram.error import NetworkError
 from telegram.ext import CommandHandler, ConversationHandler, TypeHandler
 
@@ -473,7 +473,11 @@ async def test_stale_gym_callback_does_not_advance_conversation() -> None:
         answer=AsyncMock(),
         edit_message_reply_markup=AsyncMock(),
     )
-    update = SimpleNamespace(effective_user=_allowed_user(), callback_query=query)
+    update = SimpleNamespace(
+        effective_user=_allowed_user(),
+        callback_query=query,
+        effective_chat=SimpleNamespace(id=10, type=ChatType.PRIVATE),
+    )
     state = {"gym_more_message_id": 10, "gym_exercises": ["existing"]}
     context = _context(SimpleNamespace(), state)
 
@@ -497,7 +501,11 @@ async def test_stale_diet_callback_does_not_set_meal_type() -> None:
         answer=AsyncMock(),
         edit_message_reply_markup=AsyncMock(),
     )
-    update = SimpleNamespace(effective_user=_allowed_user(), callback_query=query)
+    update = SimpleNamespace(
+        effective_user=_allowed_user(),
+        callback_query=query,
+        effective_chat=SimpleNamespace(id=10, type=ChatType.PRIVATE),
+    )
     state = {"diet_meal_message_id": 20, "study_subject": "Math"}
     context = _context(SimpleNamespace(), state)
 
@@ -519,7 +527,11 @@ async def test_global_stale_gym_callback_only_retires_button() -> None:
         answer=AsyncMock(),
         edit_message_reply_markup=AsyncMock(),
     )
-    update = SimpleNamespace(effective_user=_allowed_user(), callback_query=query)
+    update = SimpleNamespace(
+        effective_user=_allowed_user(),
+        callback_query=query,
+        effective_chat=SimpleNamespace(id=10, type=ChatType.PRIVATE),
+    )
     state = {"study_subject": "Math", "gym_exercises": ["existing"]}
     expected_state = {"study_subject": "Math", "gym_exercises": ["existing"]}
     context = _context(SimpleNamespace(), state)
@@ -544,7 +556,11 @@ async def test_global_stale_meal_callback_only_retires_button() -> None:
         answer=AsyncMock(),
         edit_message_reply_markup=AsyncMock(),
     )
-    update = SimpleNamespace(effective_user=_allowed_user(), callback_query=query)
+    update = SimpleNamespace(
+        effective_user=_allowed_user(),
+        callback_query=query,
+        effective_chat=SimpleNamespace(id=10, type=ChatType.PRIVATE),
+    )
     state = {"study_subject": "Math", "diet_meal_type": "breakfast"}
     expected_state = {"study_subject": "Math", "diet_meal_type": "breakfast"}
     context = _context(SimpleNamespace(), state)
@@ -585,6 +601,7 @@ async def test_allowed_user_cannot_retire_another_users_prompt(
     update = SimpleNamespace(
         effective_user=SimpleNamespace(id=clicker_id),
         callback_query=query,
+        effective_chat=SimpleNamespace(id=clicker_id, type=ChatType.PRIVATE),
     )
 
     await handler(update, _context(SimpleNamespace()))

@@ -31,6 +31,21 @@ async def test_post_init_sets_up_database_and_reminder(tmp_path, monkeypatch):
     assert db._conn is None
 
 
+def test_build_application_registers_handlers_without_polling():
+    """build_application wires up the real handlers and returns an Application.
+
+    This is the seam the two-user isolation matrix drives via
+    Application.process_update(...) without starting the network loop.
+    """
+    application = main_module.build_application()
+
+    total_handlers = sum(len(group) for group in application.handlers.values())
+    assert total_handlers > 10  # conversations + commands + callbacks
+    assert application.error_handlers  # error handler registered
+    # post_init/post_shutdown are registered but not invoked (no DB/network yet).
+    assert application.bot_data.get("db") is None
+
+
 @pytest.mark.asyncio
 async def test_post_shutdown_safe_without_init():
     """post_shutdown should not crash if post_init was never called."""

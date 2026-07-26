@@ -7,7 +7,7 @@ Reads .env, exposes typed constants, and provides timezone helpers.
 import os
 from datetime import date, datetime, time, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -52,7 +52,14 @@ ROUTINE_PATH: str = _resolve_under_root(
 # ---------------------------------------------------------------------------
 # Timezone
 # ---------------------------------------------------------------------------
-LOCAL_TZ: ZoneInfo = ZoneInfo(os.getenv("TZ", "Asia/Kolkata"))
+_tz_name = os.getenv("TZ", "Asia/Kolkata")
+try:
+    LOCAL_TZ: ZoneInfo = ZoneInfo(_tz_name)
+except (ZoneInfoNotFoundError, ValueError) as exc:
+    raise RuntimeError(
+        f"TZ={_tz_name!r} is not a valid IANA timezone (e.g. 'Asia/Kolkata'). "
+        "Check TZ in .env and ensure the tzdata package is installed."
+    ) from exc
 
 
 def today_local() -> date:
@@ -80,15 +87,49 @@ def local_date_from_utc(utc_dt: datetime) -> date:
 # ---------------------------------------------------------------------------
 # Access control
 # ---------------------------------------------------------------------------
-_raw_ids = os.getenv("ALLOWED_USER_IDS", "")
-ALLOWED_USER_IDS: frozenset[int] = frozenset(
-    int(uid.strip()) for uid in _raw_ids.split(",") if uid.strip()
+def _parse_allowed_user_ids(raw: str) -> frozenset[int]:
+    """Parse ALLOWED_USER_IDS into validated, positive Telegram IDs.
+
+    Rejects non-integers, zero, negatives, and duplicates with actionable,
+    setting-specific errors rather than silently normalizing them — Telegram user
+    IDs are always positive. The duplicate diagnostic reports a count, not the ID
+    value, so a real Telegram ID is never echoed into a crash log.
+    """
+    tokens = [tok.strip() for tok in raw.split(",") if tok.strip()]
+    if not tokens:
+        raise RuntimeError(
+            "ALLOWED_USER_IDS not set in .env — add your Telegram user ID "
+            "(message @userinfobot to find it)"
+        )
+    seen: set[int] = set()
+    duplicate_count = 0
+    for token in tokens:
+        try:
+            value = int(token)
+        except ValueError as exc:
+            raise RuntimeError(
+                "ALLOWED_USER_IDS must be a comma-separated list of integer "
+                f"Telegram IDs; {token!r} is not an integer."
+            ) from exc
+        if value <= 0:
+            raise RuntimeError(
+                "ALLOWED_USER_IDS must contain positive Telegram IDs; "
+                f"got a non-positive value ({value})."
+            )
+        if value in seen:
+            duplicate_count += 1
+        seen.add(value)
+    if duplicate_count:
+        raise RuntimeError(
+            f"ALLOWED_USER_IDS lists {duplicate_count} duplicate ID(s); "
+            "include each authorized Telegram ID exactly once."
+        )
+    return frozenset(seen)
+
+
+ALLOWED_USER_IDS: frozenset[int] = _parse_allowed_user_ids(
+    os.getenv("ALLOWED_USER_IDS", "")
 )
-if not ALLOWED_USER_IDS:
-    raise RuntimeError(
-        "ALLOWED_USER_IDS not set in .env — add your Telegram user ID "
-        "(message @userinfobot to find it)"
-    )
 
 # ---------------------------------------------------------------------------
 # Reminders

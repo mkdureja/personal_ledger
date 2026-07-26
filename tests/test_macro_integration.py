@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram.constants import ParseMode
+from telegram.constants import ChatType, ParseMode
 from telegram.ext import ConversationHandler
 
 from bot.config import today_local
@@ -27,7 +27,11 @@ def _callback_update(data: str, user):
         answer=AsyncMock(),
         edit_message_text=AsyncMock(),
     )
-    update = SimpleNamespace(callback_query=query, effective_user=user)
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_user=user,
+        effective_chat=SimpleNamespace(id=getattr(user, "id", 0), type=ChatType.PRIVATE),
+    )
     return update, query
 
 
