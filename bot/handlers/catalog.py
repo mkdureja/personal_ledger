@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -635,6 +635,63 @@ async def _recipe_remove(message: Any, db: Any, user_id: int, args: list[str]) -
     await reply_html(message, f"🗑️ Archived recipe <code>{_bounded_html(key)}</code>.")
 
 
+def _finalized_entry(
+    display: str, finalized: Mapping[str, Any]
+) -> ResolvedCatalogDietEntry:
+    return ResolvedCatalogDietEntry(
+        display_text=display,
+        calories=finalized.get("calories"),
+        protein_g=finalized.get("protein_g"),
+        carbs_g=finalized.get("carbs_g"),
+        fat_g=finalized.get("fat_g"),
+    )
+
+
+def resolve_food_diet_entry(
+    food: Mapping[str, Any],
+    portions: Sequence[Mapping[str, Any]],
+    quantity_tokens: Sequence[str],
+) -> ResolvedCatalogDietEntry:
+    """Calculate a food's nutrition for an entered quantity (no DB access)."""
+    request = _request_for_item(quantity_tokens)
+    resolved_amount = nutrition.resolve_food_base_amount(food, portions, request)
+    nutrients = nutrition.scale_food_nutrients(food, resolved_amount)
+    finalized = nutrition.finalize_log_nutrients(nutrients)
+    display_amount, display_unit = _quantity_display(request)
+    display = f"{_format_decimal(display_amount)} {display_unit} {food['name']}"
+    return _finalized_entry(display, finalized)
+
+
+def resolve_recipe_diet_entry(
+    recipe: Mapping[str, Any],
+    ingredients: Sequence[Mapping[str, Any]],
+    quantity_tokens: Sequence[str],
+) -> ResolvedCatalogDietEntry:
+    """Calculate a recipe's nutrition for an entered yield quantity (no DB)."""
+    request = nutrition.parse_quantity(
+        quantity_tokens,
+        allowed_base_units=nutrition.RECIPE_YIELD_UNITS,
+        allow_named=False,
+    )
+    if request.base_unit != recipe["yield_unit"]:
+        raise nutrition.NutritionError(
+            f"This recipe is defined in {recipe['yield_unit']}; "
+            f"{request.unit} is a different dimension."
+        )
+    if not ingredients:
+        raise nutrition.NutritionError("This recipe has no ingredients.")
+    assert request.base_amount is not None
+    batch_factor = request.base_amount / Decimal(str(recipe["yield_amount"]))
+    scaled = nutrition.aggregate_recipe_nutrients(ingredients, batch_factor)
+    finalized = nutrition.finalize_log_nutrients(scaled)
+    display_amount, display_unit = _quantity_display(request)
+    display = (
+        f"{_format_decimal(display_amount)} {display_unit} "
+        f"{recipe['name']} (recipe)"
+    )
+    return _finalized_entry(display, finalized)
+
+
 async def resolve_catalog_diet_entry(
     db: Any,
     user_id: int,
@@ -654,44 +711,11 @@ async def resolve_catalog_diet_entry(
         if food is None:
             raise nutrition.NutritionError(f"Saved food '{key}' was not found.")
         portions = await db.get_food_portions(user_id, food["id"])
-        request = _request_for_item(quantity_tokens)
-        resolved_amount = nutrition.resolve_food_base_amount(food, portions, request)
-        nutrients = nutrition.scale_food_nutrients(food, resolved_amount)
-        finalized = nutrition.finalize_log_nutrients(nutrients)
-        display_amount, display_unit = _quantity_display(request)
-        display = f"{_format_decimal(display_amount)} {display_unit} {food['name']}"
-    else:
-        key = _reference_key(reference_token, "recipe")
-        recipe = await db.get_recipe_by_key(user_id, key)
-        if recipe is None:
-            raise nutrition.NutritionError(f"Saved recipe '{key}' was not found.")
-        request = nutrition.parse_quantity(
-            quantity_tokens,
-            allowed_base_units=nutrition.RECIPE_YIELD_UNITS,
-            allow_named=False,
-        )
-        if request.base_unit != recipe["yield_unit"]:
-            raise nutrition.NutritionError(
-                f"This recipe is defined in {recipe['yield_unit']}; "
-                f"{request.unit} is a different dimension."
-            )
-        ingredients = await db.get_recipe_ingredients(user_id, recipe["id"])
-        if not ingredients:
-            raise nutrition.NutritionError(f"Recipe '{key}' has no ingredients.")
-        assert request.base_amount is not None
-        batch_factor = request.base_amount / Decimal(str(recipe["yield_amount"]))
-        scaled = nutrition.aggregate_recipe_nutrients(ingredients, batch_factor)
-        finalized = nutrition.finalize_log_nutrients(scaled)
-        display_amount, display_unit = _quantity_display(request)
-        display = (
-            f"{_format_decimal(display_amount)} {display_unit} "
-            f"{recipe['name']} (recipe)"
-        )
+        return resolve_food_diet_entry(food, portions, quantity_tokens)
 
-    return ResolvedCatalogDietEntry(
-        display_text=display,
-        calories=finalized.get("calories"),
-        protein_g=finalized.get("protein_g"),
-        carbs_g=finalized.get("carbs_g"),
-        fat_g=finalized.get("fat_g"),
-    )
+    key = _reference_key(reference_token, "recipe")
+    recipe = await db.get_recipe_by_key(user_id, key)
+    if recipe is None:
+        raise nutrition.NutritionError(f"Saved recipe '{key}' was not found.")
+    ingredients = await db.get_recipe_ingredients(user_id, recipe["id"])
+    return resolve_recipe_diet_entry(recipe, ingredients, quantity_tokens)

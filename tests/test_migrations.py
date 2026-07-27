@@ -13,7 +13,12 @@ import pytest
 
 from bot import migrations
 from bot.database import DatabaseManager
-from bot.migrations import LATEST_VERSION, MigrationCollisionError
+from bot.migrations import (
+    LATEST_VERSION,
+    MigrationCollisionError,
+    UnsupportedSchemaError,
+    _local_start_date,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +205,14 @@ async def test_legacy_fixture_reaches_same_schema_as_fresh():
         legacy_objects = await _schema_objects(legacy.conn)
 
         assert legacy_objects == fresh_objects
+        # Object names matching is not enough (codex #13): a legacy table upgraded
+        # in place must end up with the same *columns* as a fresh one, or the
+        # runtime would crash on a missing column despite a "successful" migration.
+        for table in ("users", "study_logs", "gym_logs", "diet_logs",
+                      "habits", "habit_logs"):
+            assert await _columns(legacy.conn, table) == await _columns(
+                fresh.conn, table
+            ), f"legacy {table} columns diverged from fresh"
         assert await migrations.get_user_version(legacy.conn) == LATEST_VERSION
     finally:
         await fresh.close()
@@ -420,5 +433,121 @@ async def test_collision_message_is_sanitized():
         assert "555000111" not in message
         assert "jog" not in message.lower()
         assert "secret" not in message.lower()
+    finally:
+        await mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# Fail closed on a newer schema than the binary supports (codex #11)
+# ---------------------------------------------------------------------------
+async def test_newer_schema_version_aborts_startup():
+    mgr = await _fresh_manager()
+    try:
+        await mgr.conn.execute(f"PRAGMA user_version = {LATEST_VERSION + 1}")
+        await mgr.conn.commit()
+
+        with pytest.raises(UnsupportedSchemaError):
+            await migrations.run_migrations(mgr.conn)
+
+        # Left untouched: an old binary must not "downgrade" or serve on it.
+        assert await migrations.get_user_version(mgr.conn) == LATEST_VERSION + 1
+    finally:
+        await mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# Fail closed on a legacy shape the migrator cannot certify (codex #1)
+# ---------------------------------------------------------------------------
+async def test_missing_required_column_fails_closed():
+    """A users table lacking first_name would crash /start — refuse to migrate it."""
+    mgr = await _fresh_manager()
+    try:
+        # users with no first_name column (an under-specified legacy shape).
+        await mgr.conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")
+        await mgr.conn.commit()
+
+        with pytest.raises(MigrationCollisionError) as exc_info:
+            await mgr.init_db()
+
+        assert await migrations.get_user_version(mgr.conn) == 0
+        assert "first_name" in str(exc_info.value)
+    finally:
+        await mgr.close()
+
+
+async def test_cross_owner_habit_log_fails_closed():
+    """A pre-existing habit_log owned by the wrong user stops the migration.
+
+    Triggers only guard future writes, so such a row can only be caught by an
+    explicit ownership check before the schema is certified.
+    """
+    mgr = await _fresh_manager()
+    try:
+        await _seed_legacy_schema(mgr.conn)
+        await mgr.conn.execute("PRAGMA foreign_keys=OFF")
+        await mgr.conn.execute(
+            "CREATE TABLE habit_logs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, "
+            "habit_id INTEGER NOT NULL, log_date DATE NOT NULL)"
+        )
+        for uid in (1001, 2002):
+            await mgr.conn.execute(
+                "INSERT INTO users (user_id, username, first_name) VALUES (?, 'u', 'U')",
+                (uid,),
+            )
+        cursor = await mgr.conn.execute(
+            "INSERT INTO habits (user_id, habit_name, is_active) VALUES (1001, 'Read', 1)"
+        )
+        habit_id = cursor.lastrowid
+        # 2002 logging 1001's habit — both FKs satisfied, ownership is not.
+        await mgr.conn.execute(
+            "INSERT INTO habit_logs (user_id, habit_id, log_date) VALUES (2002, ?, '2026-07-20')",
+            (habit_id,),
+        )
+        await mgr.conn.commit()
+
+        with pytest.raises(MigrationCollisionError) as exc_info:
+            await mgr.init_db()
+
+        assert await migrations.get_user_version(mgr.conn) == 0
+        assert "cross-owner" in str(exc_info.value)
+    finally:
+        await mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# Activity-period backfill uses the configured local date, not UTC (codex #14)
+# ---------------------------------------------------------------------------
+def test_local_start_date_crosses_utc_midnight_boundary():
+    """20:00 UTC is already the next day in Asia/Kolkata (+05:30)."""
+    # Late-UTC-day timestamp: local date must be the following day.
+    assert _local_start_date("2026-07-18 20:00:00") == "2026-07-19"
+    # Early-UTC-day timestamp: same local day.
+    assert _local_start_date("2026-07-18 04:00:00") == "2026-07-18"
+    assert _local_start_date("2026-07-18 09:15:30.123456") == "2026-07-18"
+
+
+async def test_v4_backfill_start_date_is_local_not_utc():
+    mgr = await _fresh_manager()
+    try:
+        await mgr.init_db()
+        await mgr.ensure_user(1001, "a", "A")
+        cursor = await mgr.conn.execute(
+            "INSERT INTO habits (user_id, habit_name, name_key, is_active, created_at) "
+            "VALUES (1001, 'Read', 'read', 1, '2026-07-18 20:00:00')"
+        )
+        habit_id = cursor.lastrowid
+        await mgr.conn.execute("DELETE FROM habit_activity_periods")
+        await mgr.conn.execute("PRAGMA user_version = 3")
+        await mgr.conn.commit()
+
+        await mgr.init_db()
+
+        row = await mgr._query_one(
+            "SELECT started_on FROM habit_activity_periods WHERE habit_id = ?",
+            (habit_id,),
+        )
+        # Local (Asia/Kolkata) date, not the UTC date 2026-07-18.
+        assert row["started_on"] == "2026-07-19"
     finally:
         await mgr.close()

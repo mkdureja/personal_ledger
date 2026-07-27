@@ -19,6 +19,37 @@ from .common import escape_html, reply_html
 logger = logging.getLogger(__name__)
 
 _RECENT_LIMIT = 10
+# Headroom below Telegram's 4096-character ceiling, counted in UTF-16 units (the
+# unit Telegram uses). A single diet entry (food_items up to 500 chars, expanded
+# by HTML escaping) stays well under this, so packing whole entry blocks is safe.
+_MESSAGE_LIMIT = 4000
+
+
+def _telegram_text_units(text: str) -> int:
+    """Return Telegram's UTF-16 text length for conservative limit checks."""
+    return len(text.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _pack_messages(header: str, blocks: list[str], limit: int) -> list[str]:
+    """Pack entry blocks into newline-joined messages under ``limit`` UTF-16 units.
+
+    The header leads the first message; continuation messages carry only blocks.
+    A block never straddles two messages, so no HTML entity is ever cut in half.
+    """
+    messages: list[str] = []
+    lines = [header]
+    units = _telegram_text_units(header)
+    for block in blocks:
+        block_units = _telegram_text_units(block) + 1  # + newline separator
+        if units + block_units > limit and len(lines) > 1:
+            messages.append("\n".join(lines))
+            lines = [block]
+            units = _telegram_text_units(block)
+        else:
+            lines.append(block)
+            units += block_units
+    messages.append("\n".join(lines))
+    return messages
 
 
 def _parse_utc(value: str) -> datetime | None:
@@ -31,9 +62,18 @@ def _parse_utc(value: str) -> datetime | None:
     return None
 
 
+# Bound each entry's displayed summary. /recent is a reconciliation view ("did my
+# save land?"), so a truncated description still identifies the entry while keeping
+# every block small enough that packing stays well under Telegram's limit.
+_MAX_SUMMARY_CHARS = 120
+
+
 def _format_entry(entry: dict) -> str:
     kind = entry["kind"]
-    summary = escape_html(str(entry["summary"]))
+    raw_summary = str(entry["summary"])
+    if len(raw_summary) > _MAX_SUMMARY_CHARS:
+        raw_summary = raw_summary[: _MAX_SUMMARY_CHARS - 1] + "…"
+    summary = escape_html(raw_summary)
     if kind == "study":
         body = f"📖 <b>{summary}</b> — {entry['n1']} min"
     elif kind == "gym":
@@ -60,6 +100,7 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    lines = ["🗒️ <b>Recent entries</b>\n"]
-    lines.extend(_format_entry(entry) for entry in entries)
-    await reply_html(update.message, "\n".join(lines))
+    blocks = [_format_entry(entry) for entry in entries]
+    messages = _pack_messages("🗒️ <b>Recent entries</b>\n", blocks, _MESSAGE_LIMIT)
+    for message in messages:
+        await reply_html(update.message, message)

@@ -25,6 +25,13 @@ consistent file. No downtime required.
 The script prints sanitized verification only: `user_version`, `integrity_check`,
 `foreign_key_check`, and per-table row counts. Record the printed path.
 
+The script **fails closed**: it prints `OK: backup written and verified` and exits
+`0` only when `integrity_check` returns `ok` and `foreign_key_check` finds no
+violations. If either fails it renames the file to `*.INVALID`, prints an error,
+and exits non-zero — so a corrupt copy can never be mistaken for a usable rollback
+point. Always check the exit code before treating a backup as your pre-migration
+safety net.
+
 ## Option B — clean shutdown + checkpoint + copy
 
 1. Stop the bot process cleanly (let `post_shutdown` close the connection).

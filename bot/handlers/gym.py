@@ -172,17 +172,43 @@ async def gym_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
 
     # Guided flow
+    return await _begin_gym_flow(update, context)
+
+
+async def _begin_gym_flow(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Start the guided gym flow from either /gym or the Gym menu tap.
+
+    Uses ``effective_message`` so it works for a callback entry (where
+    ``update.message`` is ``None``).
+    """
     context.user_data["gym_exercises"] = []
     activate_conversation(update, context, "gym")
     try:
         await reply_html(
-            update.message,
+            update.effective_message,
             "🏋️ <b>Log Workout</b>\n\nWhat exercise did you do?",
         )
     except BaseException:
         finish_conversation(update, context, "gym")
         raise
     return EXERCISE
+
+
+@authorized_callback
+async def gym_menu_entry(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Enter the guided gym flow from a main-menu 'Gym' tap."""
+    query = update.callback_query
+    await query.answer()
+    db = context.bot_data["db"]
+    user = update.effective_user
+    await db.ensure_user(user.id, user.username, user.first_name)
+    if not await conversation_available(update, context, "gym"):
+        return ConversationHandler.END
+    return await _begin_gym_flow(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +394,10 @@ async def more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # ConversationHandler
 # ---------------------------------------------------------------------------
 gym_conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("gym", gym_command, filters=AUTH_FILTER)],
+    entry_points=[
+        CommandHandler("gym", gym_command, filters=AUTH_FILTER),
+        CallbackQueryHandler(gym_menu_entry, pattern=r"^menu_gym$"),
+    ],
     states={
         EXERCISE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_exercise)],
         SETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sets)],

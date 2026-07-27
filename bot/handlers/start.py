@@ -93,16 +93,16 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # ---------------------------------------------------------------------------
 @authorized_callback
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle taps on the main menu InlineKeyboard."""
+    """Handle taps on the main menu InlineKeyboard.
+
+    Study/Gym/Diet taps are consumed by their ConversationHandlers' callback
+    entry points (registered before this handler), so they enter the guided
+    flow directly and never reach here. This handler serves the remaining
+    non-conversation categories.
+    """
     query = update.callback_query
     data = query.data or ""
-    valid_actions = {
-        "menu_study",
-        "menu_gym",
-        "menu_diet",
-        "menu_habits",
-        "menu_analytics",
-    }
+    valid_actions = {"menu_habits", "menu_analytics"}
     if data not in valid_actions:
         await query.answer("This menu is no longer valid.", show_alert=True)
         try:
@@ -113,29 +113,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await query.answer()
 
-    if data == "menu_study":
-        await reply_html(
-            query.message,
-            "📖 <b>Study</b> — Send /study to start logging, or use:\n"
-            "<code>/study &lt;subject&gt; &lt;minutes&gt; [notes]</code>",
-        )
-    elif data == "menu_gym":
-        await reply_html(
-            query.message,
-            "🏋️ <b>Gym</b> — Send /gym to start logging, or use:\n"
-            "<code>/gym &lt;exercise&gt; &lt;sets&gt; &lt;reps&gt; [weight]</code>",
-        )
-    elif data == "menu_diet":
-        await reply_html(
-            query.message,
-            "🍽️ <b>Diet</b> — Send /diet to start logging, or use:\n"
-            "<code>/diet &lt;meal&gt; &lt;food&gt; [calories] "
-            "[p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</code>\n"
-            "<code>/diet snack food:apple 1 medium</code>\n"
-            "<code>/diet dinner recipe:curry 1 serving</code>\n\n"
-            "Manage saved nutrition with /food and /recipe.",
-        )
-    elif data == "menu_habits":
+    if data == "menu_habits":
         # Import here to avoid circular imports
         from .habits import show_habits_checklist
         await show_habits_checklist(query.message, context, update.effective_user.id)

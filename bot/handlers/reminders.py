@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 # Bounded delivery retry so a brief Telegram outage at the scheduled minute
 # doesn't silently drop the day's nudge.
 _MAX_SEND_ATTEMPTS = 3
-_MAX_RETRY_AFTER_SECONDS = 30.0
+# Honor a Telegram-requested ``RetryAfter`` up to this long. Waiting a minute in a
+# background job is fine; a longer rate-limit is deferred to the next run instead
+# of wasting attempts on a delay Telegram already told us is too short.
+_MAX_RETRY_AFTER_SECONDS = 60.0
 
 
 async def _send_with_retry_classified(
@@ -30,19 +33,29 @@ async def _send_with_retry_classified(
 ) -> tuple[bool, str | None]:
     """Send one HTML message with bounded backoff; return ``(ok, error_category)``.
 
-    Honors Telegram's ``RetryAfter`` and retries a couple of ``NetworkError``s.
-    ``error_category`` is a sanitized label — never a token or raw exception/URL:
-    ``None`` on success, ``"permanent"`` for a non-retryable error, and
-    ``"retry_exhausted"`` when transient retries run out.
+    Honors Telegram's ``RetryAfter`` (up to :data:`_MAX_RETRY_AFTER_SECONDS`) and
+    retries a couple of ``NetworkError``s. ``error_category`` is a sanitized label
+    — never a token or raw exception/URL: ``None`` on success, ``"permanent"`` for
+    a non-retryable error, ``"rate_limited"`` when Telegram asks to wait longer
+    than we will block, and ``"retry_exhausted"`` when transient retries run out.
     """
     for attempt in range(1, _MAX_SEND_ATTEMPTS + 1):
         try:
             await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
             return True, None
         except RetryAfter as exc:
-            delay = min(
-                float(getattr(exc, "retry_after", 1)) + 0.5, _MAX_RETRY_AFTER_SECONDS
-            )
+            requested = float(getattr(exc, "retry_after", 1))
+            if requested > _MAX_RETRY_AFTER_SECONDS:
+                # Capping the wait below what Telegram demands only guarantees the
+                # retry is rate-limited too. Stop and let the next scheduled run
+                # resume, recording an honest, sanitized category.
+                logger.warning(
+                    "Telegram asked to retry chat %s after %.0fs (over the %.0fs "
+                    "cap); deferring to the next run",
+                    chat_id, requested, _MAX_RETRY_AFTER_SECONDS,
+                )
+                return False, "rate_limited"
+            delay = requested + 0.5
         except (BadRequest, Forbidden):
             # Permanent (bad chat, blocked bot, malformed message) — do not retry.
             # Note: in PTB these subclass NetworkError, so catch them first.
@@ -222,9 +235,10 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
         delivered = await _deliver_chunks(
             context, db, user_id, "daily_habit_reminder", local_date, messages
         )
+        # Sanitized: counts only, never the raw Telegram ID (delivery diagnostics
+        # must not identify a user — see docs/operations_runbook.md).
         logger.info(
-            "Reminder to user %d: %d unchecked across %d message(s), %d delivered",
-            user_id,
+            "Daily reminder: %d unchecked habit(s) across %d message(s), %d delivered",
             len(habit_names),
             len(messages),
             delivered,
@@ -379,5 +393,12 @@ async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     continuation_header=continuation_header,
                 )
             )
-        await _deliver_chunks(context, db, user_id, job_key, local_date, messages)
-        logger.info("Sent '%s' anchor to user %d", anchor.id, user_id)
+        delivered = await _deliver_chunks(
+            context, db, user_id, job_key, local_date, messages
+        )
+        # Report actual delivery (never a blanket "Sent" on failure) and keep the
+        # diagnostic sanitized — counts only, no raw Telegram ID.
+        logger.info(
+            "Anchor '%s': delivered %d of %d chunk(s)",
+            anchor.id, delivered, len(messages),
+        )

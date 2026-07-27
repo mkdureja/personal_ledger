@@ -74,6 +74,139 @@ def meal_type_keyboard(user_id: int) -> InlineKeyboardMarkup:
     )
 
 
+# The tap-first diet flow lists one saved item per row. Telegram allows 100
+# buttons; capping well below that keeps the message readable and leaves room
+# for the control rows. A two-user ledger is not expected to approach this.
+MAX_FOOD_CHOICES = 40
+_MAX_BUTTON_LABEL = 40
+
+
+def _button_label(text: object) -> str:
+    """Bound a dynamic button label so long saved names stay readable."""
+    label = str(text)
+    if len(label) > _MAX_BUTTON_LABEL:
+        return label[: _MAX_BUTTON_LABEL - 1] + "…"
+    return label
+
+
+def food_choice_keyboard(
+    user_id: int,
+    foods: list[dict],
+    recipes: list[dict],
+) -> InlineKeyboardMarkup:
+    """Saved foods and recipes as one-tap buttons, plus type/cancel escapes.
+
+    Buttons carry only short numeric ids; every id is re-validated against the
+    acting ``user_id`` before any lookup.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    remaining = MAX_FOOD_CHOICES
+    for food in foods[:remaining]:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"🥗 {_button_label(food['name'])}",
+                    callback_data=f"dfood_{user_id}_{food['id']}",
+                )
+            ]
+        )
+    remaining = MAX_FOOD_CHOICES - len(rows)
+    for recipe in recipes[:remaining]:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"🍲 {_button_label(recipe['name'])} (recipe)",
+                    callback_data=f"drecipe_{user_id}_{recipe['id']}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "✍️ Type it instead", callback_data=f"dtype_{user_id}"
+            ),
+            InlineKeyboardButton("✖️ Cancel", callback_data=f"dcancel_{user_id}"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def food_portion_keyboard(
+    user_id: int,
+    portions: list[dict],
+) -> InlineKeyboardMarkup:
+    """Named portions for a chosen food, plus custom-amount and back controls."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                _button_label(portion["name"]),
+                callback_data=f"dport_{user_id}_{portion['id']}",
+            )
+        ]
+        for portion in portions[:MAX_FOOD_CHOICES]
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "✍️ Custom amount", callback_data=f"dcustom_{user_id}"
+            ),
+            InlineKeyboardButton("🔙 Back", callback_data=f"dback_{user_id}"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def recipe_quantity_keyboard(
+    user_id: int,
+    yield_unit: str,
+) -> InlineKeyboardMarkup:
+    """A quick '1 <yield_unit>' button plus custom-amount and back controls."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"1 {_button_label(yield_unit)}",
+                    callback_data=f"drq_{user_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✍️ Custom amount", callback_data=f"dcustom_{user_id}"
+                ),
+                InlineKeyboardButton("🔙 Back", callback_data=f"dback_{user_id}"),
+            ],
+        ]
+    )
+
+
+def diet_save_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Preview confirmation: save the resolved item or cancel."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Save", callback_data=f"dsave_{user_id}"
+                ),
+                InlineKeyboardButton("✖️ Cancel", callback_data=f"dcancel_{user_id}"),
+            ]
+        ]
+    )
+
+
+def log_another_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """After a save, offer to keep logging or finish the diet flow."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🍽️ Log another", callback_data=f"dmore_{user_id}_yes"
+                ),
+                InlineKeyboardButton("✅ Done", callback_data=f"dmore_{user_id}_no"),
+            ]
+        ]
+    )
+
+
 def yes_no_keyboard(prefix: str, user_id: int) -> InlineKeyboardMarkup:
     """Generic Yes/No keyboard."""
     return InlineKeyboardMarkup(

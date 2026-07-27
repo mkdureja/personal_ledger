@@ -16,7 +16,7 @@ from bot.config import today_local
 from bot.handlers import analytics
 from bot.handlers.common import activate_conversation
 from bot.handlers.analytics import _send_streaks, _weekly_summary
-from bot.handlers.diet import stale_meal_callback
+from bot.handlers.diet import stale_diet_callback, stale_meal_callback
 from bot.handlers.gym import stale_gym_callback
 from bot.handlers.habits import (
     ADDING_HABIT,
@@ -76,6 +76,7 @@ def test_all_global_callbacks_are_authorized():
         habit_setup_page_callback,
         stale_gym_callback,
         stale_meal_callback,
+        stale_diet_callback,
         analytics.analytics_callback,
     ]
     assert all(hasattr(callback, "__wrapped__") for callback in callbacks)

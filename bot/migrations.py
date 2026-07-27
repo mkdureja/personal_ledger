@@ -45,6 +45,16 @@ class MigrationCollisionError(RuntimeError):
     """
 
 
+class UnsupportedSchemaError(RuntimeError):
+    """The database is at a schema version this binary does not understand.
+
+    Raised when ``user_version`` exceeds :data:`LATEST_VERSION` — i.e. an older
+    binary was started against a database a newer binary already migrated forward.
+    Serving would run old SQL assumptions against an unknown schema, so startup
+    aborts instead.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Baseline DDL (moved verbatim from database.py). Kept as individual statements
 # so each runs inside the migration transaction; executescript would commit.
@@ -256,6 +266,23 @@ _DIET_MACRO_COLUMNS: tuple[tuple[str, str], ...] = (
     ("fat_g", "REAL"),
 )
 
+# Columns the runtime unconditionally depends on. ``CREATE TABLE IF NOT EXISTS``
+# only creates *absent* tables — it never adds a missing column to a legacy table
+# — so a version-0 database with an under-specified core table would otherwise be
+# stamped current and then crash at runtime (e.g. /start needs users.first_name).
+# The baseline verifies these are present and fails closed on any unknown shape.
+_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "users": ("user_id", "username", "first_name"),
+    "study_logs": ("user_id", "subject", "duration_min", "notes", "logged_at"),
+    "gym_logs": ("user_id", "exercise", "sets", "reps", "weight_kg", "logged_at"),
+    "diet_logs": (
+        "user_id", "meal_type", "food_items", "calories",
+        "protein_g", "carbs_g", "fat_g", "logged_at",
+    ),
+    "habits": ("user_id", "habit_name", "name_key", "is_active", "created_at"),
+    "habit_logs": ("user_id", "habit_id", "log_date"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Reusable schema steps (also called by targeted tests via DatabaseManager)
@@ -295,6 +322,56 @@ async def backfill_habit_name_keys(conn: aiosqlite.Connection) -> None:
 
     # Retire the legacy exact-name partial index before the keyed one is created.
     await conn.execute("DROP INDEX IF EXISTS idx_habits_active")
+
+
+async def verify_baseline_integrity(conn: aiosqlite.Connection) -> None:
+    """Fail closed on a legacy shape the migrator cannot safely certify.
+
+    Run at the end of the baseline migration, inside its transaction, so any
+    failure rolls the whole step back and leaves ``user_version`` unchanged.
+    Checks three invariants, all with sanitized (schema-name / count-only)
+    diagnostics that never echo a Telegram ID, username, or first name:
+
+    * every core table has the columns the runtime requires;
+    * ``foreign_key_check`` finds no dangling reference;
+    * every ``habit_logs`` row belongs to a habit owned by the same user
+      (triggers only guard *future* writes, so pre-existing cross-owner or
+      orphan rows must be caught here).
+    """
+    for table, required in _REQUIRED_COLUMNS.items():
+        cursor = await conn.execute(f"PRAGMA table_info({table})")  # noqa: S608
+        present = {row["name"] for row in await cursor.fetchall()}
+        missing = sorted(column for column in required if column not in present)
+        if missing:
+            raise MigrationCollisionError(
+                f"table {table!r} is missing required column(s) {missing}; this "
+                "legacy schema is not one the migrator can safely upgrade. No "
+                "changes were made."
+            )
+
+    cursor = await conn.execute("PRAGMA foreign_key_check")
+    fk_problems = await cursor.fetchall()
+    if fk_problems:
+        raise MigrationCollisionError(
+            f"foreign_key_check found {len(fk_problems)} violating row(s); refusing "
+            "to certify a schema with dangling references. No changes were made."
+        )
+
+    cursor = await conn.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM habit_logs AS hl
+        LEFT JOIN habits AS h ON h.id = hl.habit_id
+        WHERE h.id IS NULL OR h.user_id != hl.user_id
+        """
+    )
+    row = await cursor.fetchone()
+    cross_owner = row["n"] if row else 0
+    if cross_owner:
+        raise MigrationCollisionError(
+            f"{cross_owner} habit_log row(s) reference a missing or cross-owner "
+            "habit; resolve these manually before migrating. No changes were made."
+        )
 
 
 async def detect_active_habit_collisions(conn: aiosqlite.Connection) -> list[int]:
@@ -353,6 +430,11 @@ async def _migration_0001_baseline(conn: aiosqlite.Connection) -> None:
     # 6. Ownership / active-habit enforcement triggers.
     for statement in _HABIT_LOG_TRIGGERS:
         await conn.execute(statement)
+
+    # 7. Fail closed on any legacy shape or ownership violation we cannot certify
+    #    (missing required column, dangling FK, cross-owner habit log). Runs last,
+    #    inside this transaction, so a failure rolls the whole baseline back.
+    await verify_baseline_integrity(conn)
 
 
 async def _migration_0002_mutation_receipts(conn: aiosqlite.Connection) -> None:
@@ -415,6 +497,28 @@ async def _migration_0003_user_settings(conn: aiosqlite.Connection) -> None:
     )
 
 
+def _local_start_date(created_at: str | None) -> str:
+    """Local ISO date for a habit's stored UTC ``created_at``.
+
+    Falls back to today's local date when the timestamp is missing or
+    unparseable — matching the old ``date('now')`` fallback but in local time.
+    """
+    from datetime import datetime, timezone
+
+    from .config import local_date_from_utc, today_local
+
+    if created_at:
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                parsed = datetime.strptime(created_at, fmt).replace(
+                    tzinfo=timezone.utc
+                )
+            except (ValueError, TypeError):
+                continue
+            return local_date_from_utc(parsed).isoformat()
+    return today_local().isoformat()
+
+
 async def _migration_0004_habit_activity_periods(conn: aiosqlite.Connection) -> None:
     """Add ``habit_activity_periods`` so adherence reflects real activation spans.
 
@@ -442,15 +546,27 @@ async def _migration_0004_habit_activity_periods(conn: aiosqlite.Connection) -> 
         "CREATE INDEX IF NOT EXISTS idx_habit_periods_lookup "
         "ON habit_activity_periods(user_id, habit_id, started_on)"
     )
-    await conn.execute(
+    # Compute the activation start in the *configured local* timezone, not UTC.
+    # ``created_at`` is stored as UTC; truncating it with substr() would shift the
+    # start back a local day for habits created late in the UTC day (e.g. 20:00
+    # UTC is already the next day in Asia/Kolkata), inflating the adherence
+    # denominator. Do the conversion in Python with the same helper the runtime
+    # uses so the boundary is handled identically.
+    cursor = await conn.execute(
         """
-        INSERT INTO habit_activity_periods (user_id, habit_id, started_on)
-        SELECT user_id, id, COALESCE(substr(created_at, 1, 10), date('now'))
+        SELECT user_id, id, created_at
         FROM habits
         WHERE is_active = 1
           AND id NOT IN (SELECT habit_id FROM habit_activity_periods)
         """
     )
+    for row in await cursor.fetchall():
+        started_on = _local_start_date(row["created_at"])
+        await conn.execute(
+            "INSERT INTO habit_activity_periods (user_id, habit_id, started_on) "
+            "VALUES (?, ?, ?)",
+            (row["user_id"], row["id"], started_on),
+        )
 
 
 async def _migration_0005_reminder_deliveries(conn: aiosqlite.Connection) -> None:
@@ -516,14 +632,15 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
         await conn.commit()
 
     current = await get_user_version(conn)
-    if current >= LATEST_VERSION:
-        if current > LATEST_VERSION:
-            logger.warning(
-                "Database user_version %d is newer than latest known %d; "
-                "leaving schema untouched.",
-                current,
-                LATEST_VERSION,
-            )
+    if current > LATEST_VERSION:
+        # An older binary against a newer database: fail closed rather than serve
+        # traffic against a schema whose invariants this code does not know.
+        raise UnsupportedSchemaError(
+            f"Database schema version {current} is newer than this binary supports "
+            f"({LATEST_VERSION}). Deploy the matching (or newer) application version; "
+            "refusing to run against an unknown schema."
+        )
+    if current == LATEST_VERSION:
         return current
 
     for target in range(current + 1, LATEST_VERSION + 1):

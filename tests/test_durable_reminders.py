@@ -10,11 +10,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest_asyncio
-from telegram.error import Forbidden, NetworkError
+from telegram.error import Forbidden, NetworkError, RetryAfter
 
 from bot.database import DatabaseManager
 from bot.handlers import reminders as reminders_module
-from bot.handlers.reminders import _deliver_chunks, daily_reminder
+from bot.handlers.reminders import (
+    _MAX_RETRY_AFTER_SECONDS,
+    _deliver_chunks,
+    _send_with_retry_classified,
+    daily_reminder,
+)
 
 MANOJ = 111
 RATIKA = 222
@@ -138,6 +143,71 @@ async def test_permanent_error_records_permanent_category(db):
         "SELECT error_category FROM reminder_deliveries WHERE user_id = ?", (MANOJ,)
     )
     assert row["error_category"] == "permanent"
+
+
+async def test_delivered_status_is_terminal(db):
+    """A later failed attempt must never reopen an already-delivered chunk (#5)."""
+    await db.record_chunk_delivery(MANOJ, "job", DATE, 0, delivered=True)
+    # An overlapping/duplicate run records a failure for the same chunk.
+    await db.record_chunk_delivery(
+        MANOJ, "job", DATE, 0, delivered=False, error_category="retry_exhausted"
+    )
+
+    row = await db._query_one(
+        "SELECT status, error_category, attempts FROM reminder_deliveries "
+        "WHERE user_id = ? AND chunk_index = 0",
+        (MANOJ,),
+    )
+    assert row["status"] == "delivered"  # stays terminal
+    assert row["error_category"] is None  # not overwritten by the late failure
+    assert row["attempts"] == 2  # attempts still counted
+    assert await db.get_delivered_chunk_indices(MANOJ, "job", DATE) == {0}
+
+
+async def test_retry_after_within_cap_is_honored_then_succeeds(monkeypatch):
+    """A RetryAfter Telegram can satisfy is awaited in full, then the send lands (#6)."""
+    slept: list[float] = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    class Bot:
+        async def send_message(self, chat_id, text, parse_mode=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RetryAfter(5)
+
+    ok, category = await _send_with_retry_classified(Bot(), MANOJ, "hi")
+
+    assert ok is True and category is None
+    assert slept and abs(slept[0] - 5.5) < 0.01  # honored the requested 5s (+0.5)
+
+
+async def test_retry_after_over_cap_defers_without_wasting_attempts(monkeypatch):
+    """A rate-limit longer than the cap is deferred, not retried into exhaustion (#6)."""
+    slept: list[float] = []
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    class Bot:
+        async def send_message(self, chat_id, text, parse_mode=None):
+            calls["n"] += 1
+            raise RetryAfter(int(_MAX_RETRY_AFTER_SECONDS) + 30)
+
+    ok, category = await _send_with_retry_classified(Bot(), MANOJ, "hi")
+
+    assert ok is False and category == "rate_limited"
+    assert calls["n"] == 1  # gave up immediately rather than sleeping a too-short delay
+    assert slept == []
 
 
 async def test_daily_reminder_one_user_blocked_other_delivered(db, monkeypatch):

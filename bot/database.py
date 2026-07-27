@@ -614,13 +614,23 @@ class DatabaseManager:
                      last_attempt_at, delivered_at, error_category)
                 VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
                 ON CONFLICT(user_id, job_key, local_date, chunk_index) DO UPDATE SET
-                    status = excluded.status,
+                    -- 'delivered' is terminal: a later failed attempt (e.g. from an
+                    -- overlapping run) must never reopen an already-sent chunk, or
+                    -- it would be re-sent against freshly generated content.
+                    status = CASE
+                        WHEN reminder_deliveries.status = 'delivered' THEN 'delivered'
+                        ELSE excluded.status
+                    END,
                     attempts = reminder_deliveries.attempts + 1,
                     last_attempt_at = excluded.last_attempt_at,
                     delivered_at = COALESCE(
                         reminder_deliveries.delivered_at, excluded.delivered_at
                     ),
-                    error_category = excluded.error_category
+                    error_category = CASE
+                        WHEN reminder_deliveries.status = 'delivered'
+                            THEN reminder_deliveries.error_category
+                        ELSE excluded.error_category
+                    END
                 """,
                 (
                     user_id,
@@ -740,28 +750,37 @@ class DatabaseManager:
     ) -> dict[str, Any] | None:
         """Return one active food by its normalized name key."""
         name_key = _catalog_key(key, "Food name", MAX_CATALOG_NAME_LENGTH)
-        cursor = await self.conn.execute(
+        row = await self._query_one(
             "SELECT * FROM foods "
             "WHERE user_id = ? AND name_key = ? AND is_active = 1",
             (user_id, name_key),
         )
-        row = await cursor.fetchone()
+        return dict(row) if row is not None else None
+
+    async def get_food_by_id(
+        self, user_id: int, food_id: int
+    ) -> dict[str, Any] | None:
+        """Return one active food owned by the user, by its primary-key id."""
+        row = await self._query_one(
+            "SELECT * FROM foods WHERE id = ? AND user_id = ? AND is_active = 1",
+            (food_id, user_id),
+        )
         return dict(row) if row is not None else None
 
     async def list_foods(self, user_id: int) -> list[dict[str, Any]]:
         """List a user's active foods in normalized-name order."""
-        cursor = await self.conn.execute(
+        rows = await self._query_all(
             "SELECT * FROM foods WHERE user_id = ? AND is_active = 1 "
             "ORDER BY name_key, id",
             (user_id,),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [dict(row) for row in rows]
 
     async def get_food_portions(
         self, user_id: int, food_id: int
     ) -> list[dict[str, Any]]:
         """List named portions for an active food owned by the user."""
-        cursor = await self.conn.execute(
+        rows = await self._query_all(
             "SELECT fp.*, f.base_unit AS food_base_unit "
             "FROM food_portions AS fp "
             "JOIN foods AS f ON f.id = fp.food_id AND f.user_id = fp.user_id "
@@ -769,7 +788,7 @@ class DatabaseManager:
             "ORDER BY fp.name_key, fp.id",
             (user_id, food_id),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [dict(row) for row in rows]
 
     async def _get_food_portion_locked(
         self, user_id: int, food_id: int, portion_id: int
@@ -1016,28 +1035,38 @@ class DatabaseManager:
     ) -> dict[str, Any] | None:
         """Return one active recipe by its normalized name key."""
         name_key = _catalog_key(key, "Recipe name", MAX_CATALOG_NAME_LENGTH)
-        cursor = await self.conn.execute(
+        row = await self._query_one(
             "SELECT * FROM recipes "
             "WHERE user_id = ? AND name_key = ? AND is_active = 1",
             (user_id, name_key),
         )
-        row = await cursor.fetchone()
+        return dict(row) if row is not None else None
+
+    async def get_recipe_by_id(
+        self, user_id: int, recipe_id: int
+    ) -> dict[str, Any] | None:
+        """Return one active recipe owned by the user, by its primary-key id."""
+        row = await self._query_one(
+            "SELECT * FROM recipes "
+            "WHERE id = ? AND user_id = ? AND is_active = 1",
+            (recipe_id, user_id),
+        )
         return dict(row) if row is not None else None
 
     async def list_recipes(self, user_id: int) -> list[dict[str, Any]]:
         """List a user's active recipes in normalized-name order."""
-        cursor = await self.conn.execute(
+        rows = await self._query_all(
             "SELECT * FROM recipes WHERE user_id = ? AND is_active = 1 "
             "ORDER BY name_key, id",
             (user_id,),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [dict(row) for row in rows]
 
     async def get_recipe_ingredients(
         self, user_id: int, recipe_id: int
     ) -> list[dict[str, Any]]:
         """Return active-recipe ingredients with food nutrition fields."""
-        cursor = await self.conn.execute(
+        rows = await self._query_all(
             "SELECT ri.*, f.name AS food_name, f.name_key AS food_key, "
             "f.base_unit AS food_base_unit, "
             "f.basis_amount AS food_basis_amount, "
@@ -1052,7 +1081,7 @@ class DatabaseManager:
             "ORDER BY ri.id",
             (user_id, recipe_id),
         )
-        return [dict(row) for row in await cursor.fetchall()]
+        return [dict(row) for row in rows]
 
     async def _get_recipe_ingredient_locked(
         self, user_id: int, recipe_id: int, ingredient_id: int

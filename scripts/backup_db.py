@@ -60,24 +60,47 @@ def backup(source: Path, dest: Path) -> int:
     # opened normally (backup needs a read transaction); the destination is a
     # fresh file that receives a fully checkpointed copy.
     src = sqlite3.connect(str(source))
+    healthy = False
     try:
         out = sqlite3.connect(str(dest))
         try:
             with out:
                 src.backup(out)
-            _report(out)
+            healthy = _report(out)
         finally:
             out.close()
     finally:
         src.close()
 
-    print(f"OK: backup written to {dest}")
+    # A backup is only useful as a rollback point if it verifies clean. Never
+    # report success on a corrupt copy — a deployment could otherwise adopt an
+    # unusable snapshot right before modifying production.
+    if not healthy:
+        invalid = dest.with_name(dest.name + ".INVALID")
+        try:
+            dest.rename(invalid)
+        except OSError:
+            invalid = dest
+        print(
+            f"ERROR: backup verification FAILED — integrity or foreign-key checks "
+            f"did not pass. File marked invalid: {invalid}",
+            file=sys.stderr,
+        )
+        print("Do NOT use this file as a rollback point.", file=sys.stderr)
+        return 1
+
+    print(f"OK: backup written and verified: {dest}")
     print("Record this path and the restore command in your deployment runbook.")
     return 0
 
 
-def _report(conn: sqlite3.Connection) -> None:
-    """Print sanitized verification output for a freshly written backup."""
+def _report(conn: sqlite3.Connection) -> bool:
+    """Print sanitized verification output; return True only if the copy is sound.
+
+    Returns ``False`` when ``integrity_check`` reports anything other than ``ok``
+    or ``foreign_key_check`` finds any violating row, so the caller can refuse to
+    certify the backup.
+    """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     fk_problems = conn.execute("PRAGMA foreign_key_check").fetchall()
@@ -95,6 +118,8 @@ def _report(conn: sqlite3.Connection) -> None:
         if table in existing:
             count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
             print(f"  {table:<20} {count}")
+
+    return integrity == "ok" and not fk_problems
 
 
 def main(argv: list[str] | None = None) -> int:

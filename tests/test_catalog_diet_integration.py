@@ -9,8 +9,8 @@ import pytest
 from telegram.ext import ConversationHandler
 
 from bot.config import today_local
-from bot.handlers.common import activate_conversation
-from bot.handlers.diet import diet_command, receive_food_items
+from bot.handlers.common import activate_conversation, active_conversation_flow
+from bot.handlers.diet import LOG_ANOTHER, diet_command, receive_food_items
 
 
 def _message(text: str = "") -> SimpleNamespace:
@@ -223,8 +223,10 @@ async def test_guided_food_step_can_resolve_a_saved_food_directly(
 
     result = await receive_food_items(update, context)
 
-    assert result == ConversationHandler.END
-    assert context.user_data == {}
+    # A resolved catalog reference saves, then offers the keep-logging loop.
+    assert result == LOG_ANOTHER
+    assert "diet_meal_type" not in context.user_data
+    assert active_conversation_flow(context) == "diet"
     row = (
         await db_with_user.get_diet_logs(
             user_id, today_local(), today_local()

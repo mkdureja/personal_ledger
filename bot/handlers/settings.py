@@ -21,6 +21,9 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Show the acting user's current settings."""
     db = context.bot_data["db"]
     user = update.effective_user
+    # A newly authorized user may run this before /start, so their users row may
+    # not exist yet; user_settings has a FK to users, so ensure it first.
+    await db.ensure_user(user.id, user.username, user.first_name)
     settings = await db.get_user_settings(user.id)
     reminders_on = bool(settings and settings["reminders_enabled"])
     profile = (settings or {}).get("routine_profile") or "default"
@@ -50,6 +53,9 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
+    # May be this user's first-ever command (before /start); user_settings has a
+    # FK to users, so ensure the users row exists before upserting settings.
+    await db.ensure_user(user.id, user.username, user.first_name)
     enabled = choice == "on"
     await db.set_reminders_enabled(user.id, enabled)
     if enabled:

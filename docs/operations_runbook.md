@@ -42,6 +42,14 @@ set to restart on failure.
 - Migrations run automatically at startup and are atomic; a failed migration rolls
   back and leaves the previous schema version usable, and the process aborts
   startup rather than serving on a half-migrated database.
+- Startup also **fails closed** if the database's `user_version` is *newer* than
+  the running binary understands (`UnsupportedSchemaError`) — e.g. an accidental
+  rollback to an older build after a forward migration. Deploy the matching (or
+  newer) application version rather than serving against an unknown schema.
+- The baseline migration refuses to certify an unrecognized legacy shape: it
+  verifies required columns, a clean `foreign_key_check`, and that no `habit_logs`
+  row is orphaned or cross-owner, stopping with a sanitized error (no changes made)
+  if any check fails.
 
 ## Data retention when a user is removed from the allowlist
 

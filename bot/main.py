@@ -33,7 +33,11 @@ from .handlers.common import (
 from .handlers.start import start_command, help_command, menu_command, menu_callback
 from .handlers.study import study_conv_handler
 from .handlers.gym import gym_conv_handler, stale_gym_callback
-from .handlers.diet import diet_conv_handler, stale_meal_callback
+from .handlers.diet import (
+    diet_conv_handler,
+    stale_diet_callback,
+    stale_meal_callback,
+)
 from .handlers.catalog import food_command, recipe_command
 from .handlers.habits import (
     habits_setup_conv_handler,
@@ -69,18 +73,43 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class _TokenRedactingFilter(logging.Filter):
-    """Scrub the bot token from formatted log records before they are emitted."""
+    """Scrub the bot token from log records before they are emitted.
+
+    Redacts the token from the rendered message, its positional args, and — the
+    part the message-only approach missed — the formatted exception traceback and
+    stack info, which the handler's formatter renders *after* the message from
+    ``exc_info``. A Bot API request URL surfacing inside an exception would
+    otherwise leak the token into service logs.
+    """
+
+    _REDACTION = "***"
+    # Reused only to render a record's exception into text so it can be redacted.
+    _exc_formatter = logging.Formatter()
 
     def __init__(self, secret: str) -> None:
         super().__init__()
         self._secret = secret
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
-        if self._secret:
-            message = record.getMessage()
-            if self._secret in message:
-                record.msg = message.replace(self._secret, "***")
-                record.args = None
+        if not self._secret:
+            return True
+
+        message = record.getMessage()
+        if self._secret in message:
+            record.msg = message.replace(self._secret, self._REDACTION)
+            record.args = None
+
+        # The traceback is formatted from exc_info by the handler's formatter,
+        # bypassing the message redaction above. Pre-render it here (cached in
+        # exc_text so the formatter reuses it), then redact both it and any
+        # stack info in place.
+        if record.exc_info and not record.exc_text:
+            record.exc_text = self._exc_formatter.formatException(record.exc_info)
+        if record.exc_text and self._secret in record.exc_text:
+            record.exc_text = record.exc_text.replace(self._secret, self._REDACTION)
+        if record.stack_info and self._secret in record.stack_info:
+            record.stack_info = record.stack_info.replace(self._secret, self._REDACTION)
+
         return True
 
 
@@ -195,6 +224,12 @@ def build_application() -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(stale_meal_callback, pattern=r"^meal_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            stale_diet_callback,
+            pattern=r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more)_",
+        )
     )
     # Menu callbacks
     application.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu_"))

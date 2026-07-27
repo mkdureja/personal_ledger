@@ -37,15 +37,37 @@ from .common import (
     reply_html,
     timeout_handler,
 )
-from .catalog import resolve_catalog_diet_entry
-from ..keyboards import meal_type_keyboard
+from .catalog import (
+    resolve_catalog_diet_entry,
+    resolve_food_diet_entry,
+    resolve_recipe_diet_entry,
+)
+from ..keyboards import (
+    diet_save_keyboard,
+    food_choice_keyboard,
+    food_portion_keyboard,
+    log_another_keyboard,
+    meal_type_keyboard,
+    recipe_quantity_keyboard,
+)
 from ..config import CONVERSATION_TIMEOUT
 from ..nutrition import MAX_LOG_CALORIES, MAX_LOG_MACRO_GRAMS, NutritionError
 
 logger = logging.getLogger(__name__)
 
-# Conversation states
-MEAL_TYPE, FOOD_ITEMS, CALORIES, MACROS = range(4)
+# Conversation states. MEAL_TYPE..MACROS are the original free-text flow;
+# FOOD_CHOICE..LOG_ANOTHER are the tap-first flow layered on top of it.
+(
+    MEAL_TYPE,
+    FOOD_ITEMS,
+    CALORIES,
+    MACROS,
+    FOOD_CHOICE,
+    PORTION_CHOICE,
+    CUSTOM_AMOUNT,
+    CONFIRM_ITEM,
+    LOG_ANOTHER,
+) = range(9)
 
 # Valid meal types
 VALID_MEALS = {"breakfast", "lunch", "dinner", "snack"}
@@ -56,6 +78,17 @@ _NUMBER_LIKE = re.compile(r"^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)$")
 _MACRO_TOKEN_RE = re.compile(r"^(p|c|f)=(.*)$", re.IGNORECASE)
 _MEAL_CALLBACK_RE = re.compile(
     r"^meal_(\d+)_(breakfast|lunch|dinner|snack)$"
+)
+_MEAL_EMOJI = {"breakfast": "🌅", "lunch": "🌞", "dinner": "🌙", "snack": "🍿"}
+
+# Tap-flow callback shapes (owner id is always re-validated before any lookup).
+_DFOOD_RE = re.compile(r"^dfood_(\d+)_(\d+)$")
+_DRECIPE_RE = re.compile(r"^drecipe_(\d+)_(\d+)$")
+_DPORT_RE = re.compile(r"^dport_(\d+)_(\d+)$")
+_DMORE_RE = re.compile(r"^dmore_(\d+)_(yes|no)$")
+# Any diet tap: action word + owner id (used for owner checks and stale taps).
+_DIET_TAP_RE = re.compile(
+    r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more)_(\d+)"
 )
 
 
@@ -129,7 +162,7 @@ def _format_grams(value: float) -> str:
     return f"{value:g}"
 
 
-def _confirmation(
+def _meal_body(
     meal_type: str,
     food_items: str,
     calories: int | None,
@@ -137,7 +170,8 @@ def _confirmation(
     carbs_g: float | None = None,
     fat_g: float | None = None,
 ) -> str:
-    """Build a safe HTML confirmation for a diet log."""
+    """Build the shared meal/food/calorie/macro lines used by both a confirmation
+    and a pre-save preview."""
     calories_line = (
         f"\n🔥 Calories: <b>{calories}</b>" if calories is not None else ""
     )
@@ -152,10 +186,35 @@ def _confirmation(
         else ""
     )
     return (
-        "✅ <b>Diet logged!</b>\n"
         f"🍽️ Meal: <b>{escape_html(meal_type.title())}</b>\n"
         f"🥘 Food: <b>{escape_html(food_items)}</b>{calories_line}{macros_line}"
     )
+
+
+def _confirmation(
+    meal_type: str,
+    food_items: str,
+    calories: int | None,
+    protein_g: float | None = None,
+    carbs_g: float | None = None,
+    fat_g: float | None = None,
+) -> str:
+    """Build a safe HTML confirmation for a saved diet log."""
+    body = _meal_body(meal_type, food_items, calories, protein_g, carbs_g, fat_g)
+    return f"✅ <b>Diet logged!</b>\n{body}"
+
+
+def _preview(
+    meal_type: str,
+    food_items: str,
+    calories: int | None,
+    protein_g: float | None = None,
+    carbs_g: float | None = None,
+    fat_g: float | None = None,
+) -> str:
+    """Build a safe HTML preview shown before the save mutation."""
+    body = _meal_body(meal_type, food_items, calories, protein_g, carbs_g, fat_g)
+    return f"👀 <b>Preview</b> — tap Save to log it.\n{body}"
 
 
 async def _remove_callback_markup(query: object) -> None:
@@ -306,18 +365,44 @@ async def diet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
 
     # Guided flow
+    return await _begin_diet_flow(update, context)
+
+
+async def _begin_diet_flow(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Show the meal-type keyboard from either /diet or the Diet menu tap.
+
+    Uses ``effective_message`` so it works for a callback entry (where
+    ``update.message`` is ``None``). Also reused by the keep-logging loop.
+    """
     activate_conversation(update, context, "diet")
     try:
         prompt = await reply_html(
-            update.message,
+            update.effective_message,
             "🍽️ <b>Log Meal</b>\n\nWhich meal?",
-            reply_markup=meal_type_keyboard(user.id),
+            reply_markup=meal_type_keyboard(update.effective_user.id),
         )
     except BaseException:
         finish_conversation(update, context, "diet")
         raise
     context.user_data["diet_meal_message_id"] = prompt.message_id
     return MEAL_TYPE
+
+
+@authorized_callback
+async def diet_menu_entry(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Enter the guided diet flow from a main-menu 'Diet' tap."""
+    query = update.callback_query
+    await query.answer()
+    db = context.bot_data["db"]
+    user = update.effective_user
+    await db.ensure_user(user.id, user.username, user.first_name)
+    if not await conversation_available(update, context, "diet"):
+        return ConversationHandler.END
+    return await _begin_diet_flow(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -348,13 +433,41 @@ async def receive_meal_type(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data.pop("diet_meal_message_id", None)
     await _remove_callback_markup(query)
     context.user_data["diet_meal_type"] = meal_type
-    emoji_map = {"breakfast": "🌅", "lunch": "🌞", "dinner": "🌙", "snack": "🍿"}
-    emoji = emoji_map.get(meal_type, "🍽️")
+    return await _prompt_food_choice(update, context, query.message, meal_type)
+
+
+async def _prompt_food_choice(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    meal_type: str,
+) -> int:
+    """Offer saved foods/recipes as taps, or fall back to the free-text prompt.
+
+    When the user has no saved nutrition, the original type-what-you-ate flow is
+    preserved unchanged.
+    """
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    foods = await db.list_foods(uid)
+    recipes = await db.list_recipes(uid)
+    emoji = _MEAL_EMOJI.get(meal_type, "🍽️")
+    title = escape_html(meal_type.title())
+
+    if foods or recipes:
+        prompt = await _send_tap_keyboard(
+            update,
+            context,
+            message,
+            f"{emoji} <b>{title}</b> — pick a saved item, or ✍️ type it:",
+            food_choice_keyboard(uid, foods, recipes),
+        )
+        return FOOD_CHOICE if prompt is not None else ConversationHandler.END
 
     try:
         await reply_html(
-            query.message,
-            f"{emoji} <b>{escape_html(meal_type.title())}</b> — what did you eat?",
+            message,
+            f"{emoji} <b>{title}</b> — what did you eat?",
         )
     except TelegramError:
         logger.warning("Could not deliver diet food prompt", exc_info=True)
@@ -558,9 +671,6 @@ async def _save_diet(
         fat_g=fat_g,
         source=mutation_source(update),
     )
-    context.user_data.pop("diet_meal_type", None)
-    context.user_data.pop("diet_food_items", None)
-    context.user_data.pop("diet_calories", None)
 
     try:
         await reply_html(
@@ -576,21 +686,541 @@ async def _save_diet(
         )
     except TelegramError:
         logger.warning("Could not deliver diet confirmation", exc_info=True)
+    return await _offer_log_another(update, context, update.message)
+
+
+# ---------------------------------------------------------------------------
+# Tap-first flow: select a saved food/recipe, choose a quantity, preview, save
+# ---------------------------------------------------------------------------
+def _clear_diet_entry_data(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Drop one meal's working data while keeping the conversation active."""
+    for key in (
+        "diet_meal_type",
+        "diet_food_items",
+        "diet_calories",
+        "diet_sel_kind",
+        "diet_sel_id",
+        "diet_pending",
+        "diet_meal_message_id",
+        "diet_ui_message_id",
+    ):
+        context.user_data.pop(key, None)
+
+
+async def _send_tap_keyboard(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    text: str,
+    keyboard: object,
+) -> object | None:
+    """Send a tracked keyboard message, or end the flow if delivery fails.
+
+    On success the message id is stored as ``diet_ui_message_id`` so the next
+    tap can be validated against exactly this message (stale-keyboard defense).
+    """
+    try:
+        prompt = await reply_html(message, text, reply_markup=keyboard)
+    except TelegramError:
+        logger.warning("Could not deliver diet tap keyboard", exc_info=True)
+        finish_conversation(update, context, "diet")
+        return None
+    context.user_data["diet_ui_message_id"] = prompt.message_id
+    return prompt
+
+
+async def _consume_diet_tap(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    check_ui: bool = True,
+) -> object | None:
+    """Validate a diet tap's owner and (optionally) the live UI message.
+
+    Returns the answered callback query on success, or ``None`` after telling
+    the user the menu belongs to someone else / has expired. Never trusts an id
+    from a button — the owner id embedded in the callback must match the acting
+    user, and the tap must land on the message we last sent.
+    """
+    query = update.callback_query
+    match = _DIET_TAP_RE.match(query.data or "")
+    if match is None or int(match.group(2)) != update.effective_user.id:
+        await query.answer("This menu belongs to another user.", show_alert=True)
+        return None
+    if check_ui:
+        expected = context.user_data.get("diet_ui_message_id")
+        actual = getattr(query.message, "message_id", None)
+        if expected is None or actual != expected:
+            await query.answer("This menu has expired.", show_alert=True)
+            await _remove_callback_markup(query)
+            return None
+    await query.answer()
+    return query
+
+
+@authorized_callback
+async def choose_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """A saved food was tapped: show its portions or ask for a custom amount."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return FOOD_CHOICE
+    food_id = int(_DFOOD_RE.fullmatch(query.data).group(2))
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    food = await db.get_food_by_id(uid, food_id)
+    if food is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+
+    await _remove_callback_markup(query)
+    context.user_data["diet_sel_kind"] = "food"
+    context.user_data["diet_sel_id"] = food_id
+    portions = await db.get_food_portions(uid, food_id)
+    if portions:
+        prompt = await _send_tap_keyboard(
+            update,
+            context,
+            query.message,
+            f"🥗 <b>{escape_html(food['name'])}</b> — how much?",
+            food_portion_keyboard(uid, portions),
+        )
+        return PORTION_CHOICE if prompt is not None else ConversationHandler.END
+    return await _prompt_custom_amount_text(
+        update, context, query.message, food["name"], food["base_unit"]
+    )
+
+
+@authorized_callback
+async def choose_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """A saved recipe was tapped: offer its yield quantity or a custom amount."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return FOOD_CHOICE
+    recipe_id = int(_DRECIPE_RE.fullmatch(query.data).group(2))
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    recipe = await db.get_recipe_by_id(uid, recipe_id)
+    if recipe is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+
+    await _remove_callback_markup(query)
+    context.user_data["diet_sel_kind"] = "recipe"
+    context.user_data["diet_sel_id"] = recipe_id
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        query.message,
+        f"🍲 <b>{escape_html(recipe['name'])}</b> — how much?",
+        recipe_quantity_keyboard(uid, recipe["yield_unit"]),
+    )
+    return PORTION_CHOICE if prompt is not None else ConversationHandler.END
+
+
+@authorized_callback
+async def type_food_instead(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Escape the tap flow: fall back to the original free-text food prompt."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return FOOD_CHOICE
+    await _remove_callback_markup(query)
+    context.user_data.pop("diet_ui_message_id", None)
+    meal_type = context.user_data.get("diet_meal_type", "")
+    emoji = _MEAL_EMOJI.get(meal_type, "🍽️")
+    title = escape_html(meal_type.title()) if meal_type else "Meal"
+    try:
+        await reply_html(
+            query.message, f"{emoji} <b>{title}</b> — what did you eat?"
+        )
+    except TelegramError:
+        logger.warning("Could not deliver diet food prompt", exc_info=True)
+        finish_conversation(update, context, "diet")
+        return ConversationHandler.END
+    return FOOD_ITEMS
+
+
+@authorized_callback
+async def back_to_food_choice(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Return from the quantity screen to the saved-item list."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return PORTION_CHOICE
+    await _remove_callback_markup(query)
+    return await _reprompt_food_choice(update, context, query.message)
+
+
+async def _reprompt_food_choice(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+) -> int:
+    """Re-show the saved-item list (after Back, or a vanished selection)."""
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    context.user_data.pop("diet_sel_kind", None)
+    context.user_data.pop("diet_sel_id", None)
+    foods = await db.list_foods(uid)
+    recipes = await db.list_recipes(uid)
+    if not foods and not recipes:
+        context.user_data.pop("diet_ui_message_id", None)
+        try:
+            await reply_html(message, "🍽️ What did you eat?")
+        except TelegramError:
+            finish_conversation(update, context, "diet")
+            return ConversationHandler.END
+        return FOOD_ITEMS
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        message,
+        "Pick a saved item, or ✍️ type it:",
+        food_choice_keyboard(uid, foods, recipes),
+    )
+    return FOOD_CHOICE if prompt is not None else ConversationHandler.END
+
+
+@authorized_callback
+async def choose_portion(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """A named food portion was tapped: resolve nutrition and preview it."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return PORTION_CHOICE
+    portion_id = int(_DPORT_RE.fullmatch(query.data).group(2))
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    food_id = context.user_data.get("diet_sel_id")
+    food = await db.get_food_by_id(uid, food_id) if food_id is not None else None
+    if food is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    portions = await db.get_food_portions(uid, food_id)
+    portion = next((p for p in portions if p["id"] == portion_id), None)
+    if portion is None:
+        await query.answer("That portion is no longer available.", show_alert=True)
+        return PORTION_CHOICE
+    try:
+        entry = resolve_food_diet_entry(food, portions, ["1", portion["name"]])
+    except NutritionError as exc:
+        await query.answer(str(exc)[:190], show_alert=True)
+        return PORTION_CHOICE
+    await _remove_callback_markup(query)
+    return await _show_item_preview(update, context, query.message, entry)
+
+
+@authorized_callback
+async def recipe_quick_amount(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """The '1 <yield_unit>' recipe quick button: resolve nutrition and preview."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return PORTION_CHOICE
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    recipe_id = context.user_data.get("diet_sel_id")
+    recipe = (
+        await db.get_recipe_by_id(uid, recipe_id) if recipe_id is not None else None
+    )
+    if recipe is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    ingredients = await db.get_recipe_ingredients(uid, recipe_id)
+    try:
+        entry = resolve_recipe_diet_entry(
+            recipe, ingredients, ["1", recipe["yield_unit"]]
+        )
+    except NutritionError as exc:
+        await query.answer(str(exc)[:190], show_alert=True)
+        return PORTION_CHOICE
+    await _remove_callback_markup(query)
+    return await _show_item_preview(update, context, query.message, entry)
+
+
+@authorized_callback
+async def prompt_custom_amount(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """The 'Custom amount' button: ask the user to type a quantity."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return PORTION_CHOICE
+    await _remove_callback_markup(query)
+    kind = context.user_data.get("diet_sel_kind")
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    sel_id = context.user_data.get("diet_sel_id")
+    if kind == "food" and sel_id is not None:
+        food = await db.get_food_by_id(uid, sel_id)
+        if food is None:
+            return await _reprompt_food_choice(update, context, query.message)
+        return await _prompt_custom_amount_text(
+            update, context, query.message, food["name"], food["base_unit"]
+        )
+    if kind == "recipe" and sel_id is not None:
+        recipe = await db.get_recipe_by_id(uid, sel_id)
+        if recipe is None:
+            return await _reprompt_food_choice(update, context, query.message)
+        return await _prompt_custom_amount_text(
+            update, context, query.message, recipe["name"], recipe["yield_unit"]
+        )
+    return await _reprompt_food_choice(update, context, query.message)
+
+
+async def _prompt_custom_amount_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    name: str,
+    unit_hint: str,
+) -> int:
+    """Ask for a typed quantity and move to the CUSTOM_AMOUNT text state."""
+    context.user_data.pop("diet_ui_message_id", None)
+    try:
+        await reply_html(
+            message,
+            f"✍️ How much <b>{escape_html(name)}</b>? "
+            f"e.g. <code>200 {escape_html(unit_hint)}</code> or "
+            "<code>1 medium</code>.",
+        )
+    except TelegramError:
+        logger.warning("Could not deliver custom-amount prompt", exc_info=True)
+        finish_conversation(update, context, "diet")
+        return ConversationHandler.END
+    return CUSTOM_AMOUNT
+
+
+async def receive_custom_amount(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Resolve a typed quantity for the selected food/recipe, then preview."""
+    tokens = update.message.text.split()
+    kind = context.user_data.get("diet_sel_kind")
+    sel_id = context.user_data.get("diet_sel_id")
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    try:
+        if kind == "food" and sel_id is not None:
+            food = await db.get_food_by_id(uid, sel_id)
+            if food is None:
+                raise NutritionError("That saved food is no longer available.")
+            portions = await db.get_food_portions(uid, sel_id)
+            entry = resolve_food_diet_entry(food, portions, tokens)
+        elif kind == "recipe" and sel_id is not None:
+            recipe = await db.get_recipe_by_id(uid, sel_id)
+            if recipe is None:
+                raise NutritionError("That saved recipe is no longer available.")
+            ingredients = await db.get_recipe_ingredients(uid, sel_id)
+            entry = resolve_recipe_diet_entry(recipe, ingredients, tokens)
+        else:
+            finish_conversation(update, context, "diet")
+            await update.message.reply_text(
+                "⚠️ Lost track of the item. Start again with /diet."
+            )
+            return ConversationHandler.END
+    except NutritionError as exc:
+        await update.message.reply_text(
+            f"❌ {exc}\nTry again, e.g. 200 g or 1 medium."
+        )
+        return CUSTOM_AMOUNT
+    return await _show_item_preview(
+        update, context, update.effective_message, entry
+    )
+
+
+async def _show_item_preview(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    entry: object,
+) -> int:
+    """Store the resolved item and show a Save/Cancel preview."""
+    meal_type = context.user_data.get("diet_meal_type", "")
+    context.user_data["diet_pending"] = {
+        "display_text": entry.display_text,
+        "calories": entry.calories,
+        "protein_g": entry.protein_g,
+        "carbs_g": entry.carbs_g,
+        "fat_g": entry.fat_g,
+    }
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        message,
+        _preview(
+            meal_type,
+            entry.display_text,
+            entry.calories,
+            entry.protein_g,
+            entry.carbs_g,
+            entry.fat_g,
+        ),
+        diet_save_keyboard(update.effective_user.id),
+    )
+    return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
+
+
+@authorized_callback
+async def save_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Persist the previewed item (the mutation boundary), then offer another."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return CONFIRM_ITEM
+    pending = context.user_data.get("diet_pending")
+    meal_type = context.user_data.get("diet_meal_type")
+    if not isinstance(pending, dict) or not isinstance(meal_type, str):
+        await _remove_callback_markup(query)
+        finish_conversation(update, context, "diet")
+        try:
+            await query.message.reply_text(
+                "⚠️ Lost the pending item. Start again with /diet."
+            )
+        except TelegramError:
+            logger.warning("Could not report lost diet item", exc_info=True)
+        return ConversationHandler.END
+
+    await _remove_callback_markup(query)
+    db = context.bot_data["db"]
+    await db.log_diet(
+        update.effective_user.id,
+        meal_type,
+        pending["display_text"],
+        pending["calories"],
+        protein_g=pending["protein_g"],
+        carbs_g=pending["carbs_g"],
+        fat_g=pending["fat_g"],
+        source=mutation_source(update),
+    )
+    try:
+        await reply_html(
+            query.message,
+            _confirmation(
+                meal_type,
+                pending["display_text"],
+                pending["calories"],
+                pending["protein_g"],
+                pending["carbs_g"],
+                pending["fat_g"],
+            ),
+        )
+    except TelegramError:
+        logger.warning("Could not deliver diet confirmation", exc_info=True)
+    return await _offer_log_another(update, context, query.message)
+
+
+async def _offer_log_another(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+) -> int:
+    """After a save, keep the flow open with a one-tap 'Log another' / 'Done'.
+
+    Clears the finished meal's data but leaves the conversation active; the
+    normal 300s idle timeout closes it when the user stops logging.
+    """
+    _clear_diet_entry_data(context)
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        message,
+        "➕ Log another meal?",
+        log_another_keyboard(update.effective_user.id),
+    )
+    return LOG_ANOTHER if prompt is not None else ConversationHandler.END
+
+
+@authorized_callback
+async def log_another(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Keep-logging loop: reopen the meal picker, or finish the diet flow."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return LOG_ANOTHER
+    choice = _DMORE_RE.fullmatch(query.data).group(2)
+    await _remove_callback_markup(query)
+    if choice == "yes":
+        _clear_diet_entry_data(context)
+        return await _begin_diet_flow(update, context)
     finish_conversation(update, context, "diet")
+    try:
+        await reply_html(query.message, "✅ <b>Done logging.</b>")
+    except TelegramError:
+        logger.warning("Could not deliver diet done notice", exc_info=True)
     return ConversationHandler.END
+
+
+@authorized_callback
+async def cancel_diet_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Cancel button available on the tap keyboards (owner-checked, forgiving)."""
+    query = await _consume_diet_tap(update, context, check_ui=False)
+    if query is None:
+        return ConversationHandler.END
+    await _remove_callback_markup(query)
+    finish_conversation(update, context, "diet")
+    try:
+        await query.message.reply_text("✖️ Cancelled.")
+    except TelegramError:
+        logger.warning("Could not deliver diet cancellation", exc_info=True)
+    return ConversationHandler.END
+
+
+@authorized_callback
+async def stale_diet_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Answer a diet tap whose conversation already ended (timeout/cancel)."""
+    query = update.callback_query
+    match = _DIET_TAP_RE.match(query.data or "")
+    if match is None:
+        await query.answer("This menu is no longer valid.", show_alert=True)
+        return
+    if int(match.group(2)) != update.effective_user.id:
+        await query.answer("This menu belongs to another user.", show_alert=True)
+        return
+    await query.answer("This menu has expired.", show_alert=True)
+    await _remove_callback_markup(query)
 
 
 # ---------------------------------------------------------------------------
 # ConversationHandler
 # ---------------------------------------------------------------------------
 diet_conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("diet", diet_command, filters=AUTH_FILTER)],
+    entry_points=[
+        CommandHandler("diet", diet_command, filters=AUTH_FILTER),
+        CallbackQueryHandler(diet_menu_entry, pattern=r"^menu_diet$"),
+    ],
     states={
         MEAL_TYPE: [
             CallbackQueryHandler(
                 receive_meal_type,
                 pattern=r"^meal_\d+_(breakfast|lunch|dinner|snack)$",
             )
+        ],
+        FOOD_CHOICE: [
+            CallbackQueryHandler(choose_food, pattern=r"^dfood_\d+_\d+$"),
+            CallbackQueryHandler(choose_recipe, pattern=r"^drecipe_\d+_\d+$"),
+            CallbackQueryHandler(type_food_instead, pattern=r"^dtype_\d+$"),
+        ],
+        PORTION_CHOICE: [
+            CallbackQueryHandler(choose_portion, pattern=r"^dport_\d+_\d+$"),
+            CallbackQueryHandler(recipe_quick_amount, pattern=r"^drq_\d+$"),
+            CallbackQueryHandler(prompt_custom_amount, pattern=r"^dcustom_\d+$"),
+            CallbackQueryHandler(back_to_food_choice, pattern=r"^dback_\d+$"),
+        ],
+        CUSTOM_AMOUNT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_custom_amount)
+        ],
+        CONFIRM_ITEM: [
+            CallbackQueryHandler(save_item, pattern=r"^dsave_\d+$"),
+        ],
+        LOG_ANOTHER: [
+            CallbackQueryHandler(log_another, pattern=r"^dmore_\d+_(yes|no)$"),
         ],
         FOOD_ITEMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_food_items)],
         CALORIES: [
@@ -605,6 +1235,7 @@ diet_conv_handler = ConversationHandler(
     },
     fallbacks=[
         cancel_handler,
+        CallbackQueryHandler(cancel_diet_callback, pattern=r"^dcancel_\d+$"),
         CommandHandler("diet", active_conversation_hint, filters=AUTH_FILTER),
     ],
     conversation_timeout=CONVERSATION_TIMEOUT,

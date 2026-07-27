@@ -81,29 +81,46 @@ async def test_menu_command(user_id):
     assert kwargs.get("parse_mode") == "HTML"
 
 
-async def test_menu_callback_valid_actions(db, user_id, monkeypatch):
-    """Test valid menu actions send corresponding help or checklists."""
-    # Mock habits handler to avoid needing a full checklist setup
-    from unittest.mock import AsyncMock
-    monkeypatch.setattr("bot.handlers.habits.show_habits_checklist", AsyncMock())
-    
-    actions = {
-        "menu_study": "Send /study to start logging",
-        "menu_gym": "Send /gym to start logging",
-        "menu_diet": "Send /diet to start logging",
-        "menu_analytics": "Choose a report",
-    }
-    
-    for action, expected_text in actions.items():
+async def test_menu_callback_analytics(db, user_id):
+    """The Analytics tap opens the analytics report sub-menu."""
+    update = create_callback_query("menu_analytics", user_id=user_id)
+    context = SimpleNamespace(bot_data={"db": db})
+
+    await menu_callback(update, context)
+
+    update.callback_query.answer.assert_called_once()
+    update.callback_query.message.reply_text.assert_called_once()
+    args, _ = update.callback_query.message.reply_text.call_args
+    assert "Choose a report" in args[0]
+
+
+async def test_menu_callback_habits(db, user_id, monkeypatch):
+    """The Habits tap shows the habit checklist."""
+    mock_checklist = AsyncMock()
+    monkeypatch.setattr("bot.handlers.habits.show_habits_checklist", mock_checklist)
+
+    update = create_callback_query("menu_habits", user_id=user_id)
+    context = SimpleNamespace(bot_data={"db": db})
+
+    await menu_callback(update, context)
+
+    update.callback_query.answer.assert_called_once()
+    mock_checklist.assert_awaited_once()
+
+
+async def test_menu_callback_conversation_categories_not_served_here(user_id):
+    """Study/Gym/Diet taps are consumed by their ConversationHandler entry
+    points (registered before menu_callback), so if one ever reaches this
+    handler it is treated as an expired button rather than served here."""
+    for action in ("menu_study", "menu_gym", "menu_diet"):
         update = create_callback_query(action, user_id=user_id)
-        context = SimpleNamespace(bot_data={"db": db})
-        
+        context = SimpleNamespace()
+
         await menu_callback(update, context)
-        
-        update.callback_query.answer.assert_called_once()
-        update.callback_query.message.reply_text.assert_called_once()
-        args, _ = update.callback_query.message.reply_text.call_args
-        assert expected_text in args[0]
+
+        update.callback_query.answer.assert_called_once_with(
+            "This menu is no longer valid.", show_alert=True
+        )
 
 
 async def test_menu_callback_invalid_action(user_id):

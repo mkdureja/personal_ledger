@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_menu_routing.py -q)",
+      "Bash(python -m pytest tests/test_diet_tap.py -q)",
+      "Bash(python -m pyflakes bot/handlers/diet.py bot/handlers/start.py bot/handlers/gym.py bot/handlers/study.py bot/keyboards.py bot/handlers/catalog.py bot/database.py bot/main.py)",
+      "Bash(python -)"
+    ]
+  }
+}

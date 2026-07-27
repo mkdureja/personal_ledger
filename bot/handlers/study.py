@@ -13,6 +13,7 @@ import re
 from telegram import Update
 from telegram.error import TelegramError
 from telegram.ext import (
+    CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
     MessageHandler,
@@ -25,6 +26,7 @@ from .common import (
     AUTH_FILTER,
     activate_conversation,
     active_conversation_hint,
+    authorized_callback,
     cancel_handler,
     conversation_available,
     deliver_or_end,
@@ -172,16 +174,42 @@ async def study_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return ConversationHandler.END
 
     # Guided flow
+    return await _begin_study_flow(update, context)
+
+
+async def _begin_study_flow(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Start the guided study flow from either /study or the Study menu tap.
+
+    Uses ``effective_message`` so it works for a callback entry (where
+    ``update.message`` is ``None``).
+    """
     activate_conversation(update, context, "study")
     try:
         await reply_html(
-            update.message,
+            update.effective_message,
             "📖 <b>Log Study Session</b>\n\nWhat subject did you study?",
         )
     except BaseException:
         finish_conversation(update, context, "study")
         raise
     return SUBJECT
+
+
+@authorized_callback
+async def study_menu_entry(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Enter the guided study flow from a main-menu 'Study' tap."""
+    query = update.callback_query
+    await query.answer()
+    db = context.bot_data["db"]
+    user = update.effective_user
+    await db.ensure_user(user.id, user.username, user.first_name)
+    if not await conversation_available(update, context, "study"):
+        return ConversationHandler.END
+    return await _begin_study_flow(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +307,10 @@ async def skip_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ConversationHandler
 # ---------------------------------------------------------------------------
 study_conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("study", study_command, filters=AUTH_FILTER)],
+    entry_points=[
+        CommandHandler("study", study_command, filters=AUTH_FILTER),
+        CallbackQueryHandler(study_menu_entry, pattern=r"^menu_study$"),
+    ],
     states={
         SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_subject)],
         DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_duration)],

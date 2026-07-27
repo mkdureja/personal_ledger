@@ -12,7 +12,7 @@ from telegram.ext import ConversationHandler
 
 from bot.config import ALLOWED_USER_IDS
 from bot.handlers import diet
-from bot.handlers.common import activate_conversation
+from bot.handlers.common import activate_conversation, active_conversation_flow
 
 
 def _user() -> SimpleNamespace:
@@ -221,7 +221,7 @@ async def test_guided_skip_calories_still_offers_macros() -> None:
 
 
 @pytest.mark.asyncio
-async def test_guided_macros_are_saved_and_conversation_is_cleaned() -> None:
+async def test_guided_macros_are_saved_and_loop_is_offered() -> None:
     db = SimpleNamespace(log_diet=AsyncMock())
     state = {
         "diet_meal_type": "dinner",
@@ -235,7 +235,8 @@ async def test_guided_macros_are_saved_and_conversation_is_cleaned() -> None:
 
     result = await diet.receive_macros(update, context)
 
-    assert result == ConversationHandler.END
+    # After a save, the flow stays open with a keep-logging prompt.
+    assert result == diet.LOG_ANOTHER
     db.log_diet.assert_awaited_once_with(
         _user().id,
         "dinner",
@@ -246,8 +247,14 @@ async def test_guided_macros_are_saved_and_conversation_is_cleaned() -> None:
         fat_g=20.0,
         source=None,
     )
-    assert context.user_data == {}
-    assert "tofu &amp; rice" in message.reply_text.await_args.args[0]
+    # This meal's working data is cleared, but the conversation remains active.
+    assert "diet_meal_type" not in context.user_data
+    assert "diet_food_items" not in context.user_data
+    assert "diet_calories" not in context.user_data
+    assert active_conversation_flow(context) == "diet"
+    # The confirmation is delivered first, then the "log another" prompt.
+    assert "tofu &amp; rice" in message.reply_text.await_args_list[0].args[0]
+    assert "Log another" in message.reply_text.await_args_list[1].args[0]
 
 
 @pytest.mark.asyncio
@@ -293,7 +300,7 @@ async def test_guided_skip_macros_saves_null_macro_values() -> None:
 
     result = await diet.skip_macros(update, context)
 
-    assert result == ConversationHandler.END
+    assert result == diet.LOG_ANOTHER
     db.log_diet.assert_awaited_once_with(
         _user().id,
         "snack",
@@ -304,7 +311,11 @@ async def test_guided_skip_macros_saves_null_macro_values() -> None:
         fat_g=None,
         source=None,
     )
-    assert context.user_data == {}
+    # Working data is cleared, but the conversation remains open to log another.
+    assert "diet_meal_type" not in context.user_data
+    assert "diet_food_items" not in context.user_data
+    assert "diet_calories" not in context.user_data
+    assert active_conversation_flow(context) == "diet"
 
 
 @pytest.mark.asyncio

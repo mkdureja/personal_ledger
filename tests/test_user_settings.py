@@ -124,7 +124,10 @@ async def test_daily_reminder_sends_nothing_when_all_opted_out(two_user_db, monk
 # ---------------------------------------------------------------------------
 async def test_reminders_command_on_then_off(two_user_db):
     message = SimpleNamespace(reply_text=AsyncMock())
-    update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=MANOJ))
+    update = SimpleNamespace(
+        message=message,
+        effective_user=SimpleNamespace(id=MANOJ, username="manoj", first_name="Manoj"),
+    )
 
     on_ctx = SimpleNamespace(bot_data={"db": two_user_db}, args=["on"])
     await reminders_command(update, on_ctx)
@@ -149,7 +152,10 @@ async def test_reminders_command_rejects_bad_arg(two_user_db):
 async def test_settings_command_reports_state(two_user_db):
     await two_user_db.set_reminders_enabled(MANOJ, True)
     message = SimpleNamespace(reply_text=AsyncMock())
-    update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=MANOJ))
+    update = SimpleNamespace(
+        message=message,
+        effective_user=SimpleNamespace(id=MANOJ, username="manoj", first_name="Manoj"),
+    )
     context = SimpleNamespace(bot_data={"db": two_user_db})
 
     await settings_command(update, context)
@@ -157,6 +163,28 @@ async def test_settings_command_reports_state(two_user_db):
     text = message.reply_text.await_args.args[0]
     assert "Your settings" in text
     assert "on" in text.lower()
+
+
+async def test_reminders_on_as_first_ever_command(two_user_db):
+    """A never-/start-ed user running /reminders on must not hit a FK error.
+
+    user_settings has a FK to users, so the command must create the users row
+    before upserting settings (codex #10).
+    """
+    unstarted_id = 444  # no users row, no /start
+    message = SimpleNamespace(reply_text=AsyncMock())
+    update = SimpleNamespace(
+        message=message,
+        effective_user=SimpleNamespace(
+            id=unstarted_id, username="new", first_name="New"
+        ),
+    )
+    context = SimpleNamespace(bot_data={"db": two_user_db}, args=["on"])
+
+    await reminders_command(update, context)
+
+    settings = await two_user_db.get_user_settings(unstarted_id)
+    assert settings is not None and settings["reminders_enabled"] == 1
 
 
 async def test_start_defaults_new_user_to_opt_out(two_user_db):
