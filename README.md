@@ -14,10 +14,16 @@ A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, and **Habit
 **Extras:**
 - 📊 Charts — Study hours, gym volume, calorie intake, habit heatmaps
 - 🔥 Streaks — Consecutive-day tracking for habits
-- ⏰ Reminders — Daily evening nudge for unchecked habits
+- ⏰ Reminders — Daily evening nudge for unchecked habits, **opt-in per user**
 - 🌙 Routine — Optional log-aware anchor nudges + motivational quotes ([details](#routine--motivation))
 - ↩️ Undo — Delete last log entry (within 24h)
+- 🗒️ Recent — `/recent` lists your latest entries to reconcile a save
 - ⚡ Shortcuts — Quick-log via inline args (e.g., `/study maths 45`)
+
+**Multi-user:** each authorized user gets a **private, independent ledger** — data,
+analytics, streaks, callbacks, and reminders are strictly per-user. One bot token
+and database provide application-level isolation; they do not hide data from the
+machine/database operator.
 
 ## Setup
 
@@ -147,10 +153,16 @@ millilitres only when its recorded yield uses that unit dimension.
 ### Utility
 | Command | Description |
 |---|---|
+| `/recent` | List your latest study/gym/diet entries (reconcile a save) |
 | `/undo` | Undo last log — preview, then confirm (within 24h) |
+| `/reminders on\|off` | Turn your scheduled reminders on or off |
+| `/settings` | View your settings (reminders, routine profile) |
 | `/cancel` | Cancel current conversation |
 | `/menu` | Interactive main menu |
 | `/help` | Command reference |
+
+Reminders are **opt-in**: a newly authorized user receives no scheduled messages
+until they run `/reminders on`.
 
 ## Routine & motivation
 
@@ -184,15 +196,16 @@ quotes:
 
 ```
 bot/
-├── main.py          # Entry point, handler registration
-├── config.py        # .env loader, TZ helpers
+├── main.py          # Entry point, build_application(), handler registration
+├── config.py        # .env loader, allowlist/TZ validation, TZ helpers
 ├── database.py      # Async SQLite (aiosqlite)
+├── migrations.py    # Versioned, atomic PRAGMA user_version migrations
 ├── nutrition.py     # Exact unit parsing and nutrition scaling
 ├── keyboards.py     # InlineKeyboard builders
 ├── charts.py        # matplotlib chart generation
 ├── routine.py       # routine.yaml loader/validator + quote rotation
 └── handlers/
-    ├── common.py    # Auth, errors, validators, /cancel, /undo
+    ├── common.py    # Auth, errors, validators, /cancel, /undo, mutation source
     ├── start.py     # /start, /help, /menu
     ├── study.py     # Study ConversationHandler
     ├── gym.py       # Gym ConversationHandler
@@ -200,23 +213,56 @@ bot/
     ├── catalog.py   # Saved food and recipe commands
     ├── habits.py    # Habit setup + check-off
     ├── analytics.py # Summaries, charts, streaks
+    ├── recent.py    # /recent reconciliation
+    ├── settings.py  # /settings, /reminders opt-in
     └── reminders.py # Daily reminder + routine anchor jobs
+
+scripts/
+└── backup_db.py     # WAL-safe online backup (sanitized output)
+
+docs/
+├── backup_runbook.md      # Backup/restore + pre-migration checklist
+├── operations_runbook.md  # Process supervisor, retention, dependency audit
+└── user_guide.html        # End-user guide
 ```
 
 ## Key Design Decisions
 
 - **IST day-bucketing**: Timestamps stored in UTC, all day math in `Asia/Kolkata` via `zoneinfo`
-- **Access control**: Only `ALLOWED_USER_IDS` in **private chats** can interact; group and unauthorized use are silently ignored
+- **Access control & tenancy**: Only `ALLOWED_USER_IDS` in **private chats** can interact (group/unauthorized use is silently ignored, and callbacks fail closed without a private chat); every read, write, callback, and reminder is scoped to the acting user's numeric ID, so the two ledgers never mix
 - **Secret hygiene**: HTTPX request logging (which embeds the bot token) is silenced and the token is redacted from any remaining log output
+- **Versioned migrations**: Schema evolves through ordered, atomic migrations keyed on `PRAGMA user_version` (see `bot/migrations.py`); a normalized-name collision stops with a sanitized diagnostic instead of silently mutating data
 - **SQLite hardening**: WAL mode, foreign keys ON, busy_timeout, composite indexes; reads and writes share one connection lock so a read never sees an uncommitted, later-rolled-back write
 - **Reversible undo**: `/undo` previews the exact entry and deletes only on confirm, via an idempotent delete-by-id — a failed retry can't delete a newer entry
-- **Durable delivery**: Pending updates survive restarts (`drop_pending_updates=False`) and scheduled nudges retry transient send failures with bounded backoff
-- **Habit semantics**: Row presence = done (no "completed" column); streaks = consecutive days with rows, scanned in pages with no fixed cap; case/format-insensitive `name_key` keeps a renamed-case habit's streak intact
+- **Replay-safe mutations**: Pending updates survive restarts (`drop_pending_updates=False`); study/gym/diet writes record a per-update receipt so a replayed Telegram update produces exactly one row, and `/recent` lets a user reconcile a save
+- **Durable reminders**: Reminders are opt-in per user; scheduled nudges retry transient failures with bounded backoff and persist per-chunk delivery state, so a restart resumes at the first undelivered chunk without duplicating delivered ones
+- **Habit semantics**: Row presence = done (no "completed" column); streaks = consecutive days with rows, scanned in pages with no fixed cap; case/format-insensitive `name_key` keeps a renamed-case habit's streak intact. Activity periods record when each habit was live, so weekly adherence counts only the days a habit actually existed — deactivating mid-week keeps its earlier completions
 - **Per-exercise persistence**: Gym loop saves each exercise immediately; abandoning loses only the current one
 - **Conversation safety**: `/cancel` fallback, 5-min timeout, input validation with re-prompt
 - **Bounded Telegram UI**: Habit checklists paginate legacy data and reminders split safely across messages
 - **Habit setup limit**: New setups support up to 49 active habits, matching Telegram's keyboard limits
 - **Routine as data**: Anchors live in an optional `routine.yaml` validated at startup; a missing file falls back to the legacy reminder, so existing installs are unaffected
+
+## Backup & operations
+
+The database is **WAL-backed and live** — `ledger.db` alone is not a complete
+snapshot. Always back up with a consistent method:
+
+```bash
+# Consistent online backup (no downtime) with sanitized verification output
+python scripts/backup_db.py --source ledger.db --dest /path/outside/repo/ledger-backup.db
+```
+
+- **[docs/backup_runbook.md](docs/backup_runbook.md)** — online/clean-shutdown
+  backup, restore, and the pre-migration checklist.
+- **[docs/operations_runbook.md](docs/operations_runbook.md)** — running under a
+  process supervisor, clean restart, dependency audit, and **data retention when a
+  user is removed from `ALLOWED_USER_IDS`** (default: retain until an explicit,
+  verified deletion request).
+
+Schema migrations run automatically at startup and are non-destructive: they never
+delete, merge, or reassign a user's rows, and a normalized-name collision stops the
+migration with a sanitized diagnostic rather than mutating data.
 
 ## Testing
 

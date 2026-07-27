@@ -3,6 +3,9 @@
 python-telegram-bot[job-queue]==22.8
 aiosqlite==0.22.1
 matplotlib==3.11.0
+# bot/charts.py imports numpy directly, so declare it rather than relying on it
+# arriving transitively via matplotlib.
+numpy==2.5.1
 python-dotenv==1.2.2
 PyYAML==6.0.2
 tzdata==2026.3

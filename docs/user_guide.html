@@ -1256,6 +1256,20 @@ DB_PATH=ledger.db</code></pre>
         <p>• Finish or cancel a guided log before using <code>/undo</code>.</p>
     </div>
 
+    <h3>/recent — Reconcile a Save</h3>
+    <p>Send <code>/recent</code> to see your latest study, gym, and diet entries, newest first. It's handy when a confirmation didn't arrive (e.g. a network hiccup) and you want to check whether a log actually saved — without guessing and logging it twice.</p>
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Saves are replay-safe</div>
+        <p>If Telegram re-delivers the same message after a reconnect, the bot recognizes it and does <strong>not</strong> create a duplicate. Genuinely repeating an activity (sending the command again yourself) still logs a new entry by design — use <code>/recent</code> to confirm before re-sending.</p>
+    </div>
+
+    <h3>/reminders and /settings — Control Your Reminders</h3>
+    <p>Reminders are <strong>opt-in per person</strong>. A newly added user receives no scheduled messages until they turn them on:</p>
+    <p>• <code>/reminders on</code> — start receiving daily nudges and routine anchors.<br>
+       • <code>/reminders off</code> — stop all scheduled messages.<br>
+       • <code>/settings</code> — see your current reminder state and routine profile.</p>
+    <p>Your choice only affects you; each user's ledger, analytics, and reminders are completely independent.</p>
+
     <h3>/cancel — Abort Current Conversation</h3>
     <p>If you're in the middle of a guided log and want to stop, send <code>/cancel</code>. This works in every conversation flow (study, gym, diet, habit setup).</p>
 
@@ -1342,7 +1356,10 @@ DB_PATH=ledger.db</code></pre>
     <table>
         <thead><tr><th>Command</th><th>Action</th></tr></thead>
         <tbody>
+            <tr><td><code>/recent</code></td><td>List your latest entries (reconcile a save)</td></tr>
             <tr><td><code>/undo</code></td><td>Undo last log — preview, then confirm (within 24h)</td></tr>
+            <tr><td><code>/reminders on|off</code></td><td>Turn your scheduled reminders on or off</td></tr>
+            <tr><td><code>/settings</code></td><td>View your settings</td></tr>
             <tr><td><code>/cancel</code></td><td>Cancel current conversation</td></tr>
             <tr><td><code>/menu</code></td><td>Open main menu</td></tr>
             <tr><td><code>/help</code></td><td>Show all commands</td></tr>
