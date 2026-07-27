@@ -32,6 +32,7 @@ from .common import (
     authorized_callback,
     cancel_handler,
     conversation_available,
+    deliver_or_end,
     escape_html,
     finish_conversation,
     mutation_source,
@@ -200,10 +201,16 @@ async def receive_exercise(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return EXERCISE
 
     context.user_data["gym_current_exercise"] = exercise
-    await reply_html(
-        update.message,
-        f"🏋️ <b>{escape_html(exercise)}</b> — how many sets?",
-    )
+    if not await deliver_or_end(
+        update,
+        context,
+        "gym",
+        reply_html(
+            update.message,
+            f"🏋️ <b>{escape_html(exercise)}</b> — how many sets?",
+        ),
+    ):
+        return ConversationHandler.END
     return SETS
 
 
@@ -219,7 +226,13 @@ async def receive_sets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return SETS
 
     context.user_data["gym_current_sets"] = sets
-    await update.message.reply_text("How many reps per set?")
+    if not await deliver_or_end(
+        update,
+        context,
+        "gym",
+        update.message.reply_text("How many reps per set?"),
+    ):
+        return ConversationHandler.END
     return REPS
 
 
@@ -235,7 +248,13 @@ async def receive_reps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return REPS
 
     context.user_data["gym_current_reps"] = reps
-    await update.message.reply_text("Weight in kg? (/skip for bodyweight)")
+    if not await deliver_or_end(
+        update,
+        context,
+        "gym",
+        update.message.reply_text("Weight in kg? (/skip for bodyweight)"),
+    ):
+        return ConversationHandler.END
     return WEIGHT
 
 

@@ -27,6 +27,7 @@ from .common import (
     active_conversation_hint,
     cancel_handler,
     conversation_available,
+    deliver_or_end,
     escape_html,
     finish_conversation,
     mutation_source,
@@ -199,10 +200,16 @@ async def receive_subject(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return SUBJECT
 
     context.user_data["study_subject"] = subject
-    await reply_html(
-        update.message,
-        f"📖 <b>{escape_html(subject)}</b> — how long did you study? (minutes)",
-    )
+    if not await deliver_or_end(
+        update,
+        context,
+        "study",
+        reply_html(
+            update.message,
+            f"📖 <b>{escape_html(subject)}</b> — how long did you study? (minutes)",
+        ),
+    ):
+        return ConversationHandler.END
     return DURATION
 
 
@@ -218,7 +225,13 @@ async def receive_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return DURATION
 
     context.user_data["study_duration"] = duration
-    await update.message.reply_text("📝 Any notes? (or /skip)")
+    if not await deliver_or_end(
+        update,
+        context,
+        "study",
+        update.message.reply_text("📝 Any notes? (or /skip)"),
+    ):
+        return ConversationHandler.END
     return NOTES
 
 

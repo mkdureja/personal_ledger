@@ -164,6 +164,34 @@ def finish_conversation(
     return False
 
 
+async def deliver_or_end(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    flow: str,
+    coro: Awaitable[Any],
+) -> bool:
+    """Await a state-advancing prompt; end and clear the flow if it fails to send.
+
+    Returns ``True`` when the prompt was delivered (the caller then returns the
+    next conversation state) and ``False`` when delivery raised a ``TelegramError``
+    (the caller returns ``ConversationHandler.END``). Because
+    :func:`finish_conversation` also clears the flow's pending ``user_data``, the
+    stored state and the conversation position can never disagree after a handled
+    send failure — a half-advanced flow is impossible.
+    """
+    try:
+        await coro
+        return True
+    except TelegramError:
+        logger.warning(
+            "Prompt delivery failed in '%s' flow; ending it cleanly",
+            flow,
+            exc_info=True,
+        )
+        finish_conversation(update, context, flow)
+        return False
+
+
 async def reply_html(message: Any, text: str, **kwargs: Any) -> Any:
     """Reply with trusted HTML markup and an explicit Telegram parse mode.
 
