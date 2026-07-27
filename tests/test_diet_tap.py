@@ -135,7 +135,9 @@ async def test_meal_selection_offers_saved_items_when_present():
     assert "reply_markup" in query.message.reply_text.await_args.kwargs
 
 
-async def test_meal_selection_falls_back_to_free_text_when_no_saved_items():
+async def test_meal_selection_still_offers_search_when_no_saved_items():
+    """Even with no personal foods, the choice keyboard (with 🔎 Search / ✍️ Type)
+    is shown so the shared catalog is reachable by tapping."""
     db = SimpleNamespace(
         list_foods=AsyncMock(return_value=[]),
         list_recipes=AsyncMock(return_value=[]),
@@ -145,9 +147,17 @@ async def test_meal_selection_falls_back_to_free_text_when_no_saved_items():
 
     result = await diet.receive_meal_type(_cb_update(query), context)
 
-    assert result == diet.FOOD_ITEMS
-    assert "reply_markup" not in query.message.reply_text.await_args.kwargs
-    assert "diet_ui_message_id" not in context.user_data
+    assert result == diet.FOOD_CHOICE
+    kwargs = query.message.reply_text.await_args.kwargs
+    assert "reply_markup" in kwargs
+    # The Search-catalog button must be present.
+    buttons = [
+        b.callback_data
+        for row in kwargs["reply_markup"].inline_keyboard
+        for b in row
+    ]
+    assert any(cb.startswith("dsearch_") for cb in buttons)
+    assert context.user_data["diet_ui_message_id"] == 777
 
 
 # ---------------------------------------------------------------------------

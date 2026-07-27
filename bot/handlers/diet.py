@@ -518,26 +518,19 @@ async def _prompt_food_choice(
     emoji = _MEAL_EMOJI.get(meal_type, "🍽️")
     title = escape_html(meal_type.title())
 
+    # Always show the choice keyboard so 🔎 Search and ✍️ Type are reachable even
+    # with no personal foods yet — otherwise the shared catalog is unreachable by
+    # tapping and the flow looks like the old free-text one.
     if choices:
-        prompt = await _send_tap_keyboard(
-            update,
-            context,
-            message,
-            f"{emoji} <b>{title}</b> — pick a saved item, or ✍️ type it:",
-            food_choice_keyboard(uid, choices),
+        prompt_text = f"{emoji} <b>{title}</b> — pick a saved item, 🔎 search, or ✍️ type it:"
+    else:
+        prompt_text = (
+            f"{emoji} <b>{title}</b> — 🔎 search the catalog or ✍️ type what you ate:"
         )
-        return FOOD_CHOICE if prompt is not None else ConversationHandler.END
-
-    try:
-        await reply_html(
-            message,
-            f"{emoji} <b>{title}</b> — what did you eat?",
-        )
-    except TelegramError:
-        logger.warning("Could not deliver diet food prompt", exc_info=True)
-        finish_conversation(update, context, "diet")
-        return ConversationHandler.END
-    return FOOD_ITEMS
+    prompt = await _send_tap_keyboard(
+        update, context, message, prompt_text, food_choice_keyboard(uid, choices)
+    )
+    return FOOD_CHOICE if prompt is not None else ConversationHandler.END
 
 
 async def receive_food_items(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1058,19 +1051,11 @@ async def _reprompt_food_choice(
     context.user_data.pop("diet_recent_qtys", None)
     meal_type = context.user_data.get("diet_meal_type", "")
     choices = await _ranked_choices(context, uid, meal_type)
-    if not choices:
-        context.user_data.pop("diet_ui_message_id", None)
-        try:
-            await reply_html(message, "🍽️ What did you eat?")
-        except TelegramError:
-            finish_conversation(update, context, "diet")
-            return ConversationHandler.END
-        return FOOD_ITEMS
     prompt = await _send_tap_keyboard(
         update,
         context,
         message,
-        "Pick a saved item, or ✍️ type it:",
+        "Pick a saved item, 🔎 search, or ✍️ type it:",
         food_choice_keyboard(uid, choices),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
