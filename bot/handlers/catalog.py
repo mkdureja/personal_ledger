@@ -50,13 +50,40 @@ _RECIPE_USAGE = (
 
 @dataclass(frozen=True)
 class ResolvedCatalogDietEntry:
-    """A calculated catalog item ready to be snapshotted into ``diet_logs``."""
+    """A calculated catalog item ready to be snapshotted into ``diet_logs``.
+
+    Beyond the display text and computed nutrients, it now carries the structured
+    provenance a ``diet_log_items`` child needs: which food/recipe it came from,
+    the quantity the user entered, and the canonical amount it resolved to.
+    """
 
     display_text: str
     calories: int | None
     protein_g: float | None
     carbs_g: float | None
     fat_g: float | None
+    source_type: str = "freetext"
+    source_id: int | None = None
+    entered_amount: float | None = None
+    entered_unit: str | None = None
+    resolved_base_amount: float | None = None
+    resolved_base_unit: str | None = None
+
+    def as_item(self) -> dict[str, Any]:
+        """Render this entry as a ``diet_log_items`` row payload."""
+        return {
+            "source_type": self.source_type,
+            "source_id": self.source_id,
+            "display_name": self.display_text,
+            "entered_amount": self.entered_amount,
+            "entered_unit": self.entered_unit,
+            "resolved_base_amount": self.resolved_base_amount,
+            "resolved_base_unit": self.resolved_base_unit,
+            "calories": self.calories,
+            "protein_g": self.protein_g,
+            "carbs_g": self.carbs_g,
+            "fat_g": self.fat_g,
+        }
 
 
 def _utf16_length(text: str) -> int:
@@ -636,7 +663,7 @@ async def _recipe_remove(message: Any, db: Any, user_id: int, args: list[str]) -
 
 
 def _finalized_entry(
-    display: str, finalized: Mapping[str, Any]
+    display: str, finalized: Mapping[str, Any], **provenance: Any
 ) -> ResolvedCatalogDietEntry:
     return ResolvedCatalogDietEntry(
         display_text=display,
@@ -644,6 +671,7 @@ def _finalized_entry(
         protein_g=finalized.get("protein_g"),
         carbs_g=finalized.get("carbs_g"),
         fat_g=finalized.get("fat_g"),
+        **provenance,
     )
 
 
@@ -659,7 +687,16 @@ def resolve_food_diet_entry(
     finalized = nutrition.finalize_log_nutrients(nutrients)
     display_amount, display_unit = _quantity_display(request)
     display = f"{_format_decimal(display_amount)} {display_unit} {food['name']}"
-    return _finalized_entry(display, finalized)
+    return _finalized_entry(
+        display,
+        finalized,
+        source_type="food",
+        source_id=food.get("id"),
+        entered_amount=float(display_amount),
+        entered_unit=str(display_unit),
+        resolved_base_amount=float(resolved_amount),
+        resolved_base_unit=str(food["base_unit"]),
+    )
 
 
 def resolve_recipe_diet_entry(
@@ -689,7 +726,16 @@ def resolve_recipe_diet_entry(
         f"{_format_decimal(display_amount)} {display_unit} "
         f"{recipe['name']} (recipe)"
     )
-    return _finalized_entry(display, finalized)
+    return _finalized_entry(
+        display,
+        finalized,
+        source_type="recipe",
+        source_id=recipe.get("id"),
+        entered_amount=float(display_amount),
+        entered_unit=str(display_unit),
+        resolved_base_amount=float(request.base_amount),
+        resolved_base_unit=str(recipe["yield_unit"]),
+    )
 
 
 async def resolve_catalog_diet_entry(

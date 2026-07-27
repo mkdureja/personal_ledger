@@ -4,7 +4,9 @@
       "Bash(python -m pytest tests/test_menu_routing.py -q)",
       "Bash(python -m pytest tests/test_diet_tap.py -q)",
       "Bash(python -m pyflakes bot/handlers/diet.py bot/handlers/start.py bot/handlers/gym.py bot/handlers/study.py bot/keyboards.py bot/handlers/catalog.py bot/database.py bot/main.py)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(git commit *)",
+      "Bash(python -c \"import bot.main, bot.handlers.diet, bot.handlers.catalog, bot.database, bot.migrations, bot.keyboards; print\\('imports OK; LATEST_VERSION=', bot.migrations.LATEST_VERSION\\)\")"
     ]
   }
 }

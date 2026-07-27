@@ -228,7 +228,7 @@ def build_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             stale_diet_callback,
-            pattern=r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more)_",
+            pattern=r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more|add)_",
         )
     )
     # Menu callbacks

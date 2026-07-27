@@ -59,7 +59,7 @@ _CONVERSATION_DATA_KEYS = {
         "diet_ui_message_id",
         "diet_sel_kind",
         "diet_sel_id",
-        "diet_pending",
+        "diet_items",
     ),
     "habits": ("habit_setup_prompt",),
 }

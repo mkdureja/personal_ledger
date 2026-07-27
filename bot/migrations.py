@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this (and register a new function in ``_MIGRATIONS``) for every schema
 # change. Version N is produced by ``_MIGRATIONS[N]``.
-LATEST_VERSION = 5
+LATEST_VERSION = 6
 
 
 class MigrationCollisionError(RuntimeError):
@@ -602,12 +602,70 @@ async def _migration_0005_reminder_deliveries(conn: aiosqlite.Connection) -> Non
     )
 
 
+async def _migration_0006_diet_log_items(conn: aiosqlite.Connection) -> None:
+    """Add ``diet_log_items`` — structured, snapshotted items beneath one meal.
+
+    A ``diet_logs`` row remains the meal header (one row = one meal, so analytics
+    still count meals correctly). Tap-logged meals additionally get one child row
+    per selected food/recipe, carrying its source identity, entered and resolved
+    quantity, and a nutrient snapshot frozen at save time. Existing free-text and
+    quick ``/diet`` rows stay valid with zero child items and are never parsed or
+    auto-linked.
+
+    The composite ``(diet_log_id, user_id)`` foreign key needs its parent key to
+    be unique, so a unique index is added on ``diet_logs(id, user_id)`` first (the
+    table is not rebuilt — no rows are touched). ``ON DELETE CASCADE`` means an
+    Undo of the meal header removes its items atomically.
+    """
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_diet_logs_id_user "
+        "ON diet_logs(id, user_id)"
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS diet_log_items (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id              INTEGER NOT NULL,
+            diet_log_id          INTEGER NOT NULL,
+            item_order           INTEGER NOT NULL,
+            source_type          TEXT NOT NULL
+                                    CHECK(source_type IN ('food', 'recipe', 'freetext')),
+            source_id            INTEGER,
+            display_name         TEXT NOT NULL,
+            entered_amount       REAL,
+            entered_unit         TEXT,
+            resolved_base_amount REAL,
+            resolved_base_unit   TEXT,
+            calories             INTEGER,
+            protein_g            REAL,
+            carbs_g              REAL,
+            fat_g                REAL,
+            created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (diet_log_id, user_id)
+                REFERENCES diet_logs(id, user_id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_diet_log_items_lookup "
+        "ON diet_log_items(user_id, diet_log_id, item_order)"
+    )
+    # A source-scoped index powers the Phase 4 suggestion queries (a user's
+    # completed items for a given food/recipe) without a full-table scan.
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_diet_log_items_source "
+        "ON diet_log_items(user_id, source_type, source_id)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
     3: _migration_0003_user_settings,
     4: _migration_0004_habit_activity_periods,
     5: _migration_0005_reminder_deliveries,
+    6: _migration_0006_diet_log_items,
 }
 
 

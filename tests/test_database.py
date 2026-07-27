@@ -86,6 +86,10 @@ class TestSchema:
         self, db, user_id
     ):
         """Existing meals survive the idempotent nullable-column migration."""
+        # A genuine pre-v6 legacy database has neither diet_log_items nor the
+        # composite unique index, so revert both to reproduce that shape (the
+        # child table is recreated by the v6 migration).
+        await db.conn.execute("DROP TABLE IF EXISTS diet_log_items")
         await db.conn.execute("DROP TABLE diet_logs")
         await db.conn.execute(
             """

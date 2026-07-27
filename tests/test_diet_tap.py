@@ -240,11 +240,13 @@ async def test_choose_portion_matches_catalog_resolver(db_with_user, user_id):
     expected = await resolve_catalog_diet_entry(
         db_with_user, user_id, "food:apple", ["1", "medium"]
     )
-    pending = context.user_data["diet_pending"]
-    assert pending["calories"] == expected.calories
-    assert pending["protein_g"] == expected.protein_g
-    assert pending["carbs_g"] == expected.carbs_g
-    assert pending["display_text"] == expected.display_text
+    item = context.user_data["diet_items"][-1]
+    assert item["calories"] == expected.calories
+    assert item["protein_g"] == expected.protein_g
+    assert item["carbs_g"] == expected.carbs_g
+    assert item["display_name"] == expected.display_text
+    assert item["source_type"] == "food"
+    assert item["source_id"] == food["id"]
 
 
 async def test_custom_amount_resolves_and_previews(db_with_user, user_id):
@@ -259,7 +261,7 @@ async def test_custom_amount_resolves_and_previews(db_with_user, user_id):
     )
 
     assert result == diet.CONFIRM_ITEM
-    assert context.user_data["diet_pending"]["calories"] == 114
+    assert context.user_data["diet_items"][-1]["calories"] == 114
 
 
 async def test_custom_amount_invalid_stays_in_state(db_with_user, user_id):
@@ -296,17 +298,26 @@ async def test_recipe_quick_amount_matches_catalog_resolver(db_with_user, user_i
     expected = await resolve_catalog_diet_entry(
         db_with_user, user_id, "recipe:apple-bowl", ["1", "serving"]
     )
-    assert context.user_data["diet_pending"]["calories"] == expected.calories
-    assert context.user_data["diet_pending"]["display_text"] == expected.display_text
+    item = context.user_data["diet_items"][-1]
+    assert item["calories"] == expected.calories
+    assert item["display_name"] == expected.display_text
+    assert item["source_type"] == "recipe"
+    assert item["source_id"] == recipe["id"]
 
 
 # ---------------------------------------------------------------------------
 # Save is the mutation boundary and is idempotent on replay
 # ---------------------------------------------------------------------------
 async def test_save_item_writes_once_and_offers_loop():
-    db = SimpleNamespace(log_diet=AsyncMock())
-    pending = {
-        "display_text": "220 g apple",
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
+    item = {
+        "source_type": "food",
+        "source_id": 5,
+        "display_name": "220 g apple",
+        "entered_amount": 220.0,
+        "entered_unit": "g",
+        "resolved_base_amount": 220.0,
+        "resolved_base_unit": "g",
         "calories": 114,
         "protein_g": 0.66,
         "carbs_g": 30.8,
@@ -316,7 +327,7 @@ async def test_save_item_writes_once_and_offers_loop():
         db,
         {
             "diet_meal_type": "snack",
-            "diet_pending": pending,
+            "diet_items": [item],
             "diet_ui_message_id": 100,
         },
     )
@@ -326,16 +337,82 @@ async def test_save_item_writes_once_and_offers_loop():
     result = await diet.save_item(update, context)
 
     assert result == diet.LOG_ANOTHER
-    db.log_diet.assert_awaited_once()
-    assert "diet_pending" not in context.user_data
+    db.log_diet_with_items.assert_awaited_once()
+    # The meal was written with exactly the drafted items.
+    assert db.log_diet_with_items.await_args.args[2] == [item]
+    assert "diet_items" not in context.user_data
     assert active_conversation_flow(context) == "diet"  # loop stays open
 
     # A replayed Save lands on the retired keyboard (id 100 != new 777) and must
-    # not write a second row.
+    # not write a second meal.
     replay = _cb_update(_query(f"dsave_{USER}", message_id=100))
     result2 = await diet.save_item(replay, context)
     assert result2 == diet.CONFIRM_ITEM
-    db.log_diet.assert_awaited_once()
+    db.log_diet_with_items.assert_awaited_once()
+
+
+async def test_add_another_item_keeps_draft_and_returns_to_list():
+    db = SimpleNamespace(
+        list_foods=AsyncMock(return_value=[{"id": 5, "name": "Apple"}]),
+        list_recipes=AsyncMock(return_value=[]),
+    )
+    existing = [{"display_name": "1 medium apple", "calories": 95}]
+    query = _query(f"dadd_{USER}", message_id=100)
+    context = _context(
+        db,
+        {
+            "diet_meal_type": "lunch",
+            "diet_items": existing,
+            "diet_ui_message_id": 100,
+        },
+    )
+
+    result = await diet.add_another_item(_cb_update(query), context)
+
+    assert result == diet.FOOD_CHOICE
+    assert context.user_data["diet_items"] == existing  # draft preserved
+
+
+async def test_two_tapped_items_become_one_meal_with_two_children(
+    db_with_user, user_id
+):
+    await _save_apple(db_with_user, user_id)
+    rice = (
+        await db_with_user.save_food(
+            user_id, "rice", "g", 100, calories=130, protein_g=2.4, carbs_g=28, fat_g=0.3
+        )
+    )["food"]
+    context = _context(
+        db_with_user,
+        {
+            "diet_meal_type": "lunch",
+            "diet_sel_kind": "food",
+            "diet_sel_id": rice["id"],
+        },
+    )
+    # First item via custom amount.
+    await diet.receive_custom_amount(_msg_update("100 g", user_id=user_id), context)
+    assert len(context.user_data["diet_items"]) == 1
+
+    # Second item.
+    context.user_data["diet_sel_kind"] = "food"
+    context.user_data["diet_sel_id"] = rice["id"]
+    await diet.receive_custom_amount(_msg_update("50 g", user_id=user_id), context)
+    assert len(context.user_data["diet_items"]) == 2
+
+    # Save the meal.
+    context.user_data["diet_ui_message_id"] = 100
+    save = _cb_update(_query(f"dsave_{USER}", message_id=100), user_id=user_id)
+    activate_conversation(save, context, "diet")
+    result = await diet.save_item(save, context)
+
+    assert result == diet.LOG_ANOTHER
+    from bot.config import today_local
+
+    rows = await db_with_user.get_diet_logs(user_id, today_local(), today_local())
+    assert len(rows) == 1  # one meal, not two
+    items = await db_with_user.get_diet_log_items(user_id, rows[-1]["id"])
+    assert len(items) == 2
 
 
 async def test_log_another_yes_reopens_meal_picker():

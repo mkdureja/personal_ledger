@@ -88,7 +88,7 @@ _DPORT_RE = re.compile(r"^dport_(\d+)_(\d+)$")
 _DMORE_RE = re.compile(r"^dmore_(\d+)_(yes|no)$")
 # Any diet tap: action word + owner id (used for owner checks and stale taps).
 _DIET_TAP_RE = re.compile(
-    r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more)_(\d+)"
+    r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more|add)_(\d+)"
 )
 
 
@@ -204,17 +204,6 @@ def _confirmation(
     return f"✅ <b>Diet logged!</b>\n{body}"
 
 
-def _preview(
-    meal_type: str,
-    food_items: str,
-    calories: int | None,
-    protein_g: float | None = None,
-    carbs_g: float | None = None,
-    fat_g: float | None = None,
-) -> str:
-    """Build a safe HTML preview shown before the save mutation."""
-    body = _meal_body(meal_type, food_items, calories, protein_g, carbs_g, fat_g)
-    return f"👀 <b>Preview</b> — tap Save to log it.\n{body}"
 
 
 async def _remove_callback_markup(query: object) -> None:
@@ -700,7 +689,7 @@ def _clear_diet_entry_data(context: ContextTypes.DEFAULT_TYPE) -> None:
         "diet_calories",
         "diet_sel_kind",
         "diet_sel_id",
-        "diet_pending",
+        "diet_items",
         "diet_meal_message_id",
         "diet_ui_message_id",
     ):
@@ -1033,79 +1022,126 @@ async def receive_custom_amount(
     )
 
 
+def _meal_total(items: list[dict], field: str, *, integer: bool = False):
+    """Sum one nutrient across items, or None if any item's value is unknown."""
+    values = [item.get(field) for item in items]
+    if any(value is None for value in values):
+        return None
+    summed = sum(float(value) for value in values)
+    return int(round(summed)) if integer else round(summed, 2)
+
+
+def _meal_totals(items: list[dict]) -> dict:
+    return {
+        "calories": _meal_total(items, "calories", integer=True),
+        "protein_g": _meal_total(items, "protein_g"),
+        "carbs_g": _meal_total(items, "carbs_g"),
+        "fat_g": _meal_total(items, "fat_g"),
+    }
+
+
+def _meal_summary(items: list[dict]) -> str:
+    return ", ".join(str(item["display_name"]) for item in items)
+
+
+def _meal_preview(meal_type: str, items: list[dict]) -> str:
+    """Preview the whole meal draft: each item, running total, next actions."""
+    lines = [
+        f"👀 <b>Preview — {escape_html(meal_type.title())}</b>",
+    ]
+    for index, item in enumerate(items, 1):
+        cal = item.get("calories")
+        cal_text = f"{cal} kcal" if cal is not None else "kcal ?"
+        macros = " · ".join(
+            f"{label} {_format_grams(item[key]) if item.get(key) is not None else '?'}"
+            for label, key in (("P", "protein_g"), ("C", "carbs_g"), ("F", "fat_g"))
+        )
+        lines.append(
+            f"{index}. <b>{escape_html(item['display_name'])}</b> — "
+            f"{cal_text} · {macros}"
+        )
+    totals = _meal_totals(items)
+    total_cal = totals["calories"]
+    total_cal_text = f"<b>{total_cal}</b>" if total_cal is not None else "<b>?</b>"
+    total_macros = " · ".join(
+        f"{label} {_format_grams(totals[key]) if totals[key] is not None else '?'} g"
+        for label, key in (("P", "protein_g"), ("C", "carbs_g"), ("F", "fat_g"))
+    )
+    lines.append(f"🔥 Total: {total_cal_text} kcal · 🥩 {total_macros}")
+    lines.append("➕ Add another item, or ✅ Save meal.")
+    return "\n".join(lines)
+
+
 async def _show_item_preview(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     message: object,
     entry: object,
 ) -> int:
-    """Store the resolved item and show a Save/Cancel preview."""
+    """Append the resolved item to the meal draft and preview the whole meal."""
     meal_type = context.user_data.get("diet_meal_type", "")
-    context.user_data["diet_pending"] = {
-        "display_text": entry.display_text,
-        "calories": entry.calories,
-        "protein_g": entry.protein_g,
-        "carbs_g": entry.carbs_g,
-        "fat_g": entry.fat_g,
-    }
+    items: list[dict] = context.user_data.setdefault("diet_items", [])
+    items.append(entry.as_item())
     prompt = await _send_tap_keyboard(
         update,
         context,
         message,
-        _preview(
-            meal_type,
-            entry.display_text,
-            entry.calories,
-            entry.protein_g,
-            entry.carbs_g,
-            entry.fat_g,
-        ),
+        _meal_preview(meal_type, items),
         diet_save_keyboard(update.effective_user.id),
     )
     return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
 
 
 @authorized_callback
-async def save_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Persist the previewed item (the mutation boundary), then offer another."""
+async def add_another_item(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Keep the meal draft and return to the saved-item list for another item."""
     query = await _consume_diet_tap(update, context)
     if query is None:
         return CONFIRM_ITEM
-    pending = context.user_data.get("diet_pending")
+    await _remove_callback_markup(query)
+    return await _reprompt_food_choice(update, context, query.message)
+
+
+@authorized_callback
+async def save_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Persist the whole meal (header + items), then offer to log another meal."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return CONFIRM_ITEM
+    items = context.user_data.get("diet_items")
     meal_type = context.user_data.get("diet_meal_type")
-    if not isinstance(pending, dict) or not isinstance(meal_type, str):
+    if not isinstance(items, list) or not items or not isinstance(meal_type, str):
         await _remove_callback_markup(query)
         finish_conversation(update, context, "diet")
         try:
             await query.message.reply_text(
-                "⚠️ Lost the pending item. Start again with /diet."
+                "⚠️ Lost the pending meal. Start again with /diet."
             )
         except TelegramError:
-            logger.warning("Could not report lost diet item", exc_info=True)
+            logger.warning("Could not report lost diet meal", exc_info=True)
         return ConversationHandler.END
 
     await _remove_callback_markup(query)
     db = context.bot_data["db"]
-    await db.log_diet(
+    await db.log_diet_with_items(
         update.effective_user.id,
         meal_type,
-        pending["display_text"],
-        pending["calories"],
-        protein_g=pending["protein_g"],
-        carbs_g=pending["carbs_g"],
-        fat_g=pending["fat_g"],
+        items,
         source=mutation_source(update),
     )
+    totals = _meal_totals(items)
     try:
         await reply_html(
             query.message,
             _confirmation(
                 meal_type,
-                pending["display_text"],
-                pending["calories"],
-                pending["protein_g"],
-                pending["carbs_g"],
-                pending["fat_g"],
+                _meal_summary(items),
+                totals["calories"],
+                totals["protein_g"],
+                totals["carbs_g"],
+                totals["fat_g"],
             ),
         )
     except TelegramError:
@@ -1217,6 +1253,7 @@ diet_conv_handler = ConversationHandler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_custom_amount)
         ],
         CONFIRM_ITEM: [
+            CallbackQueryHandler(add_another_item, pattern=r"^dadd_\d+$"),
             CallbackQueryHandler(save_item, pattern=r"^dsave_\d+$"),
         ],
         LOG_ANOTHER: [

@@ -180,15 +180,20 @@ def recipe_quantity_keyboard(
 
 
 def diet_save_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Preview confirmation: save the resolved item or cancel."""
+    """Meal preview: add another item, save the meal, or cancel."""
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "✅ Save", callback_data=f"dsave_{user_id}"
+                    "➕ Add another item", callback_data=f"dadd_{user_id}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ Save meal", callback_data=f"dsave_{user_id}"
                 ),
                 InlineKeyboardButton("✖️ Cancel", callback_data=f"dcancel_{user_id}"),
-            ]
+            ],
         ]
     )
 

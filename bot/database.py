@@ -12,7 +12,7 @@ import contextvars
 import logging
 import math
 import unicodedata
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, NamedTuple
@@ -479,6 +479,101 @@ class DatabaseManager:
             if source is not None:
                 await self._record_receipt(source, user_id, "diet_log", "diet", row_id)
             return row_id
+
+    async def log_diet_with_items(
+        self,
+        user_id: int,
+        meal_type: str,
+        items: Sequence[Mapping[str, Any]],
+        *,
+        source: MutationSource | None = None,
+    ) -> int:
+        """Log a meal as a header row plus one structured child per item.
+
+        The ``diet_logs`` header keeps the meal totals so existing analytics and
+        summaries are unaffected (one row per meal). A header nutrient field is
+        the sum of the items' snapshots, or ``None`` (unknown) if any item's
+        value is unknown — the same conservative propagation the recipe
+        aggregator uses, so an unknown item never masquerades as a numeric zero.
+        Each item is snapshotted into ``diet_log_items`` at save time, so a later
+        catalog edit never rewrites a completed meal. Idempotent when ``source``
+        is supplied (a replayed final tap returns the existing meal id).
+        """
+        if not items:
+            raise ValueError("A meal must have at least one item.")
+
+        def _total(field: str, *, integer: bool = False) -> float | int | None:
+            values = [item.get(field) for item in items]
+            if any(value is None for value in values):
+                return None
+            summed = sum(float(value) for value in values)
+            return int(round(summed)) if integer else round(summed, 2)
+
+        display = ", ".join(str(item["display_name"]) for item in items)
+        if len(display) > 500:
+            display = display[:499] + "…"
+
+        async with self._write_operation():
+            replayed = await self._replayed_entity_id(source, user_id, "diet_log")
+            if replayed is not None:
+                return replayed
+            cursor = await self.conn.execute(
+                "INSERT INTO diet_logs "
+                "(user_id, meal_type, food_items, calories, protein_g, carbs_g, "
+                "fat_g, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    meal_type,
+                    display,
+                    _total("calories", integer=True),
+                    _total("protein_g"),
+                    _total("carbs_g"),
+                    _total("fat_g"),
+                    _utc_timestamp_now(),
+                ),
+            )
+            diet_log_id: int = cursor.lastrowid  # type: ignore[assignment]
+            for order, item in enumerate(items):
+                await self.conn.execute(
+                    "INSERT INTO diet_log_items "
+                    "(user_id, diet_log_id, item_order, source_type, source_id, "
+                    "display_name, entered_amount, entered_unit, "
+                    "resolved_base_amount, resolved_base_unit, calories, "
+                    "protein_g, carbs_g, fat_g) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        user_id,
+                        diet_log_id,
+                        order,
+                        str(item.get("source_type", "freetext")),
+                        item.get("source_id"),
+                        str(item["display_name"]),
+                        item.get("entered_amount"),
+                        item.get("entered_unit"),
+                        item.get("resolved_base_amount"),
+                        item.get("resolved_base_unit"),
+                        item.get("calories"),
+                        item.get("protein_g"),
+                        item.get("carbs_g"),
+                        item.get("fat_g"),
+                    ),
+                )
+            if source is not None:
+                await self._record_receipt(
+                    source, user_id, "diet_log", "diet", diet_log_id
+                )
+            return diet_log_id
+
+    async def get_diet_log_items(
+        self, user_id: int, diet_log_id: int
+    ) -> list[dict[str, Any]]:
+        """Return one meal's structured items in order (owner-scoped)."""
+        rows = await self._query_all(
+            "SELECT * FROM diet_log_items "
+            "WHERE user_id = ? AND diet_log_id = ? ORDER BY item_order, id",
+            (user_id, diet_log_id),
+        )
+        return [dict(row) for row in rows]
 
     async def get_diet_logs(
         self, user_id: int, start_date: date, end_date: date
