@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this (and register a new function in ``_MIGRATIONS``) for every schema
 # change. Version N is produced by ``_MIGRATIONS[N]``.
-LATEST_VERSION = 7
+LATEST_VERSION = 8
 
 
 class MigrationCollisionError(RuntimeError):
@@ -696,6 +696,137 @@ async def _migration_0007_food_preferences(conn: aiosqlite.Connection) -> None:
         )
 
 
+async def _migration_0008_shared_catalog(conn: aiosqlite.Connection) -> None:
+    """Add a shared, curated nutrition catalog and let items cite it.
+
+    ``catalog_foods`` mirrors the per-user ``foods`` shape (so the same nutrition
+    resolver works) but is shared and carries provenance: ``provider`` +
+    ``provider_food_id`` (unique) and ``provider_revision``, so a future data
+    refresh is auditable and a completed log's snapshot is never rewritten.
+    ``catalog_aliases`` supports regional names without duplicating profiles;
+    ``catalog_portions`` gives named portions.
+
+    ``diet_log_items`` is rebuilt (rows preserved) to (a) add
+    ``source_provider``/``source_revision`` and (b) widen the ``source_type``
+    check to include ``'catalog'``, so a catalog selection is a first-class,
+    snapshotted item. The table has no children, so the rebuild cascades nothing;
+    the composite FK still resolves through the ``diet_logs(id, user_id)`` unique
+    index created at v6.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_foods (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider          TEXT NOT NULL,
+            provider_food_id  TEXT NOT NULL,
+            provider_revision TEXT,
+            display_name      TEXT NOT NULL CHECK(length(display_name) BETWEEN 1 AND 100),
+            name_key          TEXT NOT NULL CHECK(length(name_key) BETWEEN 1 AND 100),
+            brand             TEXT,
+            category          TEXT,
+            base_unit         TEXT NOT NULL CHECK(base_unit IN ('g', 'ml', 'piece')),
+            basis_amount      REAL NOT NULL CHECK(basis_amount > 0 AND basis_amount <= 1000000),
+            calories          REAL CHECK(calories IS NULL OR (calories >= 0 AND calories <= 1000000)),
+            protein_g         REAL CHECK(protein_g IS NULL OR (protein_g >= 0 AND protein_g <= 1000000)),
+            carbs_g           REAL CHECK(carbs_g IS NULL OR (carbs_g >= 0 AND carbs_g <= 1000000)),
+            fat_g             REAL CHECK(fat_g IS NULL OR (fat_g >= 0 AND fat_g <= 1000000)),
+            is_active         INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+            created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(provider, provider_food_id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_catalog_foods_name "
+        "ON catalog_foods(name_key) WHERE is_active = 1"
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_aliases (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            catalog_food_id INTEGER NOT NULL,
+            alias           TEXT NOT NULL,
+            alias_key       TEXT NOT NULL,
+            UNIQUE(catalog_food_id, alias_key),
+            FOREIGN KEY (catalog_food_id)
+                REFERENCES catalog_foods(id) ON DELETE CASCADE
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_catalog_aliases_key "
+        "ON catalog_aliases(alias_key)"
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_portions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            catalog_food_id INTEGER NOT NULL,
+            name            TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 50),
+            name_key        TEXT NOT NULL CHECK(length(name_key) BETWEEN 1 AND 50),
+            base_amount     REAL NOT NULL CHECK(base_amount > 0 AND base_amount <= 1000000),
+            UNIQUE(catalog_food_id, name_key),
+            FOREIGN KEY (catalog_food_id)
+                REFERENCES catalog_foods(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    # Rebuild diet_log_items to widen source_type and add provenance columns.
+    # Standard SQLite table-rebuild: create new, copy, drop, rename, reindex.
+    await conn.execute(
+        """
+        CREATE TABLE diet_log_items_new (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id              INTEGER NOT NULL,
+            diet_log_id          INTEGER NOT NULL,
+            item_order           INTEGER NOT NULL,
+            source_type          TEXT NOT NULL
+                                    CHECK(source_type IN ('food', 'recipe', 'freetext', 'catalog')),
+            source_id            INTEGER,
+            source_provider      TEXT,
+            source_revision      TEXT,
+            display_name         TEXT NOT NULL,
+            entered_amount       REAL,
+            entered_unit         TEXT,
+            resolved_base_amount REAL,
+            resolved_base_unit   TEXT,
+            calories             INTEGER,
+            protein_g            REAL,
+            carbs_g              REAL,
+            fat_g                REAL,
+            created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (diet_log_id, user_id)
+                REFERENCES diet_logs(id, user_id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO diet_log_items_new
+            (id, user_id, diet_log_id, item_order, source_type, source_id,
+             display_name, entered_amount, entered_unit, resolved_base_amount,
+             resolved_base_unit, calories, protein_g, carbs_g, fat_g, created_at)
+        SELECT id, user_id, diet_log_id, item_order, source_type, source_id,
+               display_name, entered_amount, entered_unit, resolved_base_amount,
+               resolved_base_unit, calories, protein_g, carbs_g, fat_g, created_at
+        FROM diet_log_items
+        """
+    )
+    await conn.execute("DROP TABLE diet_log_items")
+    await conn.execute("ALTER TABLE diet_log_items_new RENAME TO diet_log_items")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_diet_log_items_lookup "
+        "ON diet_log_items(user_id, diet_log_id, item_order)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_diet_log_items_source "
+        "ON diet_log_items(user_id, source_type, source_id)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -704,6 +835,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     5: _migration_0005_reminder_deliveries,
     6: _migration_0006_diet_log_items,
     7: _migration_0007_food_preferences,
+    8: _migration_0008_shared_catalog,
 }
 
 

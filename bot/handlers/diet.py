@@ -40,6 +40,7 @@ from .common import (
 )
 from .catalog import (
     resolve_catalog_diet_entry,
+    resolve_catalog_food_entry,
     resolve_food_diet_entry,
     resolve_recipe_diet_entry,
 )
@@ -69,7 +70,8 @@ logger = logging.getLogger(__name__)
     CUSTOM_AMOUNT,
     CONFIRM_ITEM,
     LOG_ANOTHER,
-) = range(9)
+    SEARCH,
+) = range(10)
 
 # Valid meal types
 VALID_MEALS = {"breakfast", "lunch", "dinner", "snack"}
@@ -88,11 +90,13 @@ _DFOOD_RE = re.compile(r"^dfood_(\d+)_(\d+)$")
 _DRECIPE_RE = re.compile(r"^drecipe_(\d+)_(\d+)$")
 _DPORT_RE = re.compile(r"^dport_(\d+)_(\d+)$")
 _DRECENT_RE = re.compile(r"^drecent_(\d+)_(\d+)$")
+_DCATALOG_RE = re.compile(r"^dcatalog_(\d+)_(\d+)$")
 _DMORE_RE = re.compile(r"^dmore_(\d+)_(yes|no)$")
+_MAX_SEARCH_QUERY = 50
 # Any diet tap: action word + owner id (used for owner checks and stale taps).
 _DIET_TAP_RE = re.compile(
-    r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more|add|recent|pin|hide)"
-    r"_(\d+)"
+    r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more|add|recent|pin"
+    r"|hide|search|catalog)_(\d+)"
 )
 
 
@@ -897,6 +901,116 @@ async def choose_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 @authorized_callback
+async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """The 'Search catalog' button: prompt for a query and enter the SEARCH state."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return FOOD_CHOICE
+    await _remove_callback_markup(query)
+    context.user_data.pop("diet_ui_message_id", None)
+    try:
+        await reply_html(
+            query.message,
+            "🔎 Type a food to search the catalog (e.g. <code>banana</code>):",
+        )
+    except TelegramError:
+        logger.warning("Could not deliver search prompt", exc_info=True)
+        finish_conversation(update, context, "diet")
+        return ConversationHandler.END
+    return SEARCH
+
+
+async def receive_search_query(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Search the shared catalog and the user's own foods, then show results.
+
+    A user's own foods/recipes rank before catalog hits (they are first-class,
+    higher-priority sources).
+    """
+    text = update.message.text.strip()
+    if not text or len(text) > _MAX_SEARCH_QUERY:
+        await update.message.reply_text(
+            "Enter a short food name to search, or /cancel."
+        )
+        return SEARCH
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    key = text.casefold()
+    results: list[dict] = []
+    for food in await db.list_foods(uid):
+        if key in str(food["name_key"]):
+            results.append(
+                {"source_type": "food", "id": food["id"], "name": food["name"]}
+            )
+    for recipe in await db.list_recipes(uid):
+        if key in str(recipe["name_key"]):
+            results.append(
+                {"source_type": "recipe", "id": recipe["id"], "name": recipe["name"]}
+            )
+    try:
+        for hit in await db.search_catalog(text):
+            results.append(
+                {"source_type": "catalog", "id": hit["id"], "name": hit["name"]}
+            )
+    except NutritionError:
+        pass
+
+    if not results:
+        await update.message.reply_text(
+            f"🔎 No matches for “{text[:_MAX_SEARCH_QUERY]}”. "
+            "Try another word, or /cancel."
+        )
+        return SEARCH
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        update.effective_message,
+        f"🔎 Results for “{escape_html(text)}” — pick one:",
+        food_choice_keyboard(uid, results),
+    )
+    return FOOD_CHOICE if prompt is not None else ConversationHandler.END
+
+
+@authorized_callback
+async def choose_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """A catalog food was tapped: offer its portions or a custom amount."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return FOOD_CHOICE
+    catalog_id = int(_DCATALOG_RE.fullmatch(query.data).group(2))
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    catalog_food = await db.get_catalog_food(catalog_id)
+    if catalog_food is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+
+    await _remove_callback_markup(query)
+    context.user_data["diet_sel_kind"] = "catalog"
+    context.user_data["diet_sel_id"] = catalog_id
+    portions = await db.get_catalog_portions(catalog_id)
+    recent = await db.get_recent_item_quantities(uid, "catalog", catalog_id)
+    context.user_data["diet_recent_qtys"] = recent
+    if portions or recent:
+        prompt = await _send_tap_keyboard(
+            update,
+            context,
+            query.message,
+            f"🔎 <b>{escape_html(catalog_food['name'])}</b> — how much?",
+            food_portion_keyboard(uid, portions, recent, show_prefs=False),
+        )
+        return PORTION_CHOICE if prompt is not None else ConversationHandler.END
+    return await _prompt_custom_amount_text(
+        update,
+        context,
+        query.message,
+        catalog_food["name"],
+        catalog_food["base_unit"],
+    )
+
+
+@authorized_callback
 async def type_food_instead(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
@@ -966,25 +1080,30 @@ async def _reprompt_food_choice(
 async def choose_portion(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
-    """A named food portion was tapped: resolve nutrition and preview it."""
+    """A named portion was tapped: resolve nutrition and preview it."""
     query = await _consume_diet_tap(update, context)
     if query is None:
         return PORTION_CHOICE
     portion_id = int(_DPORT_RE.fullmatch(query.data).group(2))
     db = context.bot_data["db"]
     uid = update.effective_user.id
-    food_id = context.user_data.get("diet_sel_id")
-    food = await db.get_food_by_id(uid, food_id) if food_id is not None else None
-    if food is None:
+    kind = context.user_data.get("diet_sel_kind")
+    sel_id = context.user_data.get("diet_sel_id")
+    if sel_id is None:
         await _remove_callback_markup(query)
         return await _reprompt_food_choice(update, context, query.message)
-    portions = await db.get_food_portions(uid, food_id)
+    if kind == "catalog":
+        portions = await db.get_catalog_portions(sel_id)
+    else:
+        portions = await db.get_food_portions(uid, sel_id)
     portion = next((p for p in portions if p["id"] == portion_id), None)
     if portion is None:
         await query.answer("That portion is no longer available.", show_alert=True)
         return PORTION_CHOICE
     try:
-        entry = resolve_food_diet_entry(food, portions, ["1", portion["name"]])
+        entry = await _resolve_selected(
+            db, uid, kind, sel_id, ["1", portion["name"]]
+        )
     except NutritionError as exc:
         await query.answer(str(exc)[:190], show_alert=True)
         return PORTION_CHOICE
@@ -1048,6 +1167,17 @@ async def prompt_custom_amount(
         return await _prompt_custom_amount_text(
             update, context, query.message, recipe["name"], recipe["yield_unit"]
         )
+    if kind == "catalog" and sel_id is not None:
+        catalog_food = await db.get_catalog_food(sel_id)
+        if catalog_food is None:
+            return await _reprompt_food_choice(update, context, query.message)
+        return await _prompt_custom_amount_text(
+            update,
+            context,
+            query.message,
+            catalog_food["name"],
+            catalog_food["base_unit"],
+        )
     return await _reprompt_food_choice(update, context, query.message)
 
 
@@ -1094,6 +1224,12 @@ async def _resolve_selected(
             raise NutritionError("That saved recipe is no longer available.")
         ingredients = await db.get_recipe_ingredients(uid, sel_id)
         return resolve_recipe_diet_entry(recipe, ingredients, tokens)
+    if kind == "catalog" and sel_id is not None:
+        catalog_food = await db.get_catalog_food(sel_id)
+        if catalog_food is None:
+            raise NutritionError("That catalog food is no longer available.")
+        portions = await db.get_catalog_portions(sel_id)
+        return resolve_catalog_food_entry(catalog_food, portions, tokens)
     raise NutritionError("Lost track of the item.")
 
 
@@ -1106,7 +1242,7 @@ async def receive_custom_amount(
     sel_id = context.user_data.get("diet_sel_id")
     db = context.bot_data["db"]
     uid = update.effective_user.id
-    if kind not in ("food", "recipe") or sel_id is None:
+    if kind not in ("food", "recipe", "catalog") or sel_id is None:
         finish_conversation(update, context, "diet")
         await update.message.reply_text(
             "⚠️ Lost track of the item. Start again with /diet."
@@ -1454,7 +1590,12 @@ diet_conv_handler = ConversationHandler(
         FOOD_CHOICE: [
             CallbackQueryHandler(choose_food, pattern=r"^dfood_\d+_\d+$"),
             CallbackQueryHandler(choose_recipe, pattern=r"^drecipe_\d+_\d+$"),
+            CallbackQueryHandler(choose_catalog, pattern=r"^dcatalog_\d+_\d+$"),
+            CallbackQueryHandler(start_search, pattern=r"^dsearch_\d+$"),
             CallbackQueryHandler(type_food_instead, pattern=r"^dtype_\d+$"),
+        ],
+        SEARCH: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_search_query)
         ],
         PORTION_CHOICE: [
             CallbackQueryHandler(choose_portion, pattern=r"^dport_\d+_\d+$"),

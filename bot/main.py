@@ -141,6 +141,15 @@ async def post_init(application) -> None:
         # bot_data, so post_shutdown would not otherwise clean it up.
         await db.close()
         raise
+    # Seed the shared curated catalog (idempotent upsert by provider id).
+    try:
+        from .catalog_seed import CATALOG_FOODS
+
+        await db.seed_catalog(CATALOG_FOODS)
+        logger.info("Seeded %d curated catalog food(s)", len(CATALOG_FOODS))
+    except BaseException:
+        logger.warning("Catalog seeding failed; search may be empty", exc_info=True)
+
     application.bot_data["db"] = db
     logger.info("Database ready")
 
@@ -234,7 +243,7 @@ def build_application() -> Application:
         CallbackQueryHandler(
             stale_diet_callback,
             pattern=r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more|add"
-            r"|recent|pin|hide)_",
+            r"|recent|pin|hide|search|catalog)_",
         )
     )
     # Menu callbacks

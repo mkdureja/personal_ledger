@@ -537,16 +537,18 @@ class DatabaseManager:
                 await self.conn.execute(
                     "INSERT INTO diet_log_items "
                     "(user_id, diet_log_id, item_order, source_type, source_id, "
-                    "display_name, entered_amount, entered_unit, "
-                    "resolved_base_amount, resolved_base_unit, calories, "
-                    "protein_g, carbs_g, fat_g) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "source_provider, source_revision, display_name, "
+                    "entered_amount, entered_unit, resolved_base_amount, "
+                    "resolved_base_unit, calories, protein_g, carbs_g, fat_g) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         user_id,
                         diet_log_id,
                         order,
                         str(item.get("source_type", "freetext")),
                         item.get("source_id"),
+                        item.get("source_provider"),
+                        item.get("source_revision"),
                         str(item["display_name"]),
                         item.get("entered_amount"),
                         item.get("entered_unit"),
@@ -572,6 +574,125 @@ class DatabaseManager:
             "SELECT * FROM diet_log_items "
             "WHERE user_id = ? AND diet_log_id = ? ORDER BY item_order, id",
             (user_id, diet_log_id),
+        )
+        return [dict(row) for row in rows]
+
+    # -------------------------------------------------------------------
+    # Shared curated catalog (Phase 5) — reference data, not owner-scoped
+    # -------------------------------------------------------------------
+    async def seed_catalog(self, entries: Sequence[Mapping[str, Any]]) -> None:
+        """Idempotently upsert curated catalog foods, portions, and aliases.
+
+        Keyed by ``(provider, provider_food_id)`` so re-running (e.g. on startup)
+        refreshes values without duplicating rows.
+        """
+        from .catalog_seed import CATALOG_PROVIDER, CATALOG_REVISION
+
+        async with self._write_operation():
+            for entry in entries:
+                display, name_key = normalize_catalog_name(entry["display_name"])
+                await self.conn.execute(
+                    "INSERT INTO catalog_foods (provider, provider_food_id, "
+                    "provider_revision, display_name, name_key, category, "
+                    "base_unit, basis_amount, calories, protein_g, carbs_g, fat_g) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(provider, provider_food_id) DO UPDATE SET "
+                    "provider_revision = excluded.provider_revision, "
+                    "display_name = excluded.display_name, "
+                    "name_key = excluded.name_key, category = excluded.category, "
+                    "base_unit = excluded.base_unit, "
+                    "basis_amount = excluded.basis_amount, "
+                    "calories = excluded.calories, protein_g = excluded.protein_g, "
+                    "carbs_g = excluded.carbs_g, fat_g = excluded.fat_g, "
+                    "is_active = 1, updated_at = ?",
+                    (
+                        CATALOG_PROVIDER,
+                        entry["provider_food_id"],
+                        CATALOG_REVISION,
+                        display,
+                        name_key,
+                        entry.get("category"),
+                        entry["base_unit"],
+                        entry["basis_amount"],
+                        entry.get("calories"),
+                        entry.get("protein_g"),
+                        entry.get("carbs_g"),
+                        entry.get("fat_g"),
+                        _utc_timestamp_now(),
+                    ),
+                )
+                row = await self._query_one(
+                    "SELECT id FROM catalog_foods "
+                    "WHERE provider = ? AND provider_food_id = ?",
+                    (CATALOG_PROVIDER, entry["provider_food_id"]),
+                )
+                catalog_id = row["id"]
+                for portion in entry.get("portions", ()):
+                    p_display, p_key = normalize_catalog_name(
+                        portion["name"], max_length=MAX_PORTION_NAME_LENGTH
+                    )
+                    await self.conn.execute(
+                        "INSERT INTO catalog_portions "
+                        "(catalog_food_id, name, name_key, base_amount) "
+                        "VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(catalog_food_id, name_key) DO UPDATE SET "
+                        "base_amount = excluded.base_amount",
+                        (catalog_id, p_display, p_key, portion["base_amount"]),
+                    )
+                for alias in entry.get("aliases", ()):
+                    a_display, a_key = normalize_catalog_name(alias)
+                    await self.conn.execute(
+                        "INSERT INTO catalog_aliases "
+                        "(catalog_food_id, alias, alias_key) VALUES (?, ?, ?) "
+                        "ON CONFLICT(catalog_food_id, alias_key) DO NOTHING",
+                        (catalog_id, a_display, a_key),
+                    )
+
+    async def search_catalog(
+        self, query: str, limit: int = 8
+    ) -> list[dict[str, Any]]:
+        """Find active catalog foods by name or alias (exact/prefix/substring).
+
+        Shared reference data, so not owner-scoped. Raises ``NutritionError`` via
+        :func:`normalize_catalog_name` when the query is empty or unsupported.
+        """
+        _display, key = normalize_catalog_name(query, "Search")
+        like = f"%{key}%"
+        prefix = f"{key}%"
+        rows = await self._query_all(
+            """
+            SELECT cf.*, cf.display_name AS name
+            FROM catalog_foods AS cf
+            WHERE cf.is_active = 1
+              AND (
+                cf.name_key LIKE ?
+                OR cf.id IN (
+                    SELECT catalog_food_id FROM catalog_aliases
+                    WHERE alias_key LIKE ?
+                )
+              )
+            ORDER BY (cf.name_key = ?) DESC, (cf.name_key LIKE ?) DESC, cf.name_key
+            LIMIT ?
+            """,
+            (like, like, key, prefix, limit),
+        )
+        return [dict(row) for row in rows]
+
+    async def get_catalog_food(self, catalog_id: int) -> dict[str, Any] | None:
+        """Return one active catalog food (with a ``name`` alias for the resolver)."""
+        row = await self._query_one(
+            "SELECT *, display_name AS name FROM catalog_foods "
+            "WHERE id = ? AND is_active = 1",
+            (catalog_id,),
+        )
+        return dict(row) if row is not None else None
+
+    async def get_catalog_portions(self, catalog_id: int) -> list[dict[str, Any]]:
+        """Return a catalog food's named portions."""
+        rows = await self._query_all(
+            "SELECT * FROM catalog_portions WHERE catalog_food_id = ? "
+            "ORDER BY name_key, id",
+            (catalog_id,),
         )
         return [dict(row) for row in rows]
 

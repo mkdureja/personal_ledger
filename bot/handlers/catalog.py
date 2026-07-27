@@ -64,6 +64,8 @@ class ResolvedCatalogDietEntry:
     fat_g: float | None
     source_type: str = "freetext"
     source_id: int | None = None
+    source_provider: str | None = None
+    source_revision: str | None = None
     entered_amount: float | None = None
     entered_unit: str | None = None
     resolved_base_amount: float | None = None
@@ -74,6 +76,8 @@ class ResolvedCatalogDietEntry:
         return {
             "source_type": self.source_type,
             "source_id": self.source_id,
+            "source_provider": self.source_provider,
+            "source_revision": self.source_revision,
             "display_name": self.display_text,
             "entered_amount": self.entered_amount,
             "entered_unit": self.entered_unit,
@@ -735,6 +739,29 @@ def resolve_recipe_diet_entry(
         entered_unit=str(display_unit),
         resolved_base_amount=float(request.base_amount),
         resolved_base_unit=str(recipe["yield_unit"]),
+    )
+
+
+def resolve_catalog_food_entry(
+    catalog_food: Mapping[str, Any],
+    portions: Sequence[Mapping[str, Any]],
+    quantity_tokens: Sequence[str],
+) -> ResolvedCatalogDietEntry:
+    """Calculate a shared-catalog food's nutrition for an entered quantity.
+
+    ``catalog_foods`` mirrors the private ``foods`` shape (``base_unit``,
+    ``basis_amount``, nutrients, and a ``name`` alias), so the same resolver is
+    reused; only the provenance is stamped as coming from the shared catalog.
+    """
+    import dataclasses
+
+    entry = resolve_food_diet_entry(catalog_food, portions, quantity_tokens)
+    return dataclasses.replace(
+        entry,
+        source_type="catalog",
+        source_id=catalog_food.get("id"),
+        source_provider=catalog_food.get("provider"),
+        source_revision=catalog_food.get("provider_revision"),
     )
 
 

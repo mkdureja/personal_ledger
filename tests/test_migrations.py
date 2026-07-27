@@ -259,6 +259,64 @@ async def test_v7_upgrade_defaults_existing_users_to_suggestions_on(monkeypatch)
         await mgr.close()
 
 
+async def test_shared_catalog_added_at_v8():
+    mgr = await _fresh_manager()
+    try:
+        await mgr.init_db()
+        names = {name for _t, name in await _schema_objects(mgr.conn)}
+        assert {"catalog_foods", "catalog_aliases", "catalog_portions"} <= names
+        assert LATEST_VERSION >= 8
+    finally:
+        await mgr.close()
+
+
+async def test_v8_rebuild_preserves_items_and_allows_catalog_source(monkeypatch):
+    """The diet_log_items rebuild keeps existing rows, adds provenance columns,
+    and widens source_type to accept 'catalog'."""
+    mgr = await _fresh_manager()
+    try:
+        monkeypatch.setattr(migrations, "LATEST_VERSION", 7)
+        await mgr.init_db()
+        await mgr.conn.execute(
+            "INSERT INTO users (user_id, username, first_name) VALUES (1, 'u', 'U')"
+        )
+        # Insert a v7-shaped meal + item directly (log_diet_with_items writes the
+        # v8 provenance columns, which do not exist yet at v7).
+        await mgr.conn.execute(
+            "INSERT INTO diet_logs (id, user_id, meal_type, food_items, calories) "
+            "VALUES (50, 1, 'lunch', 'apple', 95)"
+        )
+        await mgr.conn.execute(
+            "INSERT INTO diet_log_items (user_id, diet_log_id, item_order, "
+            "source_type, source_id, display_name, calories) "
+            "VALUES (1, 50, 0, 'food', 9, 'apple', 95)"
+        )
+        await mgr.conn.commit()
+        header_id = 50
+
+        monkeypatch.setattr(migrations, "LATEST_VERSION", 8)
+        assert await migrations.run_migrations(mgr.conn) == 8
+
+        items = await mgr.get_diet_log_items(1, header_id)
+        assert len(items) == 1 and items[0]["display_name"] == "apple"
+        assert "source_provider" in items[0]
+        # 'catalog' is now an accepted source_type.
+        await mgr.conn.execute(
+            "INSERT INTO diet_log_items (user_id, diet_log_id, item_order, "
+            "source_type, source_id, source_provider, source_revision, "
+            "display_name, calories) "
+            "VALUES (1, ?, 1, 'catalog', 3, 'curated', 'v1', 'banana', 105)",
+            (header_id,),
+        )
+        cursor = await mgr.conn.execute("PRAGMA foreign_key_check")
+        assert await cursor.fetchall() == []
+        # Undo still cascades after the rebuild.
+        await mgr.delete_log_by_id(1, "diet_logs", header_id)
+        assert await mgr.get_diet_log_items(1, header_id) == []
+    finally:
+        await mgr.close()
+
+
 async def test_running_init_twice_makes_no_further_changes():
     mgr = await _fresh_manager()
     try:

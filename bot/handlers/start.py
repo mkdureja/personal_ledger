@@ -68,6 +68,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/recent</code> — Your latest logged entries\n"
         "<code>/undo</code> — Delete last log entry (within 24h)\n"
         "<code>/reminders on|off</code> — Turn reminders on or off\n"
+        "<code>/suggestions on|off|reset</code> — Personalized food ordering\n"
         "<code>/settings</code> — View your settings\n"
         "<code>/cancel</code> — Cancel current conversation\n"
         "<code>/menu</code> — Main menu\n"

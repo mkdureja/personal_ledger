@@ -114,10 +114,16 @@ def food_choice_keyboard(
         if choice["source_type"] == "recipe":
             label = f"🍲 {_button_label(choice['name'])} (recipe)"
             data = f"drecipe_{user_id}_{choice['id']}"
+        elif choice["source_type"] == "catalog":
+            label = f"🔎 {_button_label(choice['name'])}"
+            data = f"dcatalog_{user_id}_{choice['id']}"
         else:
             label = f"🥗 {_button_label(choice['name'])}"
             data = f"dfood_{user_id}_{choice['id']}"
         rows.append([InlineKeyboardButton(label, callback_data=data)])
+    rows.append(
+        [InlineKeyboardButton("🔎 Search catalog", callback_data=f"dsearch_{user_id}")]
+    )
     rows.append(
         [
             InlineKeyboardButton(
@@ -166,8 +172,13 @@ def food_portion_keyboard(
     *,
     is_pinned: bool = False,
     hidden: bool = False,
+    show_prefs: bool = True,
 ) -> InlineKeyboardMarkup:
-    """Recent quantities + named portions for a food, with custom/back/pref rows."""
+    """Recent quantities + named portions for a food, with custom/back/pref rows.
+
+    ``show_prefs`` is off for shared-catalog foods, which cannot be pinned/hidden
+    (preferences apply only to a user's own foods and recipes).
+    """
     rows: list[list[InlineKeyboardButton]] = _recent_quantity_rows(
         user_id, recent or []
     )
@@ -188,7 +199,8 @@ def food_portion_keyboard(
             InlineKeyboardButton("🔙 Back", callback_data=f"dback_{user_id}"),
         ]
     )
-    rows.append(_pref_row(user_id, is_pinned, hidden))
+    if show_prefs:
+        rows.append(_pref_row(user_id, is_pinned, hidden))
     return InlineKeyboardMarkup(rows)
 
 
