@@ -120,6 +120,47 @@ async def test_mutation_receipts_table_added_at_v2():
         await mgr.close()
 
 
+async def test_habit_activity_periods_table_added_at_v4():
+    mgr = await _fresh_manager()
+    try:
+        await mgr.init_db()
+        names = {name for _t, name in await _schema_objects(mgr.conn)}
+        assert "habit_activity_periods" in names
+        assert LATEST_VERSION >= 4
+        assert await migrations.get_user_version(mgr.conn) == LATEST_VERSION
+    finally:
+        await mgr.close()
+
+
+async def test_v4_backfills_open_period_for_active_habit_only():
+    """Active habits get an open period from creation; inactive ones get none."""
+    mgr = await _fresh_manager()
+    try:
+        await mgr.init_db()
+        await mgr.ensure_user(1001, "a", "A")
+        active_id, _ = await mgr.add_habit(1001, "Active")
+        inactive_id, _ = await mgr.add_habit(1001, "Inactive")
+        await mgr.deactivate_habit(1001, inactive_id)
+        # Wipe lifecycle-created periods and re-run the v4 backfill from scratch.
+        await mgr.conn.execute("DELETE FROM habit_activity_periods")
+        await mgr.conn.execute("PRAGMA user_version = 3")
+        await mgr.conn.commit()
+
+        await mgr.init_db()
+
+        active_periods = await mgr._query_all(
+            "SELECT ended_on FROM habit_activity_periods WHERE habit_id = ?",
+            (active_id,),
+        )
+        inactive_periods = await mgr._query_all(
+            "SELECT 1 FROM habit_activity_periods WHERE habit_id = ?", (inactive_id,)
+        )
+        assert len(active_periods) == 1 and active_periods[0]["ended_on"] is None
+        assert inactive_periods == []
+    finally:
+        await mgr.close()
+
+
 async def test_running_init_twice_makes_no_further_changes():
     mgr = await _fresh_manager()
     try:

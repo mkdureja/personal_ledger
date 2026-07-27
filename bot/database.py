@@ -155,6 +155,11 @@ def _utc_timestamp_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
+def _utc_date_now() -> str:
+    """Current UTC date (ISO). Fallback when a caller supplies no local date."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 class DatabaseManager:
     """Async SQLite manager holding a single shared connection."""
 
@@ -1160,14 +1165,18 @@ class DatabaseManager:
     # Habits
     # -------------------------------------------------------------------
     async def add_habit(
-        self, user_id: int, habit_name: str
+        self, user_id: int, habit_name: str, *, today: date | None = None
     ) -> tuple[int, HabitAddStatus]:
         """Add, reactivate, or find an active habit.
 
         Returns ``(habit_id, status)`` where status is ``"added"``,
-        ``"reactivated"``, or ``"already_active"``.
+        ``"reactivated"``, or ``"already_active"``. Adding or reactivating opens a
+        new activity period starting on ``today`` (local date from the caller;
+        falls back to the UTC date when omitted) so lifecycle-aware analytics know
+        which days the habit was live.
         """
         name_key = _habit_key(habit_name)
+        on_date = today.isoformat() if today is not None else _utc_date_now()
         async with self._write_operation():
             cursor = await self.conn.execute(
                 "SELECT id, is_active FROM habits "
@@ -1194,6 +1203,7 @@ class DatabaseManager:
                     (row["id"], user_id, name_key),
                 )
                 if cursor.rowcount > 0:
+                    await self._open_habit_period(user_id, row["id"], on_date)
                     return row["id"], "reactivated"
 
             cursor = await self.conn.execute(
@@ -1207,6 +1217,7 @@ class DatabaseManager:
             )
             inserted = await cursor.fetchone()
             if inserted is not None:
+                await self._open_habit_period(user_id, inserted["id"], on_date)
                 return inserted["id"], "added"
 
             # This can occur if another database connection made the habit
@@ -1221,15 +1232,103 @@ class DatabaseManager:
                 raise RuntimeError("Habit add completed without an active habit")
             return active["id"], "already_active"
 
-    async def deactivate_habit(self, user_id: int, habit_id: int) -> bool:
-        """Soft-delete a habit. Returns True if a row was affected."""
+    async def deactivate_habit(
+        self, user_id: int, habit_id: int, *, today: date | None = None
+    ) -> bool:
+        """Soft-delete a habit. Returns True if a row was affected.
+
+        Closes the habit's current open activity period on ``today`` (local date
+        from the caller; UTC date when omitted) so its active span is bounded.
+        """
+        on_date = today.isoformat() if today is not None else _utc_date_now()
         async with self._write_operation():
             cursor = await self.conn.execute(
                 "UPDATE habits SET is_active = 0 "
                 "WHERE id = ? AND user_id = ? AND is_active = 1",
                 (habit_id, user_id),
             )
-            return cursor.rowcount > 0
+            if cursor.rowcount <= 0:
+                return False
+            await self._close_habit_period(user_id, habit_id, on_date)
+            return True
+
+    async def _open_habit_period(
+        self, user_id: int, habit_id: int, started_on: str
+    ) -> None:
+        """Open an activity period (caller holds the write lock). No-op if open."""
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM habit_activity_periods "
+            "WHERE user_id = ? AND habit_id = ? AND ended_on IS NULL LIMIT 1",
+            (user_id, habit_id),
+        )
+        if await cursor.fetchone() is not None:
+            return
+        await self.conn.execute(
+            "INSERT INTO habit_activity_periods (user_id, habit_id, started_on) "
+            "VALUES (?, ?, ?)",
+            (user_id, habit_id, started_on),
+        )
+
+    async def _close_habit_period(
+        self, user_id: int, habit_id: int, ended_on: str
+    ) -> None:
+        """Close the current open activity period (caller holds the write lock).
+
+        Guards against a reversed span if a habit is added and deactivated on the
+        same day boundary: the end is clamped to at least the period's start.
+        """
+        await self.conn.execute(
+            "UPDATE habit_activity_periods "
+            "SET ended_on = MAX(started_on, ?) "
+            "WHERE user_id = ? AND habit_id = ? AND ended_on IS NULL",
+            (ended_on, user_id, habit_id),
+        )
+
+    async def get_habit_adherence(
+        self, user_id: int, week_start: date, today: date
+    ) -> tuple[int, int]:
+        """Return ``(done, possible)`` habit-days across ``[week_start, today]``.
+
+        A habit-day counts toward ``possible`` only when an activity period covers
+        that local day, so a habit deactivated mid-week keeps the days it was live
+        (and its completions on them) instead of vanishing from both sides. Habits
+        that were active earlier in the window but are inactive now are included.
+        """
+        period_rows = await self._query_all(
+            "SELECT habit_id, started_on, ended_on FROM habit_activity_periods "
+            "WHERE user_id = ? AND started_on <= ? "
+            "AND (ended_on IS NULL OR ended_on >= ?)",
+            (user_id, today.isoformat(), week_start.isoformat()),
+        )
+        eligible: dict[int, set[date]] = {}
+        for row in period_rows:
+            start = max(week_start, date.fromisoformat(row["started_on"]))
+            end = (
+                today
+                if row["ended_on"] is None
+                else min(today, date.fromisoformat(row["ended_on"]))
+            )
+            days = eligible.setdefault(row["habit_id"], set())
+            current = start
+            while current <= end:
+                days.add(current)
+                current += timedelta(days=1)
+
+        total_possible = sum(len(days) for days in eligible.values())
+        if total_possible == 0:
+            return 0, 0
+
+        log_rows = await self._query_all(
+            "SELECT habit_id, log_date FROM habit_logs "
+            "WHERE user_id = ? AND log_date >= ? AND log_date <= ?",
+            (user_id, week_start.isoformat(), today.isoformat()),
+        )
+        total_done = 0
+        for row in log_rows:
+            habit_days = eligible.get(row["habit_id"])
+            if habit_days and date.fromisoformat(row["log_date"]) in habit_days:
+                total_done += 1
+        return total_done, total_possible
 
     async def get_active_habits(self, user_id: int) -> list[dict[str, Any]]:
         """Get all active habits for a user."""

@@ -462,7 +462,7 @@ async def add_habit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return ADDING_HABIT
 
-    _habit_id, status = await db.add_habit(user_id, habit_name)
+    _habit_id, status = await db.add_habit(user_id, habit_name, today=today_local())
 
     safe_name = escape_html(habit_name)
     if status == "reactivated":
@@ -501,7 +501,7 @@ async def remove_habit_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await _reject_callback(query, "This habit is no longer active.")
         return
 
-    success = await db.deactivate_habit(user_id, habit_id)
+    success = await db.deactivate_habit(user_id, habit_id, today=today_local())
     if not success:
         await _reject_callback(query, "This habit is no longer active.")
         return

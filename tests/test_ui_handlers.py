@@ -314,17 +314,13 @@ async def test_add_habit_text_rejects_case_insensitive_duplicates(user_id):
 
 
 @pytest.mark.asyncio
-async def test_weekly_habit_percentage_counts_only_active_ids(user_id):
+async def test_weekly_habit_percentage_uses_lifecycle_adherence(user_id):
     db = SimpleNamespace(
         get_study_logs=AsyncMock(return_value=[]),
         get_gym_logs=AsyncMock(return_value=[]),
         get_diet_logs=AsyncMock(return_value=[]),
-        get_active_habits=AsyncMock(
-            return_value=[{"id": 1, "habit_name": "Read"}]
-        ),
-        get_habit_logs_range=AsyncMock(
-            return_value=[{"habit_id": 1}, {"habit_id": 999}]
-        ),
+        # Period-aware adherence is computed in the DB layer now.
+        get_habit_adherence=AsyncMock(return_value=(1, 7)),
     )
     message = SimpleNamespace(reply_text=AsyncMock())
 
@@ -332,7 +328,6 @@ async def test_weekly_habit_percentage_counts_only_active_ids(user_id):
 
     text = message.reply_text.await_args.args[0]
     assert "1/7 (14%)" in text
-    assert "2/7" not in text
     assert message.reply_text.await_args.kwargs["parse_mode"] == ParseMode.HTML
 
 

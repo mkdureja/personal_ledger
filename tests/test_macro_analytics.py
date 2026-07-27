@@ -27,7 +27,8 @@ def _summary_db(diet_logs: list[dict[str, object]]) -> SimpleNamespace:
         get_study_logs=AsyncMock(return_value=[]),
         get_gym_logs=AsyncMock(return_value=[]),
         get_diet_logs=AsyncMock(return_value=diet_logs),
-        get_active_habits=AsyncMock(return_value=[]),
+        get_active_habits=AsyncMock(return_value=[]),  # used by _daily_summary
+        get_habit_adherence=AsyncMock(return_value=(0, 0)),  # used by _weekly_summary
     )
 
 

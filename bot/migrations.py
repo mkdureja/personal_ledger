@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this (and register a new function in ``_MIGRATIONS``) for every schema
 # change. Version N is produced by ``_MIGRATIONS[N]``.
-LATEST_VERSION = 3
+LATEST_VERSION = 4
 
 
 class MigrationCollisionError(RuntimeError):
@@ -415,10 +415,49 @@ async def _migration_0003_user_settings(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0004_habit_activity_periods(conn: aiosqlite.Connection) -> None:
+    """Add ``habit_activity_periods`` so adherence reflects real activation spans.
+
+    Backfills one *open* period per currently-active habit, starting on its
+    creation date. Historical inactive periods cannot be recovered, so they are
+    not invented — a habit inactive at migration time simply has no period until
+    it is next activated.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS habit_activity_periods (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            habit_id   INTEGER NOT NULL,
+            started_on DATE NOT NULL,
+            ended_on   DATE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CHECK (ended_on IS NULL OR ended_on >= started_on),
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (habit_id) REFERENCES habits(id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_habit_periods_lookup "
+        "ON habit_activity_periods(user_id, habit_id, started_on)"
+    )
+    await conn.execute(
+        """
+        INSERT INTO habit_activity_periods (user_id, habit_id, started_on)
+        SELECT user_id, id, COALESCE(substr(created_at, 1, 10), date('now'))
+        FROM habits
+        WHERE is_active = 1
+          AND id NOT IN (SELECT habit_id FROM habit_activity_periods)
+        """
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
     3: _migration_0003_user_settings,
+    4: _migration_0004_habit_activity_periods,
 }
 
 

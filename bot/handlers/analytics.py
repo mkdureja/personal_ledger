@@ -33,26 +33,6 @@ _MACRO_FIELDS = (
 )
 
 
-def _eligible_habit_days(habit: dict, week_start: date, today: date) -> int:
-    """Days in [week_start, today] on or after the habit's creation date (max 7).
-
-    A habit created mid-week is only accountable for the days it has existed, so
-    a habit made and done today reads as 1/1 rather than 1/7.
-    """
-    start = week_start
-    created = habit.get("created_at")
-    if created:
-        try:
-            created_date = local_date_from_utc(datetime.fromisoformat(str(created)))
-        except (ValueError, TypeError):
-            created_date = None
-        if created_date is not None and created_date > start:
-            start = created_date
-    if start > today:
-        return 0
-    return (today - start).days + 1
-
-
 def _safe_name(value: object) -> str:
     """Bound and escape a stored display name, including legacy oversized rows."""
     text = str(value)
@@ -354,24 +334,20 @@ async def _weekly_summary(message: Message, db, user_id: int) -> None:
     else:
         lines.append("🍽️ <b>Diet</b>: no meals logged this week")
 
-    habits = await db.get_active_habits(user_id)
-    if habits:
-        active_ids = {habit["id"] for habit in habits}
-        habit_logs = await db.get_habit_logs_range(user_id, week_start, today)
-        total_done = sum(
-            1 for row in habit_logs if row["habit_id"] in active_ids
-        )
-        # Count only the days each habit has actually existed this week.
-        total_possible = sum(
-            _eligible_habit_days(habit, week_start, today) for habit in habits
-        )
-        pct = total_done / total_possible * 100 if total_possible else 0
+    # Lifecycle-aware: a habit counts only for the days an activity period covered
+    # it, so deactivating mid-week keeps its earlier completions, and a habit that
+    # was active earlier in the window is still included even if inactive now.
+    total_done, total_possible = await db.get_habit_adherence(
+        user_id, week_start, today
+    )
+    if total_possible:
+        pct = total_done / total_possible * 100
         lines.append(
             f"✅ <b>Habits</b>: {total_done}/{total_possible} "
             f"({pct:.0f}%) completed"
         )
     else:
-        lines.append("✅ <b>Habits</b>: no habits set up")
+        lines.append("✅ <b>Habits</b>: no habits active this week")
 
     await reply_html(message, "\n".join(lines))
 
