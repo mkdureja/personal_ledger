@@ -574,6 +574,67 @@ class DatabaseManager:
         return {row["user_id"] for row in rows}
 
     # -------------------------------------------------------------------
+    # Durable reminder delivery (resumable chunk state)
+    # -------------------------------------------------------------------
+    async def get_delivered_chunk_indices(
+        self, user_id: int, job_key: str, local_date: str
+    ) -> set[int]:
+        """Chunk indices already delivered for this owner/job/date (idempotency)."""
+        rows = await self._query_all(
+            "SELECT chunk_index FROM reminder_deliveries "
+            "WHERE user_id = ? AND job_key = ? AND local_date = ? "
+            "AND status = 'delivered'",
+            (user_id, job_key, local_date),
+        )
+        return {row["chunk_index"] for row in rows}
+
+    async def record_chunk_delivery(
+        self,
+        user_id: int,
+        job_key: str,
+        local_date: str,
+        chunk_index: int,
+        *,
+        delivered: bool,
+        error_category: str | None = None,
+    ) -> None:
+        """Persist a chunk's delivery outcome (owner-scoped, attempt-counted).
+
+        ``error_category`` is a sanitized label only (e.g. ``"permanent"``,
+        ``"retry_exhausted"``) — never a token or raw exception/URL.
+        """
+        now = _utc_timestamp_now()
+        status = "delivered" if delivered else "failed"
+        delivered_at = now if delivered else None
+        async with self._write_operation():
+            await self.conn.execute(
+                """
+                INSERT INTO reminder_deliveries
+                    (user_id, job_key, local_date, chunk_index, status, attempts,
+                     last_attempt_at, delivered_at, error_category)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(user_id, job_key, local_date, chunk_index) DO UPDATE SET
+                    status = excluded.status,
+                    attempts = reminder_deliveries.attempts + 1,
+                    last_attempt_at = excluded.last_attempt_at,
+                    delivered_at = COALESCE(
+                        reminder_deliveries.delivered_at, excluded.delivered_at
+                    ),
+                    error_category = excluded.error_category
+                """,
+                (
+                    user_id,
+                    job_key,
+                    local_date,
+                    chunk_index,
+                    status,
+                    now,
+                    delivered_at,
+                    error_category,
+                ),
+            )
+
+    # -------------------------------------------------------------------
     # Food catalog
     # -------------------------------------------------------------------
     async def save_food(

@@ -25,18 +25,20 @@ _MAX_SEND_ATTEMPTS = 3
 _MAX_RETRY_AFTER_SECONDS = 30.0
 
 
-async def _send_with_retry(bot, chat_id: int, text: str) -> bool:
-    """Send one HTML message, retrying transient failures with bounded backoff.
+async def _send_with_retry_classified(
+    bot, chat_id: int, text: str
+) -> tuple[bool, str | None]:
+    """Send one HTML message with bounded backoff; return ``(ok, error_category)``.
 
     Honors Telegram's ``RetryAfter`` and retries a couple of ``NetworkError``s.
-    Returns True on success, False if every attempt fails or the error is
-    permanent (e.g. a bad request), which the caller uses to stop sending this
-    recipient's remaining chunks.
+    ``error_category`` is a sanitized label — never a token or raw exception/URL:
+    ``None`` on success, ``"permanent"`` for a non-retryable error, and
+    ``"retry_exhausted"`` when transient retries run out.
     """
     for attempt in range(1, _MAX_SEND_ATTEMPTS + 1):
         try:
             await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-            return True
+            return True, None
         except RetryAfter as exc:
             delay = min(
                 float(getattr(exc, "retry_after", 1)) + 0.5, _MAX_RETRY_AFTER_SECONDS
@@ -45,18 +47,61 @@ async def _send_with_retry(bot, chat_id: int, text: str) -> bool:
             # Permanent (bad chat, blocked bot, malformed message) — do not retry.
             # Note: in PTB these subclass NetworkError, so catch them first.
             logger.exception("Permanent send failure to chat %s", chat_id)
-            return False
+            return False, "permanent"
         except NetworkError:
             delay = min(2.0**attempt, 5.0)
         except TelegramError:
             logger.exception("Permanent send failure to chat %s", chat_id)
-            return False
+            return False, "permanent"
         if attempt < _MAX_SEND_ATTEMPTS:
             await asyncio.sleep(delay)
     logger.warning(
         "Gave up sending to chat %s after %d attempts", chat_id, _MAX_SEND_ATTEMPTS
     )
-    return False
+    return False, "retry_exhausted"
+
+
+async def _send_with_retry(bot, chat_id: int, text: str) -> bool:
+    """Bounded-retry send returning only success (see the classified variant)."""
+    ok, _category = await _send_with_retry_classified(bot, chat_id, text)
+    return ok
+
+
+async def _deliver_chunks(
+    context: ContextTypes.DEFAULT_TYPE,
+    db,
+    user_id: int,
+    job_key: str,
+    local_date: str,
+    messages: Sequence[str],
+) -> int:
+    """Deliver a user's reminder chunks with durable, resumable per-chunk state.
+
+    Skips chunks already marked delivered (idempotent across a duplicate job run
+    or a process restart), resumes at the first undelivered chunk, and stops this
+    user's remaining chunks on a hard failure so the next run resumes them. The
+    database lock is held only for the short state read/write — never across the
+    network send or its backoff sleeps. Returns the number of chunks delivered
+    this call. Failures are isolated to this user; the caller continues to others.
+    """
+    if not messages:
+        return 0
+    delivered_indices = await db.get_delivered_chunk_indices(
+        user_id, job_key, local_date
+    )
+    delivered_now = 0
+    for index, text in enumerate(messages):
+        if index in delivered_indices:
+            continue
+        ok, category = await _send_with_retry_classified(context.bot, user_id, text)
+        await db.record_chunk_delivery(
+            user_id, job_key, local_date, index,
+            delivered=ok, error_category=category,
+        )
+        if not ok:
+            break  # resume this user's remaining chunks on the next run
+        delivered_now += 1
+    return delivered_now
 
 # Keep a little headroom below Telegram's documented 4096-character ceiling.
 # Counting UTF-16 code units is conservative for emoji-heavy names and matches
@@ -167,24 +212,22 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     unchecked_map = await db.get_users_with_unchecked_habits(enabled, today)
+    local_date = today.isoformat()
 
     for user_id, habit_names in unchecked_map.items():
         if not habit_names:
             continue
 
         messages = _build_reminder_messages(habit_names)
-
-        delivered = 0
-        for text in messages:
-            if not await _send_with_retry(context.bot, user_id, text):
-                break  # stop this user's remaining chunks on a hard failure
-            delivered += 1
+        delivered = await _deliver_chunks(
+            context, db, user_id, "daily_habit_reminder", local_date, messages
+        )
         logger.info(
-            "Sent reminder to user %d: %d unchecked across %d/%d message(s)",
+            "Reminder to user %d: %d unchecked across %d message(s), %d delivered",
             user_id,
             len(habit_names),
-            delivered,
             len(messages),
+            delivered,
         )
 
     # Also send a "well done" message to users who completed all habits
@@ -193,8 +236,13 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
             # Check if they have any habits at all
             habits = await db.get_active_habits(user_id)
             if habits:
-                await _send_with_retry(
-                    context.bot, user_id, "🎉 <b>All habits done today!</b> Great job! 💪"
+                await _deliver_chunks(
+                    context,
+                    db,
+                    user_id,
+                    "daily_done",
+                    local_date,
+                    ["🎉 <b>All habits done today!</b> Great job! 💪"],
                 )
 
 
@@ -307,6 +355,8 @@ async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Owner-scoped opt-in: only users who enabled reminders get anchors.
     enabled = await db.get_reminder_enabled_users(ALLOWED_USER_IDS)
+    local_date = today.isoformat()
+    job_key = f"anchor_{anchor.id}"
     for user_id in enabled:
         try:
             message, unchecked = await build_anchor_message(
@@ -314,20 +364,20 @@ async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         except Exception:
             logger.exception("Failed to build '%s' anchor for user %d", anchor.id, user_id)
-            continue
+            continue  # one user's build failure never blocks the others
 
-        if not await _send_with_retry(context.bot, user_id, message):
-            continue  # hard failure — skip the follow-up for this user
-
-        # Follow up with the (possibly long) unchecked-habit list, branded to
-        # match this anchor instead of the legacy "Evening Reminder" text.
+        # Chunk 0 is the status message; the (possibly long) unchecked-habit list,
+        # branded to this anchor, follows as chunks 1..N. Durable delivery skips
+        # chunks already sent on a duplicate run or after a restart, and stops
+        # this user's remaining chunks on a hard failure (resumed next run).
+        messages = [message]
         if unchecked:
-            habit_messages = _build_reminder_messages(
-                unchecked,
-                first_header=first_header,
-                continuation_header=continuation_header,
+            messages.extend(
+                _build_reminder_messages(
+                    unchecked,
+                    first_header=first_header,
+                    continuation_header=continuation_header,
+                )
             )
-            for text in habit_messages:
-                if not await _send_with_retry(context.bot, user_id, text):
-                    break
+        await _deliver_chunks(context, db, user_id, job_key, local_date, messages)
         logger.info("Sent '%s' anchor to user %d", anchor.id, user_id)

@@ -161,6 +161,18 @@ async def test_v4_backfills_open_period_for_active_habit_only():
         await mgr.close()
 
 
+async def test_reminder_deliveries_table_added_at_v5():
+    mgr = await _fresh_manager()
+    try:
+        await mgr.init_db()
+        names = {name for _t, name in await _schema_objects(mgr.conn)}
+        assert "reminder_deliveries" in names
+        assert LATEST_VERSION >= 5
+        assert await migrations.get_user_version(mgr.conn) == LATEST_VERSION
+    finally:
+        await mgr.close()
+
+
 async def test_running_init_twice_makes_no_further_changes():
     mgr = await _fresh_manager()
     try:

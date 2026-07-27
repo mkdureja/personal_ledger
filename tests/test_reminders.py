@@ -58,6 +58,8 @@ async def test_daily_reminder_sends_every_chunk_as_html(user_id):
             return_value={user_id: habit_names}
         ),
         get_active_habits=AsyncMock(),
+        get_delivered_chunk_indices=AsyncMock(return_value=set()),
+        record_chunk_delivery=AsyncMock(),
     )
     bot = SimpleNamespace(send_message=AsyncMock())
     context = SimpleNamespace(bot_data={"db": db}, bot=bot)

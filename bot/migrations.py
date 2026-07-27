@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this (and register a new function in ``_MIGRATIONS``) for every schema
 # change. Version N is produced by ``_MIGRATIONS[N]``.
-LATEST_VERSION = 4
+LATEST_VERSION = 5
 
 
 class MigrationCollisionError(RuntimeError):
@@ -453,11 +453,45 @@ async def _migration_0004_habit_activity_periods(conn: aiosqlite.Connection) -> 
     )
 
 
+async def _migration_0005_reminder_deliveries(conn: aiosqlite.Connection) -> None:
+    """Add ``reminder_deliveries`` for durable, resumable reminder chunks.
+
+    Keyed on ``(user_id, job_key, local_date, chunk_index)`` so a restart or a
+    duplicate job run skips already-delivered chunks and resumes at the first
+    undelivered one. Stores only a sanitized error *category* — never the token
+    or a raw exception/URL.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reminder_deliveries (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         INTEGER NOT NULL,
+            job_key         TEXT NOT NULL,
+            local_date      DATE NOT NULL,
+            chunk_index     INTEGER NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending'
+                                CHECK(status IN ('pending', 'delivered', 'failed')),
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TIMESTAMP,
+            delivered_at    TIMESTAMP,
+            error_category  TEXT,
+            UNIQUE(user_id, job_key, local_date, chunk_index),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reminder_deliveries_lookup "
+        "ON reminder_deliveries(user_id, job_key, local_date)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
     3: _migration_0003_user_settings,
     4: _migration_0004_habit_activity_periods,
+    5: _migration_0005_reminder_deliveries,
 }
 
 
