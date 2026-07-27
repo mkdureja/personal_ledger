@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from datetime import datetime, timezone
 
 from telegram import Update
 from telegram.error import TelegramError
@@ -52,6 +53,7 @@ from ..keyboards import (
 )
 from ..config import CONVERSATION_TIMEOUT
 from ..nutrition import MAX_LOG_CALORIES, MAX_LOG_MACRO_GRAMS, NutritionError
+from .. import suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +87,82 @@ _MEAL_EMOJI = {"breakfast": "🌅", "lunch": "🌞", "dinner": "🌙", "snack": 
 _DFOOD_RE = re.compile(r"^dfood_(\d+)_(\d+)$")
 _DRECIPE_RE = re.compile(r"^drecipe_(\d+)_(\d+)$")
 _DPORT_RE = re.compile(r"^dport_(\d+)_(\d+)$")
+_DRECENT_RE = re.compile(r"^drecent_(\d+)_(\d+)$")
 _DMORE_RE = re.compile(r"^dmore_(\d+)_(yes|no)$")
 # Any diet tap: action word + owner id (used for owner checks and stale taps).
 _DIET_TAP_RE = re.compile(
-    r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more|add)_(\d+)"
+    r"^d(food|recipe|type|port|custom|back|rq|save|cancel|more|add|recent|pin|hide)"
+    r"_(\d+)"
 )
+
+
+def _utc_now() -> datetime:
+    # Naive UTC, matching the naive UTC timestamps stored in logged_at.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _parse_ts(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+async def _ranked_choices(
+    context: ContextTypes.DEFAULT_TYPE, uid: int, meal_type: str
+) -> list[dict]:
+    """Saved foods/recipes as ranked, hidden-filtered choice dicts for the list.
+
+    With personalization off, returns the plain alphabetical union (foods then
+    recipes) unchanged. With it on, ranks by the user's completed history, pins,
+    and recency, and drops hidden sources.
+    """
+    db = context.bot_data["db"]
+    foods = await db.list_foods(uid)
+    recipes = await db.list_recipes(uid)
+    if not foods and not recipes:
+        return []
+    if not await db.get_suggestions_enabled(uid):
+        return [
+            {"source_type": "food", "id": f["id"], "name": f["name"]} for f in foods
+        ] + [
+            {"source_type": "recipe", "id": r["id"], "name": r["name"]}
+            for r in recipes
+        ]
+
+    stats = await db.get_diet_item_stats(uid, meal_type)
+    prefs = await db.get_food_preferences(uid)
+    now = _utc_now()
+    names: dict[tuple[str, int], str] = {}
+    candidates: list[suggestions.Candidate] = []
+    for source_type, rows in (("food", foods), ("recipe", recipes)):
+        for row in rows:
+            key = (source_type, row["id"])
+            names[key] = row["name"]
+            stat = stats.get(key, {})
+            pref = prefs.get(key, {})
+            candidates.append(
+                suggestions.Candidate(
+                    source_type=source_type,
+                    source_id=row["id"],
+                    name_key=str(row.get("name_key") or row["name"]).casefold(),
+                    meal_uses=int(stat.get("meal_uses") or 0),
+                    total_uses=int(stat.get("total_uses") or 0),
+                    last_used=_parse_ts(stat.get("last_used")),
+                    is_pinned=bool(pref.get("is_pinned")),
+                    hidden=bool(pref.get("hidden")),
+                )
+            )
+    return [
+        {
+            "source_type": c.source_type,
+            "id": c.source_id,
+            "name": names[(c.source_type, c.source_id)],
+        }
+        for c in suggestions.rank(candidates, now)
+    ]
 
 
 def _is_catalog_reference(token: str) -> bool:
@@ -436,20 +509,18 @@ async def _prompt_food_choice(
     When the user has no saved nutrition, the original type-what-you-ate flow is
     preserved unchanged.
     """
-    db = context.bot_data["db"]
     uid = update.effective_user.id
-    foods = await db.list_foods(uid)
-    recipes = await db.list_recipes(uid)
+    choices = await _ranked_choices(context, uid, meal_type)
     emoji = _MEAL_EMOJI.get(meal_type, "🍽️")
     title = escape_html(meal_type.title())
 
-    if foods or recipes:
+    if choices:
         prompt = await _send_tap_keyboard(
             update,
             context,
             message,
             f"{emoji} <b>{title}</b> — pick a saved item, or ✍️ type it:",
-            food_choice_keyboard(uid, foods, recipes),
+            food_choice_keyboard(uid, choices),
         )
         return FOOD_CHOICE if prompt is not None else ConversationHandler.END
 
@@ -689,6 +760,7 @@ def _clear_diet_entry_data(context: ContextTypes.DEFAULT_TYPE) -> None:
         "diet_calories",
         "diet_sel_kind",
         "diet_sel_id",
+        "diet_recent_qtys",
         "diet_items",
         "diet_meal_message_id",
         "diet_ui_message_id",
@@ -765,13 +837,22 @@ async def choose_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     context.user_data["diet_sel_kind"] = "food"
     context.user_data["diet_sel_id"] = food_id
     portions = await db.get_food_portions(uid, food_id)
-    if portions:
+    recent = await db.get_recent_item_quantities(uid, "food", food_id)
+    context.user_data["diet_recent_qtys"] = recent
+    if portions or recent:
+        pref = await db.get_food_preference(uid, "food", food_id) or {}
         prompt = await _send_tap_keyboard(
             update,
             context,
             query.message,
             f"🥗 <b>{escape_html(food['name'])}</b> — how much?",
-            food_portion_keyboard(uid, portions),
+            food_portion_keyboard(
+                uid,
+                portions,
+                recent,
+                is_pinned=bool(pref.get("is_pinned")),
+                hidden=bool(pref.get("hidden")),
+            ),
         )
         return PORTION_CHOICE if prompt is not None else ConversationHandler.END
     return await _prompt_custom_amount_text(
@@ -796,12 +877,21 @@ async def choose_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await _remove_callback_markup(query)
     context.user_data["diet_sel_kind"] = "recipe"
     context.user_data["diet_sel_id"] = recipe_id
+    recent = await db.get_recent_item_quantities(uid, "recipe", recipe_id)
+    context.user_data["diet_recent_qtys"] = recent
+    pref = await db.get_food_preference(uid, "recipe", recipe_id) or {}
     prompt = await _send_tap_keyboard(
         update,
         context,
         query.message,
         f"🍲 <b>{escape_html(recipe['name'])}</b> — how much?",
-        recipe_quantity_keyboard(uid, recipe["yield_unit"]),
+        recipe_quantity_keyboard(
+            uid,
+            recipe["yield_unit"],
+            recent,
+            is_pinned=bool(pref.get("is_pinned")),
+            hidden=bool(pref.get("hidden")),
+        ),
     )
     return PORTION_CHOICE if prompt is not None else ConversationHandler.END
 
@@ -848,13 +938,13 @@ async def _reprompt_food_choice(
     message: object,
 ) -> int:
     """Re-show the saved-item list (after Back, or a vanished selection)."""
-    db = context.bot_data["db"]
     uid = update.effective_user.id
     context.user_data.pop("diet_sel_kind", None)
     context.user_data.pop("diet_sel_id", None)
-    foods = await db.list_foods(uid)
-    recipes = await db.list_recipes(uid)
-    if not foods and not recipes:
+    context.user_data.pop("diet_recent_qtys", None)
+    meal_type = context.user_data.get("diet_meal_type", "")
+    choices = await _ranked_choices(context, uid, meal_type)
+    if not choices:
         context.user_data.pop("diet_ui_message_id", None)
         try:
             await reply_html(message, "🍽️ What did you eat?")
@@ -867,7 +957,7 @@ async def _reprompt_food_choice(
         context,
         message,
         "Pick a saved item, or ✍️ type it:",
-        food_choice_keyboard(uid, foods, recipes),
+        food_choice_keyboard(uid, choices),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
 
@@ -984,6 +1074,29 @@ async def _prompt_custom_amount_text(
     return CUSTOM_AMOUNT
 
 
+async def _resolve_selected(
+    db: object,
+    uid: int,
+    kind: object,
+    sel_id: object,
+    tokens: list[str],
+):
+    """Resolve tokens against the selected food/recipe (shared by custom + recent)."""
+    if kind == "food" and sel_id is not None:
+        food = await db.get_food_by_id(uid, sel_id)
+        if food is None:
+            raise NutritionError("That saved food is no longer available.")
+        portions = await db.get_food_portions(uid, sel_id)
+        return resolve_food_diet_entry(food, portions, tokens)
+    if kind == "recipe" and sel_id is not None:
+        recipe = await db.get_recipe_by_id(uid, sel_id)
+        if recipe is None:
+            raise NutritionError("That saved recipe is no longer available.")
+        ingredients = await db.get_recipe_ingredients(uid, sel_id)
+        return resolve_recipe_diet_entry(recipe, ingredients, tokens)
+    raise NutritionError("Lost track of the item.")
+
+
 async def receive_custom_amount(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
@@ -993,25 +1106,14 @@ async def receive_custom_amount(
     sel_id = context.user_data.get("diet_sel_id")
     db = context.bot_data["db"]
     uid = update.effective_user.id
+    if kind not in ("food", "recipe") or sel_id is None:
+        finish_conversation(update, context, "diet")
+        await update.message.reply_text(
+            "⚠️ Lost track of the item. Start again with /diet."
+        )
+        return ConversationHandler.END
     try:
-        if kind == "food" and sel_id is not None:
-            food = await db.get_food_by_id(uid, sel_id)
-            if food is None:
-                raise NutritionError("That saved food is no longer available.")
-            portions = await db.get_food_portions(uid, sel_id)
-            entry = resolve_food_diet_entry(food, portions, tokens)
-        elif kind == "recipe" and sel_id is not None:
-            recipe = await db.get_recipe_by_id(uid, sel_id)
-            if recipe is None:
-                raise NutritionError("That saved recipe is no longer available.")
-            ingredients = await db.get_recipe_ingredients(uid, sel_id)
-            entry = resolve_recipe_diet_entry(recipe, ingredients, tokens)
-        else:
-            finish_conversation(update, context, "diet")
-            await update.message.reply_text(
-                "⚠️ Lost track of the item. Start again with /diet."
-            )
-            return ConversationHandler.END
+        entry = await _resolve_selected(db, uid, kind, sel_id, tokens)
     except NutritionError as exc:
         await update.message.reply_text(
             f"❌ {exc}\nTry again, e.g. 200 g or 1 medium."
@@ -1020,6 +1122,117 @@ async def receive_custom_amount(
     return await _show_item_preview(
         update, context, update.effective_message, entry
     )
+
+
+@authorized_callback
+async def use_recent_quantity(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """A recent-quantity button was tapped: resolve that amount and preview."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return PORTION_CHOICE
+    index = int(_DRECENT_RE.fullmatch(query.data).group(2))
+    recent = context.user_data.get("diet_recent_qtys") or []
+    if index < 0 or index >= len(recent):
+        await query.answer("That quantity is no longer available.", show_alert=True)
+        return PORTION_CHOICE
+    quantity = recent[index]
+    tokens = [f"{float(quantity['entered_amount']):g}", str(quantity["entered_unit"])]
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    try:
+        entry = await _resolve_selected(
+            db,
+            uid,
+            context.user_data.get("diet_sel_kind"),
+            context.user_data.get("diet_sel_id"),
+            tokens,
+        )
+    except NutritionError as exc:
+        await query.answer(str(exc)[:190], show_alert=True)
+        return PORTION_CHOICE
+    await _remove_callback_markup(query)
+    return await _show_item_preview(update, context, query.message, entry)
+
+
+async def _rerender_quantity_screen(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, query: object
+) -> int:
+    """Redraw the current quantity keyboard in place after a pin/hide toggle."""
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    kind = context.user_data.get("diet_sel_kind")
+    sel_id = context.user_data.get("diet_sel_id")
+    if kind not in ("food", "recipe") or sel_id is None:
+        return PORTION_CHOICE
+    pref = await db.get_food_preference(uid, kind, sel_id) or {}
+    recent = context.user_data.get("diet_recent_qtys") or []
+    if kind == "food":
+        portions = await db.get_food_portions(uid, sel_id)
+        keyboard = food_portion_keyboard(
+            uid,
+            portions,
+            recent,
+            is_pinned=bool(pref.get("is_pinned")),
+            hidden=bool(pref.get("hidden")),
+        )
+    else:
+        recipe = await db.get_recipe_by_id(uid, sel_id)
+        if recipe is None:
+            return PORTION_CHOICE
+        keyboard = recipe_quantity_keyboard(
+            uid,
+            recipe["yield_unit"],
+            recent,
+            is_pinned=bool(pref.get("is_pinned")),
+            hidden=bool(pref.get("hidden")),
+        )
+    try:
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+    except TelegramError:
+        logger.debug("Could not redraw quantity keyboard", exc_info=True)
+    return PORTION_CHOICE
+
+
+@authorized_callback
+async def toggle_pin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Pin/unpin the selected food/recipe so it ranks first next time."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return PORTION_CHOICE
+    kind = context.user_data.get("diet_sel_kind")
+    sel_id = context.user_data.get("diet_sel_id")
+    if kind not in ("food", "recipe") or sel_id is None:
+        return await _reprompt_food_choice(update, context, query.message)
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    pref = await db.get_food_preference(uid, kind, sel_id) or {}
+    new_pinned = not bool(pref.get("is_pinned"))
+    await db.set_food_preference(uid, kind, sel_id, is_pinned=new_pinned)
+    await query.answer("📌 Pinned" if new_pinned else "Unpinned")
+    return await _rerender_quantity_screen(update, context, query)
+
+
+@authorized_callback
+async def toggle_hide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Hide/unhide the selected food/recipe from future suggestions."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return PORTION_CHOICE
+    kind = context.user_data.get("diet_sel_kind")
+    sel_id = context.user_data.get("diet_sel_id")
+    if kind not in ("food", "recipe") or sel_id is None:
+        return await _reprompt_food_choice(update, context, query.message)
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    pref = await db.get_food_preference(uid, kind, sel_id) or {}
+    new_hidden = not bool(pref.get("hidden"))
+    await db.set_food_preference(uid, kind, sel_id, hidden=new_hidden)
+    await query.answer(
+        "🙈 Hidden from suggestions" if new_hidden else "👁 Shown again"
+    )
+    return await _rerender_quantity_screen(update, context, query)
 
 
 def _meal_total(items: list[dict], field: str, *, integer: bool = False):
@@ -1245,9 +1458,12 @@ diet_conv_handler = ConversationHandler(
         ],
         PORTION_CHOICE: [
             CallbackQueryHandler(choose_portion, pattern=r"^dport_\d+_\d+$"),
+            CallbackQueryHandler(use_recent_quantity, pattern=r"^drecent_\d+_\d+$"),
             CallbackQueryHandler(recipe_quick_amount, pattern=r"^drq_\d+$"),
             CallbackQueryHandler(prompt_custom_amount, pattern=r"^dcustom_\d+$"),
             CallbackQueryHandler(back_to_food_choice, pattern=r"^dback_\d+$"),
+            CallbackQueryHandler(toggle_pin, pattern=r"^dpin_\d+$"),
+            CallbackQueryHandler(toggle_hide, pattern=r"^dhide_\d+$"),
         ],
         CUSTOM_AMOUNT: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_custom_amount)

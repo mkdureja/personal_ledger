@@ -89,37 +89,35 @@ def _button_label(text: object) -> str:
     return label
 
 
+def _fmt_amount(value: object) -> str:
+    """Render an entered amount without a needless decimal (220.0 -> '220')."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{number:g}"
+
+
 def food_choice_keyboard(
     user_id: int,
-    foods: list[dict],
-    recipes: list[dict],
+    choices: list[dict],
 ) -> InlineKeyboardMarkup:
-    """Saved foods and recipes as one-tap buttons, plus type/cancel escapes.
+    """Ranked saved foods/recipes as one-tap buttons, plus type/cancel escapes.
 
-    Buttons carry only short numeric ids; every id is re-validated against the
-    acting ``user_id`` before any lookup.
+    ``choices`` is an ordered list of ``{"source_type", "id", "name"}`` (already
+    ranked and hidden-filtered by the caller). Buttons carry only short numeric
+    ids; every id is re-validated against the acting ``user_id`` before any
+    lookup.
     """
     rows: list[list[InlineKeyboardButton]] = []
-    remaining = MAX_FOOD_CHOICES
-    for food in foods[:remaining]:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    f"🥗 {_button_label(food['name'])}",
-                    callback_data=f"dfood_{user_id}_{food['id']}",
-                )
-            ]
-        )
-    remaining = MAX_FOOD_CHOICES - len(rows)
-    for recipe in recipes[:remaining]:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    f"🍲 {_button_label(recipe['name'])} (recipe)",
-                    callback_data=f"drecipe_{user_id}_{recipe['id']}",
-                )
-            ]
-        )
+    for choice in choices[:MAX_FOOD_CHOICES]:
+        if choice["source_type"] == "recipe":
+            label = f"🍲 {_button_label(choice['name'])} (recipe)"
+            data = f"drecipe_{user_id}_{choice['id']}"
+        else:
+            label = f"🥗 {_button_label(choice['name'])}"
+            data = f"dfood_{user_id}_{choice['id']}"
+        rows.append([InlineKeyboardButton(label, callback_data=data)])
     rows.append(
         [
             InlineKeyboardButton(
@@ -131,12 +129,49 @@ def food_choice_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
+def _recent_quantity_rows(
+    user_id: int, recent: list[dict]
+) -> list[list[InlineKeyboardButton]]:
+    """One button per recent entered quantity, resolved by list position."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, quantity in enumerate(recent):
+        label = _button_label(
+            f"🕘 {_fmt_amount(quantity['entered_amount'])} "
+            f"{quantity['entered_unit']}"
+        )
+        rows.append(
+            [InlineKeyboardButton(label, callback_data=f"drecent_{user_id}_{index}")]
+        )
+    return rows
+
+
+def _pref_row(user_id: int, is_pinned: bool, hidden: bool) -> list[InlineKeyboardButton]:
+    """A pin/unpin + hide/unhide control row for the selected source."""
+    return [
+        InlineKeyboardButton(
+            "📌 Unpin" if is_pinned else "📌 Pin",
+            callback_data=f"dpin_{user_id}",
+        ),
+        InlineKeyboardButton(
+            "👁 Unhide" if hidden else "🙈 Hide",
+            callback_data=f"dhide_{user_id}",
+        ),
+    ]
+
+
 def food_portion_keyboard(
     user_id: int,
     portions: list[dict],
+    recent: list[dict] | None = None,
+    *,
+    is_pinned: bool = False,
+    hidden: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Named portions for a chosen food, plus custom-amount and back controls."""
-    rows: list[list[InlineKeyboardButton]] = [
+    """Recent quantities + named portions for a food, with custom/back/pref rows."""
+    rows: list[list[InlineKeyboardButton]] = _recent_quantity_rows(
+        user_id, recent or []
+    )
+    rows.extend(
         [
             InlineKeyboardButton(
                 _button_label(portion["name"]),
@@ -144,7 +179,7 @@ def food_portion_keyboard(
             )
         ]
         for portion in portions[:MAX_FOOD_CHOICES]
-    ]
+    )
     rows.append(
         [
             InlineKeyboardButton(
@@ -153,30 +188,40 @@ def food_portion_keyboard(
             InlineKeyboardButton("🔙 Back", callback_data=f"dback_{user_id}"),
         ]
     )
+    rows.append(_pref_row(user_id, is_pinned, hidden))
     return InlineKeyboardMarkup(rows)
 
 
 def recipe_quantity_keyboard(
     user_id: int,
     yield_unit: str,
+    recent: list[dict] | None = None,
+    *,
+    is_pinned: bool = False,
+    hidden: bool = False,
 ) -> InlineKeyboardMarkup:
-    """A quick '1 <yield_unit>' button plus custom-amount and back controls."""
-    return InlineKeyboardMarkup(
+    """Recent quantities + a quick '1 <yield_unit>' button, with custom/back/pref."""
+    rows: list[list[InlineKeyboardButton]] = _recent_quantity_rows(
+        user_id, recent or []
+    )
+    rows.append(
         [
-            [
-                InlineKeyboardButton(
-                    f"1 {_button_label(yield_unit)}",
-                    callback_data=f"drq_{user_id}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✍️ Custom amount", callback_data=f"dcustom_{user_id}"
-                ),
-                InlineKeyboardButton("🔙 Back", callback_data=f"dback_{user_id}"),
-            ],
+            InlineKeyboardButton(
+                f"1 {_button_label(yield_unit)}",
+                callback_data=f"drq_{user_id}",
+            )
         ]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "✍️ Custom amount", callback_data=f"dcustom_{user_id}"
+            ),
+            InlineKeyboardButton("🔙 Back", callback_data=f"dback_{user_id}"),
+        ]
+    )
+    rows.append(_pref_row(user_id, is_pinned, hidden))
+    return InlineKeyboardMarkup(rows)
 
 
 def diet_save_keyboard(user_id: int) -> InlineKeyboardMarkup:

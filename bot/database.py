@@ -575,6 +575,150 @@ class DatabaseManager:
         )
         return [dict(row) for row in rows]
 
+    # -------------------------------------------------------------------
+    # Suggestion signal (Phase 4) — all owner-scoped, from completed logs
+    # -------------------------------------------------------------------
+    async def get_diet_item_stats(
+        self, user_id: int, meal_type: str
+    ) -> dict[tuple[str, int], dict[str, Any]]:
+        """Per-source usage counts and last-used time from completed meals.
+
+        Keyed by ``(source_type, source_id)``. ``meal_uses`` counts only meals of
+        ``meal_type``; ``total_uses`` counts all meals. Derived purely from saved
+        history, never from exploratory taps.
+        """
+        rows = await self._query_all(
+            """
+            SELECT dli.source_type AS source_type, dli.source_id AS source_id,
+                   COUNT(*) AS total_uses,
+                   SUM(CASE WHEN dl.meal_type = ? THEN 1 ELSE 0 END) AS meal_uses,
+                   MAX(dl.logged_at) AS last_used
+            FROM diet_log_items AS dli
+            JOIN diet_logs AS dl
+                ON dl.id = dli.diet_log_id AND dl.user_id = dli.user_id
+            WHERE dli.user_id = ?
+              AND dli.source_type IN ('food', 'recipe')
+              AND dli.source_id IS NOT NULL
+            GROUP BY dli.source_type, dli.source_id
+            """,
+            (meal_type, user_id),
+        )
+        return {
+            (row["source_type"], row["source_id"]): dict(row) for row in rows
+        }
+
+    async def get_recent_item_quantities(
+        self,
+        user_id: int,
+        source_type: str,
+        source_id: int,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """A source's most recent distinct entered quantities (owner-scoped)."""
+        rows = await self._query_all(
+            """
+            SELECT dli.entered_amount AS entered_amount,
+                   dli.entered_unit AS entered_unit,
+                   MAX(dl.logged_at) AS last_used
+            FROM diet_log_items AS dli
+            JOIN diet_logs AS dl
+                ON dl.id = dli.diet_log_id AND dl.user_id = dli.user_id
+            WHERE dli.user_id = ? AND dli.source_type = ? AND dli.source_id = ?
+              AND dli.entered_amount IS NOT NULL AND dli.entered_unit IS NOT NULL
+            GROUP BY dli.entered_amount, dli.entered_unit
+            ORDER BY last_used DESC
+            LIMIT ?
+            """,
+            (user_id, source_type, source_id, limit),
+        )
+        return [dict(row) for row in rows]
+
+    async def get_food_preferences(
+        self, user_id: int
+    ) -> dict[tuple[str, int], dict[str, Any]]:
+        """All of a user's food/recipe preferences, keyed by source."""
+        rows = await self._query_all(
+            "SELECT * FROM user_food_preferences WHERE user_id = ?", (user_id,)
+        )
+        return {
+            (row["source_type"], row["source_id"]): dict(row) for row in rows
+        }
+
+    async def get_food_preference(
+        self, user_id: int, source_type: str, source_id: int
+    ) -> dict[str, Any] | None:
+        """One source's preference row, or ``None`` if never set."""
+        row = await self._query_one(
+            "SELECT * FROM user_food_preferences "
+            "WHERE user_id = ? AND source_type = ? AND source_id = ?",
+            (user_id, source_type, source_id),
+        )
+        return dict(row) if row is not None else None
+
+    async def set_food_preference(
+        self,
+        user_id: int,
+        source_type: str,
+        source_id: int,
+        *,
+        is_pinned: bool | None = None,
+        hidden: bool | None = None,
+    ) -> None:
+        """Upsert a source's pin/hide flags (only the fields provided change)."""
+        if source_type not in ("food", "recipe"):
+            raise ValueError(f"Unknown source_type {source_type!r}")
+        async with self._write_operation():
+            await self.conn.execute(
+                "INSERT INTO user_food_preferences (user_id, source_type, source_id) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id, source_type, source_id) DO NOTHING",
+                (user_id, source_type, source_id),
+            )
+            if is_pinned is not None:
+                await self.conn.execute(
+                    "UPDATE user_food_preferences SET is_pinned = ?, updated_at = ? "
+                    "WHERE user_id = ? AND source_type = ? AND source_id = ?",
+                    (1 if is_pinned else 0, _utc_timestamp_now(),
+                     user_id, source_type, source_id),
+                )
+            if hidden is not None:
+                await self.conn.execute(
+                    "UPDATE user_food_preferences SET hidden = ?, updated_at = ? "
+                    "WHERE user_id = ? AND source_type = ? AND source_id = ?",
+                    (1 if hidden else 0, _utc_timestamp_now(),
+                     user_id, source_type, source_id),
+                )
+
+    async def reset_food_preferences(self, user_id: int) -> int:
+        """Delete all of a user's pins/hides. Returns how many rows were removed."""
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "DELETE FROM user_food_preferences WHERE user_id = ?", (user_id,)
+            )
+            return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
+    async def get_suggestions_enabled(self, user_id: int) -> bool:
+        """Whether personalized ordering is on (default on; missing row = on)."""
+        row = await self._query_one(
+            "SELECT suggestions_enabled FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        )
+        return row is None or bool(row["suggestions_enabled"])
+
+    async def set_suggestions_enabled(self, user_id: int, enabled: bool) -> None:
+        """Turn personalized ordering on or off (history is still recorded)."""
+        async with self._write_operation():
+            await self.conn.execute(
+                "INSERT INTO user_settings (user_id) VALUES (?) "
+                "ON CONFLICT(user_id) DO NOTHING",
+                (user_id,),
+            )
+            await self.conn.execute(
+                "UPDATE user_settings SET suggestions_enabled = ?, updated_at = ? "
+                "WHERE user_id = ?",
+                (1 if enabled else 0, _utc_timestamp_now(), user_id),
+            )
+
     async def get_diet_logs(
         self, user_id: int, start_date: date, end_date: date
     ) -> list[aiosqlite.Row]:

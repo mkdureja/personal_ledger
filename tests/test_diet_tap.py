@@ -122,6 +122,7 @@ async def test_meal_selection_offers_saved_items_when_present():
     db = SimpleNamespace(
         list_foods=AsyncMock(return_value=[{"id": 5, "name": "Apple"}]),
         list_recipes=AsyncMock(return_value=[]),
+        get_suggestions_enabled=AsyncMock(return_value=False),
     )
     query = _query(f"meal_{USER}_breakfast", message_id=100)
     context = _context(db, {"diet_meal_message_id": 100})
@@ -162,6 +163,8 @@ async def test_choose_food_with_portions_asks_how_much():
                 {"id": 9, "name": "medium", "name_key": "medium", "base_amount": 182}
             ]
         ),
+        get_recent_item_quantities=AsyncMock(return_value=[]),
+        get_food_preference=AsyncMock(return_value=None),
     )
     query = _query(f"dfood_{USER}_5", message_id=100)
     context = _context(db, {"diet_ui_message_id": 100, "diet_meal_type": "snack"})
@@ -180,6 +183,8 @@ async def test_choose_food_without_portions_prompts_custom_amount():
             return_value={"id": 5, "name": "Apple", "base_unit": "g"}
         ),
         get_food_portions=AsyncMock(return_value=[]),
+        get_recent_item_quantities=AsyncMock(return_value=[]),
+        get_food_preference=AsyncMock(return_value=None),
     )
     query = _query(f"dfood_{USER}_5", message_id=100)
     context = _context(db, {"diet_ui_message_id": 100, "diet_meal_type": "snack"})
@@ -355,6 +360,7 @@ async def test_add_another_item_keeps_draft_and_returns_to_list():
     db = SimpleNamespace(
         list_foods=AsyncMock(return_value=[{"id": 5, "name": "Apple"}]),
         list_recipes=AsyncMock(return_value=[]),
+        get_suggestions_enabled=AsyncMock(return_value=False),
     )
     existing = [{"display_name": "1 medium apple", "calories": 95}]
     query = _query(f"dadd_{USER}", message_id=100)

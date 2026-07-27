@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this (and register a new function in ``_MIGRATIONS``) for every schema
 # change. Version N is produced by ``_MIGRATIONS[N]``.
-LATEST_VERSION = 6
+LATEST_VERSION = 7
 
 
 class MigrationCollisionError(RuntimeError):
@@ -659,6 +659,43 @@ async def _migration_0006_diet_log_items(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0007_food_preferences(conn: aiosqlite.Connection) -> None:
+    """Add per-user food/recipe preferences and a personalization toggle.
+
+    ``user_food_preferences`` stores explicit pins, hides, and default
+    quantities keyed by ``(user_id, source_type, source_id)``. It is optional
+    signal layered on top of completed ``diet_log_items`` history — suggestions
+    still work with an empty table. ``user_settings.suggestions_enabled`` lets a
+    user turn personalized ordering off entirely (history is still recorded, just
+    not used to reorder). Both default to the current behavior.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_food_preferences (
+            user_id      INTEGER NOT NULL,
+            source_type  TEXT NOT NULL CHECK(source_type IN ('food', 'recipe')),
+            source_id    INTEGER NOT NULL,
+            is_pinned    INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
+            hidden       INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN (0, 1)),
+            default_amount REAL,
+            default_unit   TEXT,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, source_type, source_id),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    # ``ADD COLUMN`` with a constant default is non-destructive and does not
+    # rewrite existing rows; every current user keeps personalized ordering on.
+    cursor = await conn.execute("PRAGMA table_info(user_settings)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    if "suggestions_enabled" not in columns:
+        await conn.execute(
+            "ALTER TABLE user_settings ADD COLUMN suggestions_enabled "
+            "INTEGER NOT NULL DEFAULT 1 CHECK(suggestions_enabled IN (0, 1))"
+        )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -666,6 +703,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     4: _migration_0004_habit_activity_periods,
     5: _migration_0005_reminder_deliveries,
     6: _migration_0006_diet_log_items,
+    7: _migration_0007_food_preferences,
 }
 
 

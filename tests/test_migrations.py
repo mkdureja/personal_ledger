@@ -223,6 +223,42 @@ async def test_v6_upgrade_preserves_legacy_diet_rows(monkeypatch):
         await mgr.close()
 
 
+async def test_food_preferences_added_at_v7():
+    mgr = await _fresh_manager()
+    try:
+        await mgr.init_db()
+        names = {name for _t, name in await _schema_objects(mgr.conn)}
+        assert "user_food_preferences" in names
+        assert "suggestions_enabled" in await _columns(mgr.conn, "user_settings")
+        assert LATEST_VERSION >= 7
+    finally:
+        await mgr.close()
+
+
+async def test_v7_upgrade_defaults_existing_users_to_suggestions_on(monkeypatch):
+    mgr = await _fresh_manager()
+    try:
+        monkeypatch.setattr(migrations, "LATEST_VERSION", 6)
+        await mgr.init_db()
+        await mgr.conn.execute(
+            "INSERT INTO users (user_id, username, first_name) VALUES (1, 'u', 'U')"
+        )
+        await mgr.conn.execute(
+            "INSERT INTO user_settings (user_id, reminders_enabled) VALUES (1, 0)"
+        )
+        await mgr.conn.commit()
+
+        monkeypatch.setattr(migrations, "LATEST_VERSION", 7)
+        assert await migrations.run_migrations(mgr.conn) == 7
+
+        # The existing user keeps reminders off but gets suggestions on by default.
+        assert await mgr.get_suggestions_enabled(1) is True
+        cursor = await mgr.conn.execute("PRAGMA foreign_key_check")
+        assert await cursor.fetchall() == []
+    finally:
+        await mgr.close()
+
+
 async def test_running_init_twice_makes_no_further_changes():
     mgr = await _fresh_manager()
     try:
