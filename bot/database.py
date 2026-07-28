@@ -23,10 +23,12 @@ from .nutrition import (
     FOOD_BASE_UNITS,
     MAX_CATALOG_AMOUNT as NUTRITION_MAX_CATALOG_AMOUNT,
     MAX_CATALOG_NAME_LENGTH,
+    MAX_MEAL_ITEMS,
     MAX_NUTRIENT_VALUE as NUTRITION_MAX_NUTRIENT_VALUE,
     MAX_PORTION_NAME_LENGTH,
     RECIPE_YIELD_UNITS,
     canonical_unit_alias,
+    finalize_log_nutrients,
     normalize_catalog_name,
 )
 
@@ -480,6 +482,30 @@ class DatabaseManager:
                 await self._record_receipt(source, user_id, "diet_log", "diet", row_id)
             return row_id
 
+    async def _assert_source_not_cross_owner(
+        self, user_id: int, source_type: object, source_id: object
+    ) -> None:
+        """Fail closed if a private source id belongs to a *different* user.
+
+        Enforced inside the caller's write transaction so a cross-owner reference
+        never lands. A non-existent id is allowed on purpose — a completed
+        snapshot may outlive a deleted source — so only an id that currently
+        exists under another owner is rejected. Must be called while the
+        connection lock is held.
+        """
+        if source_id is None or source_type not in ("food", "recipe"):
+            return
+        table = "foods" if source_type == "food" else "recipes"
+        cursor = await self.conn.execute(
+            f"SELECT user_id FROM {table} WHERE id = ?",  # noqa: S608
+            (source_id,),
+        )
+        row = await cursor.fetchone()
+        if row is not None and row["user_id"] != user_id:
+            raise ValueError(
+                f"{source_type} source does not belong to the acting user."
+            )
+
     async def log_diet_with_items(
         self,
         user_id: int,
@@ -501,13 +527,25 @@ class DatabaseManager:
         """
         if not items:
             raise ValueError("A meal must have at least one item.")
+        if len(items) > MAX_MEAL_ITEMS:
+            raise ValueError(f"A meal can have at most {MAX_MEAL_ITEMS} items.")
 
-        def _total(field: str, *, integer: bool = False) -> float | int | None:
+        def _raw_total(field: str) -> float | None:
             values = [item.get(field) for item in items]
             if any(value is None for value in values):
                 return None
-            summed = sum(float(value) for value in values)
-            return int(round(summed)) if integer else round(summed, 2)
+            return sum(float(value) for value in values)
+
+        # Route the aggregate through the same finalizer a single meal uses, so a
+        # multi-item meal cannot bypass the per-meal calorie/macro bounds. This is
+        # the single rounding authority for the stored header totals and raises
+        # NutritionError if the summed totals exceed the limits.
+        totals = finalize_log_nutrients(
+            {
+                field: _raw_total(field)
+                for field in ("calories", "protein_g", "carbs_g", "fat_g")
+            }
+        )
 
         display = ", ".join(str(item["display_name"]) for item in items)
         if len(display) > 500:
@@ -517,6 +555,12 @@ class DatabaseManager:
             replayed = await self._replayed_entity_id(source, user_id, "diet_log")
             if replayed is not None:
                 return replayed
+            # Reject any item that cites another user's private food/recipe before
+            # writing the header, so a bad reference makes no partial meal.
+            for item in items:
+                await self._assert_source_not_cross_owner(
+                    user_id, item.get("source_type"), item.get("source_id")
+                )
             cursor = await self.conn.execute(
                 "INSERT INTO diet_logs "
                 "(user_id, meal_type, food_items, calories, protein_g, carbs_g, "
@@ -525,10 +569,10 @@ class DatabaseManager:
                     user_id,
                     meal_type,
                     display,
-                    _total("calories", integer=True),
-                    _total("protein_g"),
-                    _total("carbs_g"),
-                    _total("fat_g"),
+                    totals["calories"],
+                    totals["protein_g"],
+                    totals["carbs_g"],
+                    totals["fat_g"],
                     _utc_timestamp_now(),
                 ),
             )
@@ -581,14 +625,20 @@ class DatabaseManager:
     # Shared curated catalog (Phase 5) — reference data, not owner-scoped
     # -------------------------------------------------------------------
     async def seed_catalog(self, entries: Sequence[Mapping[str, Any]]) -> None:
-        """Idempotently upsert curated catalog foods, portions, and aliases.
+        """Reconcile the curated catalog to this complete provider snapshot.
 
-        Keyed by ``(provider, provider_food_id)`` so re-running (e.g. on startup)
-        refreshes values without duplicating rows.
+        The bundled manifest is authoritative for its own provider namespace, so
+        seeding is a snapshot reconciliation rather than an upsert-only refresh:
+        present foods are upserted and (re)activated, each touched food's portions
+        and aliases are replaced so a removed/changed child cannot linger, and
+        foods absent from the manifest are soft-deactivated. Completed diet-log
+        snapshots are unaffected because they store their own resolved nutrition.
+        Keyed by ``(provider, provider_food_id)`` so re-running is idempotent.
         """
         from .catalog_seed import CATALOG_PROVIDER, CATALOG_REVISION
 
         async with self._write_operation():
+            seen_provider_ids: list[Any] = []
             for entry in entries:
                 display, name_key = normalize_catalog_name(entry["display_name"])
                 await self.conn.execute(
@@ -621,12 +671,19 @@ class DatabaseManager:
                         _utc_timestamp_now(),
                     ),
                 )
+                seen_provider_ids.append(entry["provider_food_id"])
                 row = await self._query_one(
                     "SELECT id FROM catalog_foods "
                     "WHERE provider = ? AND provider_food_id = ?",
                     (CATALOG_PROVIDER, entry["provider_food_id"]),
                 )
                 catalog_id = row["id"]
+                # Replace this food's child sets so a withdrawn portion/alias in a
+                # newer manifest cannot remain resolvable.
+                await self.conn.execute(
+                    "DELETE FROM catalog_portions WHERE catalog_food_id = ?",
+                    (catalog_id,),
+                )
                 for portion in entry.get("portions", ()):
                     p_display, p_key = normalize_catalog_name(
                         portion["name"], max_length=MAX_PORTION_NAME_LENGTH
@@ -639,6 +696,10 @@ class DatabaseManager:
                         "base_amount = excluded.base_amount",
                         (catalog_id, p_display, p_key, portion["base_amount"]),
                     )
+                await self.conn.execute(
+                    "DELETE FROM catalog_aliases WHERE catalog_food_id = ?",
+                    (catalog_id,),
+                )
                 for alias in entry.get("aliases", ()):
                     a_display, a_key = normalize_catalog_name(alias)
                     await self.conn.execute(
@@ -647,6 +708,21 @@ class DatabaseManager:
                         "ON CONFLICT(catalog_food_id, alias_key) DO NOTHING",
                         (catalog_id, a_display, a_key),
                     )
+
+            # Soft-deactivate any curated food not present in this manifest.
+            if seen_provider_ids:
+                placeholders = ", ".join("?" for _ in seen_provider_ids)
+                await self.conn.execute(
+                    "UPDATE catalog_foods SET is_active = 0, updated_at = ? "
+                    f"WHERE provider = ? AND provider_food_id NOT IN ({placeholders})",  # noqa: S608
+                    (_utc_timestamp_now(), CATALOG_PROVIDER, *seen_provider_ids),
+                )
+            else:
+                await self.conn.execute(
+                    "UPDATE catalog_foods SET is_active = 0, updated_at = ? "
+                    "WHERE provider = ?",
+                    (_utc_timestamp_now(), CATALOG_PROVIDER),
+                )
 
     async def search_catalog(
         self, query: str, limit: int = 8
@@ -789,6 +865,7 @@ class DatabaseManager:
         if source_type not in ("food", "recipe"):
             raise ValueError(f"Unknown source_type {source_type!r}")
         async with self._write_operation():
+            await self._assert_source_not_cross_owner(user_id, source_type, source_id)
             await self.conn.execute(
                 "INSERT INTO user_food_preferences (user_id, source_type, source_id) "
                 "VALUES (?, ?, ?) "

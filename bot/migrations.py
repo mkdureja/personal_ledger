@@ -55,6 +55,18 @@ class UnsupportedSchemaError(RuntimeError):
     """
 
 
+class SchemaVerificationError(RuntimeError):
+    """A database's shape does not match its stamped version.
+
+    Raised — with sanitized, count/schema-name-only diagnostics — when the
+    post-migration verifier finds a required table/column missing or an
+    integrity/foreign-key violation. A version number is an input to
+    verification, not proof of correctness: a corrupt, partially restored, or
+    mis-stamped database must fail closed at startup rather than crash on the
+    first user interaction.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Baseline DDL (moved verbatim from database.py). Kept as individual statements
 # so each runs inside the migration transaction; executescript would commit.
@@ -282,6 +294,97 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "habits": ("user_id", "habit_name", "name_key", "is_active", "created_at"),
     "habit_logs": ("user_id", "habit_id", "log_date"),
 }
+
+
+# The schema version at which each table first appears. The verifier requires a
+# table only when the effective ``LATEST_VERSION`` has reached its introduction,
+# so an intermediate-version binary (or a monkeypatched test) is not asked for
+# objects a later migration will add.
+_TABLE_INTRODUCED: dict[str, int] = {
+    "users": 1, "study_logs": 1, "gym_logs": 1, "diet_logs": 1,
+    "foods": 1, "food_portions": 1, "recipes": 1, "recipe_ingredients": 1,
+    "habits": 1, "habit_logs": 1,
+    "mutation_receipts": 2, "user_settings": 3, "habit_activity_periods": 4,
+    "reminder_deliveries": 5, "diet_log_items": 6, "user_food_preferences": 7,
+    "catalog_foods": 8, "catalog_aliases": 8, "catalog_portions": 8,
+}
+
+# table -> (version at which these exact columns must all exist, column names).
+# Only tables whose shape is confirmed here are column-checked; every other
+# required table is existence-checked. Listing a wrong column would fail a
+# *valid* database, so this map stays conservative. ``diet_log_items`` is checked
+# with its provenance columns only from v8, when the rebuild adds them.
+_VERIFIED_COLUMNS: dict[str, tuple[int, tuple[str, ...]]] = {
+    "users": (1, _REQUIRED_COLUMNS["users"]),
+    "study_logs": (1, _REQUIRED_COLUMNS["study_logs"]),
+    "gym_logs": (1, _REQUIRED_COLUMNS["gym_logs"]),
+    "diet_logs": (1, _REQUIRED_COLUMNS["diet_logs"]),
+    "habits": (1, _REQUIRED_COLUMNS["habits"]),
+    "habit_logs": (1, _REQUIRED_COLUMNS["habit_logs"]),
+    "diet_log_items": (
+        8,
+        (
+            "id", "user_id", "diet_log_id", "item_order", "source_type",
+            "source_id", "source_provider", "source_revision", "display_name",
+            "calories", "protein_g", "carbs_g", "fat_g",
+        ),
+    ),
+    "catalog_foods": (
+        8,
+        ("id", "provider", "provider_food_id", "name_key", "base_unit", "is_active"),
+    ),
+    "catalog_portions": (8, ("id", "catalog_food_id", "name_key", "base_amount")),
+    "catalog_aliases": (8, ("id", "catalog_food_id", "alias_key")),
+}
+
+
+async def verify_current_schema(conn: aiosqlite.Connection) -> None:
+    """Fail closed if the database shape does not match the effective latest version.
+
+    Runs on every startup — including when ``user_version`` already equals
+    LATEST — because the version stamp alone does not prove the schema is intact.
+    Only objects introduced at or before the effective ``LATEST_VERSION`` are
+    required. Diagnostics are sanitized (schema names and counts only) and never
+    echo row data.
+    """
+    target = LATEST_VERSION
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    )
+    present = {row["name"] for row in await cursor.fetchall()}
+    missing = [
+        table
+        for table, introduced in _TABLE_INTRODUCED.items()
+        if introduced <= target and table not in present
+    ]
+    if missing:
+        raise SchemaVerificationError(
+            f"Database is missing {len(missing)} required table(s): "
+            f"{', '.join(sorted(missing))}."
+        )
+
+    for table, (introduced, columns) in _VERIFIED_COLUMNS.items():
+        if introduced > target:
+            continue
+        cursor = await conn.execute(f"PRAGMA table_info({table})")  # noqa: S608
+        actual = {row["name"] for row in await cursor.fetchall()}
+        absent = [column for column in columns if column not in actual]
+        if absent:
+            raise SchemaVerificationError(
+                f"Table '{table}' is missing column(s): {', '.join(absent)}."
+            )
+
+    cursor = await conn.execute("PRAGMA integrity_check")
+    row = await cursor.fetchone()
+    if row is None or str(row[0]).lower() != "ok":
+        raise SchemaVerificationError("Database integrity_check did not return ok.")
+
+    cursor = await conn.execute("PRAGMA foreign_key_check")
+    violations = await cursor.fetchall()
+    if violations:
+        raise SchemaVerificationError(
+            f"Database foreign_key_check found {len(violations)} violation(s)."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -803,17 +906,29 @@ async def _migration_0008_shared_catalog(conn: aiosqlite.Connection) -> None:
         )
         """
     )
+    # Copy rows into the widened table. Preserve the provenance columns when the
+    # source table already has them. This matters for the supported recovery
+    # scenario where an already-current schema is re-stamped to version 0 and
+    # replays migrations: its diet_log_items already carries source_provider/
+    # source_revision, and a fixed column list would silently null them.
+    cursor = await conn.execute("PRAGMA table_info(diet_log_items)")
+    old_columns = {row["name"] for row in await cursor.fetchall()}
+    # Column names come only from this fixed allowlist, never from user input.
+    copy_columns = [
+        "id", "user_id", "diet_log_id", "item_order", "source_type", "source_id",
+        "display_name", "entered_amount", "entered_unit", "resolved_base_amount",
+        "resolved_base_unit", "calories", "protein_g", "carbs_g", "fat_g",
+        "created_at",
+    ]
+    copy_columns.extend(
+        column
+        for column in ("source_provider", "source_revision")
+        if column in old_columns
+    )
+    column_list = ", ".join(copy_columns)
     await conn.execute(
-        """
-        INSERT INTO diet_log_items_new
-            (id, user_id, diet_log_id, item_order, source_type, source_id,
-             display_name, entered_amount, entered_unit, resolved_base_amount,
-             resolved_base_unit, calories, protein_g, carbs_g, fat_g, created_at)
-        SELECT id, user_id, diet_log_id, item_order, source_type, source_id,
-               display_name, entered_amount, entered_unit, resolved_base_amount,
-               resolved_base_unit, calories, protein_g, carbs_g, fat_g, created_at
-        FROM diet_log_items
-        """
+        f"INSERT INTO diet_log_items_new ({column_list}) "  # noqa: S608
+        f"SELECT {column_list} FROM diet_log_items"
     )
     await conn.execute("DROP TABLE diet_log_items")
     await conn.execute("ALTER TABLE diet_log_items_new RENAME TO diet_log_items")
@@ -869,6 +984,8 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
             "refusing to run against an unknown schema."
         )
     if current == LATEST_VERSION:
+        # A matching version is not proof of a correct shape; verify before serving.
+        await verify_current_schema(conn)
         return current
 
     for target in range(current + 1, LATEST_VERSION + 1):
@@ -885,4 +1002,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
             raise
         logger.info("Applied migration to schema version %d", target)
 
+    # Prove the freshly migrated schema actually has every required object before
+    # the bot starts accepting traffic against it.
+    await verify_current_schema(conn)
     return LATEST_VERSION

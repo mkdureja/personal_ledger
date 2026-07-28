@@ -20,6 +20,10 @@ MAX_CATALOG_AMOUNT = Decimal("1000000")
 MAX_NUTRIENT_VALUE = Decimal("1000000")
 MAX_LOG_CALORIES = Decimal("100000")
 MAX_LOG_MACRO_GRAMS = Decimal("1000")
+# Upper bound on structured items in one meal draft. Enforced at the database
+# service boundary so a tap/parse flow cannot assemble a meal that outgrows
+# Telegram's message limit or bypasses the single-meal nutrition bounds.
+MAX_MEAL_ITEMS = 20
 
 FOOD_BASE_UNITS = frozenset({"g", "ml", "piece"})
 RECIPE_YIELD_UNITS = frozenset({"g", "ml", "piece", "serving"})

@@ -561,15 +561,13 @@ async def receive_food_items(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "Try again, or send ordinary food text for manual nutrition entry."
             )
             return FOOD_ITEMS
-        return await _save_diet(
-            update,
-            context,
-            entry.calories,
-            protein_g=entry.protein_g,
-            carbs_g=entry.carbs_g,
-            fat_g=entry.fat_g,
-            food_items=entry.display_text,
-        )
+        # A resolved catalog/food/recipe reference keeps its structured identity
+        # (source type, id, provenance) as a child, joining any in-progress draft
+        # so the same reference produces the same history whether tapped or typed.
+        draft = context.user_data.get("diet_items")
+        items = [*draft] if isinstance(draft, list) else []
+        items.append(entry.as_item())
+        return await _finish_structured_meal(update, context, items)
 
     context.user_data["diet_food_items"] = food
     try:
@@ -698,6 +696,39 @@ def _pending_diet(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, int | None]:
     return food_items, calories
 
 
+async def _finish_structured_meal(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    items: list[dict],
+) -> int:
+    """Persist a structured meal (header + children), confirm, and offer the loop.
+
+    Shared by the tap flow's typed and catalog-reference escapes so every
+    completed meal keeps item-level provenance regardless of how it was entered.
+    """
+    db = context.bot_data["db"]
+    meal_type = context.user_data["diet_meal_type"]
+    await db.log_diet_with_items(
+        update.effective_user.id, meal_type, items, source=mutation_source(update)
+    )
+    totals = _meal_totals(items)
+    try:
+        await reply_html(
+            update.effective_message,
+            _confirmation(
+                meal_type,
+                _meal_summary(items),
+                totals["calories"],
+                totals["protein_g"],
+                totals["carbs_g"],
+                totals["fat_g"],
+            ),
+        )
+    except TelegramError:
+        logger.warning("Could not deliver diet confirmation", exc_info=True)
+    return await _offer_log_another(update, context, update.effective_message)
+
+
 async def _save_diet(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -708,7 +739,13 @@ async def _save_diet(
     fat_g: float | None = None,
     food_items: str | None = None,
 ) -> int:
-    """Save diet entry and confirm."""
+    """Save a guided free-text diet entry and confirm.
+
+    If a multi-item tap draft is already in progress (the user tapped items and
+    then chose "Type it"), the typed entry joins that draft as a structured
+    ``freetext`` child rather than replacing it — otherwise the previously
+    confirmed items would be silently dropped.
+    """
     db = context.bot_data["db"]
     user_id = update.effective_user.id
     meal_type = context.user_data["diet_meal_type"]
@@ -717,6 +754,23 @@ async def _save_diet(
         if not isinstance(pending_food, str):
             raise RuntimeError("Diet state contains invalid food items")
         food_items = pending_food
+
+    draft = context.user_data.get("diet_items")
+    if isinstance(draft, list) and draft:
+        child = {
+            "source_type": "freetext",
+            "source_id": None,
+            "display_name": food_items,
+            "entered_amount": None,
+            "entered_unit": None,
+            "resolved_base_amount": None,
+            "resolved_base_unit": None,
+            "calories": calories,
+            "protein_g": protein_g,
+            "carbs_g": carbs_g,
+            "fat_g": fat_g,
+        }
+        return await _finish_structured_meal(update, context, [*draft, child])
 
     await db.log_diet(
         user_id,
@@ -1457,14 +1511,45 @@ async def save_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             logger.warning("Could not report lost diet meal", exc_info=True)
         return ConversationHandler.END
 
-    await _remove_callback_markup(query)
     db = context.bot_data["db"]
-    await db.log_diet_with_items(
-        update.effective_user.id,
-        meal_type,
-        items,
-        source=mutation_source(update),
-    )
+    # Write first, then retire the keyboard, so a transient write failure leaves
+    # the draft and its Save/Add/Cancel controls intact for a retry instead of
+    # stranding the conversation. A successful commit is the point of no return.
+    try:
+        await db.log_diet_with_items(
+            update.effective_user.id,
+            meal_type,
+            items,
+            source=mutation_source(update),
+        )
+    except NutritionError as exc:
+        # The assembled meal violates a bound (e.g. aggregate calories/macros).
+        # Keep the draft and re-render the preview so the user can fix it.
+        await _remove_callback_markup(query)
+        prompt = await _send_tap_keyboard(
+            update,
+            context,
+            query.message,
+            f"⚠️ {escape_html(str(exc))}\n\n{_meal_preview(meal_type, items)}",
+            diet_save_keyboard(update.effective_user.id),
+        )
+        return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
+    except Exception:
+        # Transient failure (e.g. database write error). Re-render the preview so
+        # the Save/Add/Cancel controls remain available for a retry.
+        logger.warning("Diet meal save failed; offering retry", exc_info=True)
+        await _remove_callback_markup(query)
+        prompt = await _send_tap_keyboard(
+            update,
+            context,
+            query.message,
+            f"⚠️ Couldn't save that meal — try again.\n\n"
+            f"{_meal_preview(meal_type, items)}",
+            diet_save_keyboard(update.effective_user.id),
+        )
+        return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
+
+    await _remove_callback_markup(query)
     totals = _meal_totals(items)
     try:
         await reply_html(
@@ -1526,11 +1611,18 @@ async def log_another(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 @authorized_callback
 async def cancel_diet_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> int:
-    """Cancel button available on the tap keyboards (owner-checked, forgiving)."""
-    query = await _consume_diet_tap(update, context, check_ui=False)
+) -> int | None:
+    """Cancel button on the tap keyboards (owner- and current-UI-checked).
+
+    Requires the tap to land on the message we last sent, so a stale Cancel from
+    an older keyboard cannot end a newer meal draft. When the tap is stale or
+    belongs to another user, this returns ``None`` to leave the active flow's
+    state untouched (this handler is a fallback, so ``None`` keeps the current
+    state). ``/cancel`` remains the forgiving, always-available escape route.
+    """
+    query = await _consume_diet_tap(update, context)
     if query is None:
-        return ConversationHandler.END
+        return None
     await _remove_callback_markup(query)
     finish_conversation(update, context, "diet")
     try:
