@@ -9,8 +9,12 @@ Phase 2 onward not started
 
 ## 0. Build status
 
-Delivery follows the reordered sequence in §12. Phase 1a/1b were executed against the
-detailed unit contract in `impl_plan_gemini.md` (units 0, A1-A3, B1-B5).
+Delivery follows the reordered sequence in §12. Phases 1a/1b were executed against a
+separate unit-level contract (`impl_plan_gemini.md`, units 0, A1-A3, B1-B5) that has
+since been deleted now that the surface is built. It is preserved in git history — the
+last commit containing it is `78a7e26`, so `git show 78a7e26:impl_plan_gemini.md`
+recovers the original unit wording if it is ever needed. Everything still relevant from
+it is recorded below.
 
 | Phase | State | Evidence |
 |---|---|---|
@@ -26,6 +30,11 @@ detailed unit contract in `impl_plan_gemini.md` (units 0, A1-A3, B1-B5).
 
 Suite: 866 tests green. Phase 1 ships dark (`PHASE1_ENABLED_USER_IDS=` empty); see
 `docs/operations_runbook.md` for the rollout and rollback procedure.
+
+Phase 1b's tests were named differently from the unit contract, with equal or wider
+coverage: `test_database_repeat.py` → `tests/test_repeat_undo.py`,
+`test_diet_defaults.py` → `tests/test_quick_defaults.py`,
+`test_suggestion_pagination.py` → `tests/test_picker_and_draft.py`.
 
 ### 0.1 Accepted deviations from this plan
 
@@ -53,11 +62,41 @@ oversights.
    `current_values.preview_signature`). Reconsider if Phase 3's draft state machine
    needs a home.
 
+### 0.1b Known debt — resolver layering
+
+`bot/nutrition_resolution.py` was specified by the unit contract (§12) and never created.
+The pure resolvers (`resolve_food_diet_entry`, `resolve_recipe_diet_entry`,
+`resolve_catalog_food_entry`) still live in `bot/handlers/catalog.py`, and
+`bot/database.py` reaches them through a **lazy import inside
+`_resolve_quantity_locked`** to dodge a circular import.
+
+This is correct and tested, but it inverts the layering: the repository depends on the
+handler package. Unlike the items in §0.1 this was not a considered trade-off worth
+keeping — it was the cheap path during the B2 build. Extracting those three functions
+(plus `ResolvedCatalogDietEntry` and its private helpers) into a Telegram-free module,
+re-exporting from `bot/handlers/catalog.py` for compatibility, is a contained refactor
+worth doing before Phase 2 adds a second resolution source (USDA lookup) on top of it.
+
 ### 0.2 Carry-over tasks (small, not blocking Phase 2)
 
-- `docs/user_guide.html` predates Phase 1 and documents no Home/Repeat/receipt/usual
+Documentation surfaces the unit contract §15 asked for that are not yet updated:
+
+- **`/help`** does not mention Home, Repeat, or `/keyboard hide|show`.
+- **`/settings`** does not show Phase 1 / default-quantity status for the acting user.
+- **`docs/user_guide.html`** predates Phase 1 and documents no Home/Repeat/receipt/usual
   behavior. Nothing in it is wrong (Phase 1 is additive and dark by default), but it is
-  incomplete. README and the operations runbook are current.
+  incomplete.
+- **`docs/backup_runbook.md`** lacks the "Phase 1 adds no migration; Release A is the
+  rollback target; accepted rows are never discarded" note.
+
+README and the operations runbook are current. Other carry-overs:
+
+- The §13.8 isolated-venv `pip-audit` run was not performed. `pytest`, `compileall`, and
+  `pip check` all pass in place, and no runtime dependency was added.
+- Two acceptance steps need a human and a Telegram client, not CI: the one-user-then-
+  both-user Release B pilot, and the live-client confirmation that the persistent
+  keyboard actually disappears on rollback. `tests/test_release_a.py` proves the
+  CI-provable half of the latter.
 - Catalog foods still have no pin/hide/default preference. This is per plan — the
   preference table is rebuilt in Phase 2's v9 migration (§12 Phase 2), not earlier.
 - `/suggestions forget` and `reset-all` remain unimplemented and unadvertised, as
