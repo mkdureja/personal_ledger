@@ -14,13 +14,38 @@ import math
 import unicodedata
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, NamedTuple
 
 import aiosqlite
 
+from .meal_models import (
+    CurrentCommitStatus,
+    CurrentValueCommitResult,
+    CurrentValueDecision,
+    CurrentValueIssue,
+    CurrentValueIssueCode,
+    CurrentValueItemProposal,
+    CurrentValuePreview,
+    DefaultQuantity,
+    DietHeaderSnapshot,
+    DietItemSnapshot,
+    DietItemSourceType,
+    DietLogItemInput,
+    MealReceipt,
+    NutrientValues,
+    QuickMealResult,
+    QuickMealStatus,
+    RepeatResult,
+    RepeatStatus,
+    UndoResult,
+    UndoStatus,
+)
+from .services.current_values import preview_signature
 from .nutrition import (
     FOOD_BASE_UNITS,
+    NutritionError,
     MAX_CATALOG_AMOUNT as NUTRITION_MAX_CATALOG_AMOUNT,
     MAX_CATALOG_NAME_LENGTH,
     MAX_MEAL_ITEMS,
@@ -162,6 +187,67 @@ def _utc_date_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _parse_stored_utc(value: object) -> datetime | None:
+    """Read a stored timestamp back as an aware UTC datetime, or ``None``.
+
+    Rows written by this module and by SQLite's ``CURRENT_TIMESTAMP`` are naive
+    UTC, so a naive value is *stamped* as UTC rather than converted; an aware
+    value (possible only for hand-written rows) is normalized to UTC. ``None``
+    means the timestamp is missing or unparseable, which callers must treat as
+    "age unprovable" rather than "old" or "new".
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _header_snapshot(row: Mapping[str, Any]) -> DietHeaderSnapshot:
+    """Build the immutable header view of one ``diet_logs`` row."""
+    return DietHeaderSnapshot(
+        meal_id=int(row["id"]),
+        user_id=int(row["user_id"]),
+        meal_type=str(row["meal_type"]),
+        food_items=str(row["food_items"]),
+        nutrients=NutrientValues(
+            calories=row["calories"],
+            protein_g=row["protein_g"],
+            carbs_g=row["carbs_g"],
+            fat_g=row["fat_g"],
+        ),
+        logged_at_utc=_parse_stored_utc(row["logged_at"]),
+    )
+
+
+def _item_snapshot(row: Mapping[str, Any]) -> DietItemSnapshot:
+    """Build the immutable child view of one ``diet_log_items`` row."""
+    return DietItemSnapshot(
+        child_id=int(row["id"]),
+        user_id=int(row["user_id"]),
+        meal_id=int(row["diet_log_id"]),
+        item_order=int(row["item_order"]),
+        source_type=DietItemSourceType(str(row["source_type"])),
+        source_id=row["source_id"],
+        source_provider=row["source_provider"],
+        source_revision=row["source_revision"],
+        display_name=str(row["display_name"]),
+        entered_amount=row["entered_amount"],
+        entered_unit=row["entered_unit"],
+        resolved_base_amount=row["resolved_base_amount"],
+        resolved_base_unit=row["resolved_base_unit"],
+        calories=row["calories"],
+        protein_g=row["protein_g"],
+        carbs_g=row["carbs_g"],
+        fat_g=row["fat_g"],
+        created_at_utc=_parse_stored_utc(row["created_at"]),
+    )
+
+
 class DatabaseManager:
     """Async SQLite manager holding a single shared connection."""
 
@@ -218,16 +304,32 @@ class DatabaseManager:
         return self._conn
 
     @asynccontextmanager
-    async def _write_operation(self) -> AsyncIterator[None]:
+    async def _write_operation(
+        self, *, begin_immediate: bool = False
+    ) -> AsyncIterator[None]:
         """Serialize a complete mutation and close its transaction safely.
 
         Holds the connection lock for the whole BEGIN..COMMIT lifecycle so that
         no concurrent read (which also takes this lock) can see the in-progress
         transaction's uncommitted rows.
+
+        With ``begin_immediate=True`` the transaction is opened *before* the
+        body's first statement instead of on its first write. A read-modify-write
+        (read a mutation receipt, then insert only if it is absent) needs this:
+        under the default deferred behavior the leading SELECT would run outside
+        the transaction, so another connection could commit between the check and
+        the insert. The check is explicit rather than an ``assert`` because
+        ``assert`` disappears under ``python -O`` (plan §7.1).
         """
         async with self._conn_lock:
             token = _conn_lock_held.set(True)
             try:
+                if begin_immediate:
+                    if self.conn.in_transaction:
+                        raise RuntimeError(
+                            "Refusing to BEGIN IMMEDIATE inside an open transaction"
+                        )
+                    await self.conn.execute("BEGIN IMMEDIATE")
                 yield
                 await self.conn.commit()
             except BaseException:
@@ -318,6 +420,33 @@ class DatabaseManager:
                 "mutation receipt owner mismatch — refusing cross-user replay"
             )
         return existing["entity_id"]
+
+    async def _get_mutation_receipt_locked(
+        self, source: MutationSource | None, user_id: int, operation_key: str
+    ) -> tuple[str, int] | None:
+        """Return ``(entity_type, entity_id)`` for an already-applied update.
+
+        The typed sibling of :meth:`_replayed_entity_id`, for operations whose
+        replay outcome depends on *what* was recorded — a real meal, or the
+        ``diet_repeat_empty`` tombstone meaning "there was nothing to repeat".
+        Assumes the caller holds the write lock, and refuses a receipt belonging
+        to another user for the same reason.
+        """
+        if source is None:
+            return None
+        cursor = await self.conn.execute(
+            "SELECT user_id, entity_type, entity_id FROM mutation_receipts "
+            "WHERE telegram_update_id = ? AND operation_key = ?",
+            (source.update_id, operation_key),
+        )
+        existing = await cursor.fetchone()
+        if existing is None:
+            return None
+        if existing["user_id"] != user_id:
+            raise RuntimeError(
+                "mutation receipt owner mismatch — refusing cross-user replay"
+            )
+        return str(existing["entity_type"]), int(existing["entity_id"])
 
     async def _record_receipt(
         self,
@@ -525,6 +654,34 @@ class DatabaseManager:
         catalog edit never rewrites a completed meal. Idempotent when ``source``
         is supplied (a replayed final tap returns the existing meal id).
         """
+        async with self._write_operation():
+            replayed = await self._replayed_entity_id(source, user_id, "diet_log")
+            if replayed is not None:
+                return replayed
+            diet_log_id = await self._insert_diet_meal_locked(
+                user_id, meal_type, items
+            )
+            if source is not None:
+                await self._record_receipt(
+                    source, user_id, "diet_log", "diet", diet_log_id
+                )
+            return diet_log_id
+
+    async def _insert_diet_meal_locked(
+        self,
+        user_id: int,
+        meal_type: str,
+        items: Sequence[Mapping[str, Any]],
+    ) -> int:
+        """Insert one meal header plus its children; return the new meal id.
+
+        The single write path for every *new* resolved meal — guided Save, Quick
+        log, and current-value replay all land here — so the item cap, aggregate
+        bounds, header display bounding, and cross-owner source rejection cannot
+        drift apart between entry points. Assumes the caller holds the connection
+        lock and owns the transaction, and records no receipt: the caller decides
+        which operation key this write belongs to.
+        """
         if not items:
             raise ValueError("A meal must have at least one item.")
         if len(items) > MAX_MEAL_ITEMS:
@@ -551,64 +708,56 @@ class DatabaseManager:
         if len(display) > 500:
             display = display[:499] + "…"
 
-        async with self._write_operation():
-            replayed = await self._replayed_entity_id(source, user_id, "diet_log")
-            if replayed is not None:
-                return replayed
-            # Reject any item that cites another user's private food/recipe before
-            # writing the header, so a bad reference makes no partial meal.
-            for item in items:
-                await self._assert_source_not_cross_owner(
-                    user_id, item.get("source_type"), item.get("source_id")
-                )
-            cursor = await self.conn.execute(
-                "INSERT INTO diet_logs "
-                "(user_id, meal_type, food_items, calories, protein_g, carbs_g, "
-                "fat_g, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        # Reject any item that cites another user's private food/recipe before
+        # writing the header, so a bad reference makes no partial meal.
+        for item in items:
+            await self._assert_source_not_cross_owner(
+                user_id, item.get("source_type"), item.get("source_id")
+            )
+        cursor = await self.conn.execute(
+            "INSERT INTO diet_logs "
+            "(user_id, meal_type, food_items, calories, protein_g, carbs_g, "
+            "fat_g, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                meal_type,
+                display,
+                totals["calories"],
+                totals["protein_g"],
+                totals["carbs_g"],
+                totals["fat_g"],
+                _utc_timestamp_now(),
+            ),
+        )
+        diet_log_id: int = cursor.lastrowid  # type: ignore[assignment]
+        for order, item in enumerate(items):
+            await self.conn.execute(
+                "INSERT INTO diet_log_items "
+                "(user_id, diet_log_id, item_order, source_type, source_id, "
+                "source_provider, source_revision, display_name, "
+                "entered_amount, entered_unit, resolved_base_amount, "
+                "resolved_base_unit, calories, protein_g, carbs_g, fat_g) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     user_id,
-                    meal_type,
-                    display,
-                    totals["calories"],
-                    totals["protein_g"],
-                    totals["carbs_g"],
-                    totals["fat_g"],
-                    _utc_timestamp_now(),
+                    diet_log_id,
+                    order,
+                    str(item.get("source_type", "freetext")),
+                    item.get("source_id"),
+                    item.get("source_provider"),
+                    item.get("source_revision"),
+                    str(item["display_name"]),
+                    item.get("entered_amount"),
+                    item.get("entered_unit"),
+                    item.get("resolved_base_amount"),
+                    item.get("resolved_base_unit"),
+                    item.get("calories"),
+                    item.get("protein_g"),
+                    item.get("carbs_g"),
+                    item.get("fat_g"),
                 ),
             )
-            diet_log_id: int = cursor.lastrowid  # type: ignore[assignment]
-            for order, item in enumerate(items):
-                await self.conn.execute(
-                    "INSERT INTO diet_log_items "
-                    "(user_id, diet_log_id, item_order, source_type, source_id, "
-                    "source_provider, source_revision, display_name, "
-                    "entered_amount, entered_unit, resolved_base_amount, "
-                    "resolved_base_unit, calories, protein_g, carbs_g, fat_g) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        user_id,
-                        diet_log_id,
-                        order,
-                        str(item.get("source_type", "freetext")),
-                        item.get("source_id"),
-                        item.get("source_provider"),
-                        item.get("source_revision"),
-                        str(item["display_name"]),
-                        item.get("entered_amount"),
-                        item.get("entered_unit"),
-                        item.get("resolved_base_amount"),
-                        item.get("resolved_base_unit"),
-                        item.get("calories"),
-                        item.get("protein_g"),
-                        item.get("carbs_g"),
-                        item.get("fat_g"),
-                    ),
-                )
-            if source is not None:
-                await self._record_receipt(
-                    source, user_id, "diet_log", "diet", diet_log_id
-                )
-            return diet_log_id
+        return diet_log_id
 
     async def get_diet_log_items(
         self, user_id: int, diet_log_id: int
@@ -620,6 +769,505 @@ class DatabaseManager:
             (user_id, diet_log_id),
         )
         return [dict(row) for row in rows]
+
+    # -------------------------------------------------------------------
+    # Exact Repeat and targeted Undo (Phase 1b fast mutations)
+    # -------------------------------------------------------------------
+    # The columns Repeat copies verbatim from the previous meal's children.
+    # Deliberately explicit: `id`, `diet_log_id`, and `created_at` belong to the
+    # *new* row, and a future column must be considered rather than inherited.
+    _REPEATED_ITEM_COLUMNS = (
+        "item_order",
+        "source_type",
+        "source_id",
+        "source_provider",
+        "source_revision",
+        "display_name",
+        "entered_amount",
+        "entered_unit",
+        "resolved_base_amount",
+        "resolved_base_unit",
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+    )
+
+    async def _get_meal_receipt_locked(
+        self, user_id: int, meal_id: int
+    ) -> MealReceipt | None:
+        """Load one owner-scoped meal as an immutable header/items snapshot.
+
+        Assumes the caller holds the connection lock.
+        """
+        cursor = await self.conn.execute(
+            "SELECT * FROM diet_logs WHERE id = ? AND user_id = ?",
+            (meal_id, user_id),
+        )
+        header = await cursor.fetchone()
+        if header is None:
+            return None
+        cursor = await self.conn.execute(
+            "SELECT * FROM diet_log_items WHERE user_id = ? AND diet_log_id = ? "
+            "ORDER BY item_order, id",
+            (user_id, meal_id),
+        )
+        children = await cursor.fetchall()
+        return MealReceipt(
+            header=_header_snapshot(header),
+            items=tuple(_item_snapshot(row) for row in children),
+        )
+
+    async def repeat_last_meal(
+        self, user_id: int, source: MutationSource | None = None
+    ) -> RepeatResult:
+        """Re-log this user's most recent meal as an exact copy.
+
+        "Exact" is the whole point: the stored header (meal type, description,
+        calories, macros) and every child snapshot are copied verbatim, with only
+        a new id, parent, and timestamp. Nothing is re-resolved, so a catalog edit
+        or a deleted food since the original meal cannot change what Repeat logs —
+        that is what the separate "use current values" action is for.
+
+        The operation is idempotent per Telegram update: a redelivered update
+        replays its recorded outcome instead of logging a second meal, including
+        the "there was nothing to repeat" case, which is recorded as a tombstone
+        so a later replay stays empty even if a meal has been logged since.
+        """
+        async with self._write_operation(begin_immediate=True):
+            recorded = await self._get_mutation_receipt_locked(
+                source, user_id, "diet_repeat"
+            )
+            if recorded is not None:
+                entity_type, entity_id = recorded
+                if entity_type == "diet_repeat_empty":
+                    return RepeatResult(status=RepeatStatus.EMPTY, receipt=None)
+                if entity_type != "diet":
+                    raise RuntimeError(
+                        f"Unexpected diet_repeat receipt type {entity_type!r}"
+                    )
+                replayed = await self._get_meal_receipt_locked(user_id, entity_id)
+                if replayed is None:
+                    # The repeated meal was undone. Never recreate it: the user
+                    # deliberately removed that exact row.
+                    return RepeatResult(
+                        status=RepeatStatus.REPLAYED_REMOVED, receipt=None
+                    )
+                return RepeatResult(status=RepeatStatus.REPLAYED, receipt=replayed)
+
+            cursor = await self.conn.execute(
+                "SELECT id, meal_type, food_items, calories, protein_g, carbs_g, "
+                "fat_g FROM diet_logs WHERE user_id = ? "
+                "ORDER BY logged_at DESC, id DESC LIMIT 1",
+                (user_id,),
+            )
+            previous = await cursor.fetchone()
+            if previous is None:
+                if source is not None:
+                    await self._record_receipt(
+                        source, user_id, "diet_repeat", "diet_repeat_empty", 0
+                    )
+                return RepeatResult(status=RepeatStatus.EMPTY, receipt=None)
+
+            now = _utc_timestamp_now()
+            cursor = await self.conn.execute(
+                "INSERT INTO diet_logs "
+                "(user_id, meal_type, food_items, calories, protein_g, carbs_g, "
+                "fat_g, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    previous["meal_type"],
+                    previous["food_items"],
+                    previous["calories"],
+                    previous["protein_g"],
+                    previous["carbs_g"],
+                    previous["fat_g"],
+                    now,
+                ),
+            )
+            new_meal_id: int = cursor.lastrowid  # type: ignore[assignment]
+
+            columns = ", ".join(self._REPEATED_ITEM_COLUMNS)
+            cursor = await self.conn.execute(
+                f"SELECT {columns} FROM diet_log_items "  # noqa: S608
+                "WHERE user_id = ? AND diet_log_id = ? ORDER BY item_order, id",
+                (user_id, previous["id"]),
+            )
+            placeholders = ", ".join("?" for _ in self._REPEATED_ITEM_COLUMNS)
+            for child in await cursor.fetchall():
+                await self.conn.execute(
+                    "INSERT INTO diet_log_items "
+                    f"(user_id, diet_log_id, {columns}, created_at) "  # noqa: S608
+                    f"VALUES (?, ?, {placeholders}, ?)",
+                    (
+                        user_id,
+                        new_meal_id,
+                        *(child[column] for column in self._REPEATED_ITEM_COLUMNS),
+                        now,
+                    ),
+                )
+
+            if source is not None:
+                await self._record_receipt(
+                    source, user_id, "diet_repeat", "diet", new_meal_id
+                )
+            created = await self._get_meal_receipt_locked(user_id, new_meal_id)
+            return RepeatResult(status=RepeatStatus.CREATED, receipt=created)
+
+    # -------------------------------------------------------------------
+    # "Use current values" — re-resolve a past meal against today's sources
+    # -------------------------------------------------------------------
+    @staticmethod
+    def _snapshot_as_input(item: DietItemSnapshot) -> DietLogItemInput:
+        """The persisted payload of a historical child, ready to be re-inserted."""
+        return DietLogItemInput(
+            source_type=item.source_type,
+            source_id=item.source_id,
+            source_provider=item.source_provider,
+            source_revision=item.source_revision,
+            display_name=item.display_name,
+            entered_amount=item.entered_amount,
+            entered_unit=item.entered_unit,
+            resolved_base_amount=item.resolved_base_amount,
+            resolved_base_unit=item.resolved_base_unit,
+            calories=item.calories,
+            protein_g=item.protein_g,
+            carbs_g=item.carbs_g,
+            fat_g=item.fat_g,
+        )
+
+    @staticmethod
+    def _input_as_row(item: DietLogItemInput) -> dict[str, Any]:
+        """A ``DietLogItemInput`` as the mapping the insert helper expects."""
+        return {
+            "source_type": str(item.source_type),
+            "source_id": item.source_id,
+            "source_provider": item.source_provider,
+            "source_revision": item.source_revision,
+            "display_name": item.display_name,
+            "entered_amount": item.entered_amount,
+            "entered_unit": item.entered_unit,
+            "resolved_base_amount": item.resolved_base_amount,
+            "resolved_base_unit": item.resolved_base_unit,
+            "calories": item.calories,
+            "protein_g": item.protein_g,
+            "carbs_g": item.carbs_g,
+            "fat_g": item.fat_g,
+        }
+
+    @staticmethod
+    def _totals_of(items: Sequence[DietLogItemInput]) -> NutrientValues:
+        """Sum nutrients, keeping ``None`` (unknown) contagious rather than zero."""
+
+        def total(field: str) -> float | None:
+            values = [getattr(item, field) for item in items]
+            if not values or any(value is None for value in values):
+                return None
+            return round(sum(float(value) for value in values), 2)
+
+        calories = total("calories")
+        return NutrientValues(
+            calories=None if calories is None else int(round(calories)),
+            protein_g=total("protein_g"),
+            carbs_g=total("carbs_g"),
+            fat_g=total("fat_g"),
+        )
+
+    async def _build_current_value_preview_locked(
+        self,
+        user_id: int,
+        source_meal_id: int,
+        decisions: Mapping[int, CurrentValueDecision],
+    ) -> CurrentValuePreview | None:
+        """Re-resolve one past meal's items against the sources as they are now.
+
+        Every structured child is re-priced from its live source using the
+        *stored* entered amount; a child whose source or amount no longer works
+        becomes an issue the user must resolve by hand. Nothing is guessed:
+        there is no automatic fallback to the old snapshot, because silently
+        logging stale numbers is exactly what this feature exists to avoid.
+        ``freetext`` children have no live source, so they carry through
+        unchanged. Assumes the caller holds the connection lock.
+        """
+        receipt = await self._get_meal_receipt_locked(user_id, source_meal_id)
+        if receipt is None:
+            return None
+
+        proposals: list[CurrentValueItemProposal] = []
+        for item in receipt.items:
+            issue: CurrentValueIssue | None = None
+            proposed: DietLogItemInput | None = None
+
+            if item.source_type is DietItemSourceType.FREETEXT:
+                proposed = self._snapshot_as_input(item)
+            elif item.source_id is None:
+                issue = CurrentValueIssue(
+                    item.child_id, CurrentValueIssueCode.SOURCE_MISSING
+                )
+            elif item.entered_amount is None or item.entered_unit is None:
+                issue = CurrentValueIssue(
+                    item.child_id, CurrentValueIssueCode.QUANTITY_MISSING
+                )
+            else:
+                tokens = [
+                    f"{float(item.entered_amount):g}",
+                    str(item.entered_unit),
+                ]
+                try:
+                    entry = await self._resolve_quantity_locked(
+                        user_id, str(item.source_type), item.source_id, tokens
+                    )
+                except LookupError:
+                    issue = CurrentValueIssue(
+                        item.child_id, CurrentValueIssueCode.SOURCE_MISSING
+                    )
+                except NutritionError as exc:
+                    code = (
+                        CurrentValueIssueCode.RECIPE_EMPTY
+                        if "no ingredients" in str(exc)
+                        else CurrentValueIssueCode.QUANTITY_INVALID
+                    )
+                    issue = CurrentValueIssue(item.child_id, code)
+                else:
+                    row = entry.as_item()
+                    proposed = DietLogItemInput(
+                        source_type=DietItemSourceType(str(row["source_type"])),
+                        source_id=row["source_id"],
+                        source_provider=row["source_provider"],
+                        source_revision=row["source_revision"],
+                        display_name=str(row["display_name"]),
+                        entered_amount=row["entered_amount"],
+                        entered_unit=row["entered_unit"],
+                        resolved_base_amount=row["resolved_base_amount"],
+                        resolved_base_unit=row["resolved_base_unit"],
+                        calories=row["calories"],
+                        protein_g=row["protein_g"],
+                        carbs_g=row["carbs_g"],
+                        fat_g=row["fat_g"],
+                    )
+
+            if issue is None:
+                decision = CurrentValueDecision.RESOLVE_CURRENT
+            else:
+                # An issue needs an explicit human choice; anything the caller
+                # did not decide stays UNRESOLVED and blocks saving.
+                chosen = decisions.get(item.child_id)
+                if chosen is CurrentValueDecision.KEEP_ORIGINAL:
+                    decision = chosen
+                    proposed = self._snapshot_as_input(item)
+                elif chosen is CurrentValueDecision.REMOVE:
+                    decision = chosen
+                    proposed = None
+                else:
+                    decision = CurrentValueDecision.UNRESOLVED
+
+            proposals.append(
+                CurrentValueItemProposal(
+                    source_child_id=item.child_id,
+                    decision=decision,
+                    original=item,
+                    persisted_item_order=None,
+                    proposed=proposed,
+                    issue=issue,
+                )
+            )
+
+        kept = [
+            p.proposed
+            for p in proposals
+            if p.decision is not CurrentValueDecision.REMOVE and p.proposed is not None
+        ]
+        # Assign the order the items would actually be written in.
+        ordered: list[CurrentValueItemProposal] = []
+        position = 0
+        for proposal in proposals:
+            if (
+                proposal.decision is CurrentValueDecision.REMOVE
+                or proposal.proposed is None
+            ):
+                ordered.append(proposal)
+                continue
+            ordered.append(
+                replace(proposal, persisted_item_order=position)
+            )
+            position += 1
+
+        original_totals = receipt.header.nutrients
+        proposed_totals = self._totals_of(kept)
+
+        def delta(new: float | None, old: float | None):
+            if new is None or old is None:
+                return None
+            return round(new - old, 2)
+
+        preview = CurrentValuePreview(
+            source_meal_id=source_meal_id,
+            meal_type=receipt.header.meal_type,
+            items=tuple(ordered),
+            original_totals=original_totals,
+            proposed_totals=proposed_totals,
+            delta=NutrientValues(
+                calories=(
+                    None
+                    if proposed_totals.calories is None
+                    or original_totals.calories is None
+                    else proposed_totals.calories - original_totals.calories
+                ),
+                protein_g=delta(proposed_totals.protein_g, original_totals.protein_g),
+                carbs_g=delta(proposed_totals.carbs_g, original_totals.carbs_g),
+                fat_g=delta(proposed_totals.fat_g, original_totals.fat_g),
+            ),
+            digest="",
+            can_save=bool(kept)
+            and not any(
+                p.decision is CurrentValueDecision.UNRESOLVED for p in ordered
+            ),
+        )
+        return replace(preview, digest=preview_signature(preview))
+
+    async def get_current_value_preview(
+        self,
+        user_id: int,
+        source_meal_id: int,
+        decisions: Mapping[int, CurrentValueDecision] | None = None,
+    ) -> CurrentValuePreview | None:
+        """Preview what re-logging a past meal at today's values would produce."""
+        async with self._read_operation():
+            return await self._build_current_value_preview_locked(
+                user_id, source_meal_id, decisions or {}
+            )
+
+    async def commit_current_value_meal(
+        self,
+        user_id: int,
+        source_meal_id: int,
+        decisions: Mapping[int, CurrentValueDecision],
+        expected_digest: str,
+        *,
+        source: MutationSource | None = None,
+    ) -> CurrentValueCommitResult:
+        """Write the re-resolved meal, but only if it still matches the preview.
+
+        The whole point is that the numbers are re-read from live sources, so the
+        preview must be re-derived inside this transaction and compared with what
+        the user actually saw. Any drift returns ``REVIEW_REQUIRED`` with the new
+        preview and writes nothing — the user confirms the change rather than
+        discovering it in their ledger.
+        """
+        async with self._write_operation(begin_immediate=True):
+            recorded = await self._get_mutation_receipt_locked(
+                source, user_id, "diet_current"
+            )
+            if recorded is not None:
+                entity_type, entity_id = recorded
+                if entity_type != "diet":
+                    raise RuntimeError(
+                        f"Unexpected diet_current receipt type {entity_type!r}"
+                    )
+                replayed = await self._get_meal_receipt_locked(user_id, entity_id)
+                if replayed is None:
+                    return CurrentValueCommitResult(
+                        status=CurrentCommitStatus.REPLAYED_REMOVED,
+                        receipt=None,
+                        preview=None,
+                    )
+                return CurrentValueCommitResult(
+                    status=CurrentCommitStatus.REPLAYED,
+                    receipt=replayed,
+                    preview=None,
+                )
+
+            preview = await self._build_current_value_preview_locked(
+                user_id, source_meal_id, decisions
+            )
+            if preview is None:
+                return CurrentValueCommitResult(
+                    status=CurrentCommitStatus.SOURCE_MEAL_REMOVED,
+                    receipt=None,
+                    preview=None,
+                )
+            if not preview.can_save or preview.digest != expected_digest:
+                return CurrentValueCommitResult(
+                    status=CurrentCommitStatus.REVIEW_REQUIRED,
+                    receipt=None,
+                    preview=preview,
+                )
+
+            rows = [
+                self._input_as_row(p.proposed)
+                for p in preview.items
+                if p.decision is not CurrentValueDecision.REMOVE
+                and p.proposed is not None
+            ]
+            meal_id = await self._insert_diet_meal_locked(
+                user_id, preview.meal_type, rows
+            )
+            if source is not None:
+                await self._record_receipt(
+                    source, user_id, "diet_current", "diet", meal_id
+                )
+            return CurrentValueCommitResult(
+                status=CurrentCommitStatus.CREATED,
+                receipt=await self._get_meal_receipt_locked(user_id, meal_id),
+                preview=None,
+            )
+
+    async def delete_meal_if_recent(
+        self,
+        user_id: int,
+        meal_id: int,
+        *,
+        now_utc: datetime | None = None,
+    ) -> UndoResult:
+        """Delete one exact meal of this user's, if it is at most 24h old.
+
+        Targeted rather than "latest": a receipt's Undo button must always remove
+        the meal it was rendered for, never a newer one logged since. Repeating
+        the same Undo is a harmless no-op (``ALREADY_REMOVED``), as is undoing a
+        meal that does not exist or belongs to someone else — the caller learns
+        nothing about another user's rows. Children cascade; the mutation receipt
+        is kept on purpose, so a redelivered Repeat stays undone.
+        """
+        moment = now_utc or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        async with self._write_operation(begin_immediate=True):
+            cursor = await self.conn.execute(
+                "SELECT * FROM diet_logs WHERE id = ? AND user_id = ?",
+                (meal_id, user_id),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return UndoResult(
+                    status=UndoStatus.ALREADY_REMOVED,
+                    meal_id=meal_id,
+                    deleted_header=None,
+                )
+            header = _header_snapshot(row)
+            if header.logged_at_utc is None:
+                # Recency is unprovable, so refuse rather than delete an
+                # arbitrarily old row.
+                return UndoResult(
+                    status=UndoStatus.EXPIRED, meal_id=meal_id, deleted_header=None
+                )
+            # Exactly 24h remains eligible, matching the /undo boundary.
+            if (moment - header.logged_at_utc) > timedelta(hours=24):
+                return UndoResult(
+                    status=UndoStatus.EXPIRED, meal_id=meal_id, deleted_header=None
+                )
+            cursor = await self.conn.execute(
+                "DELETE FROM diet_logs WHERE id = ? AND user_id = ?",
+                (meal_id, user_id),
+            )
+            if cursor.rowcount <= 0:
+                return UndoResult(
+                    status=UndoStatus.ALREADY_REMOVED,
+                    meal_id=meal_id,
+                    deleted_header=None,
+                )
+            return UndoResult(
+                status=UndoStatus.DELETED, meal_id=meal_id, deleted_header=header
+            )
 
     # -------------------------------------------------------------------
     # Shared curated catalog (Phase 5) — reference data, not owner-scoped
@@ -794,7 +1442,7 @@ class DatabaseManager:
             JOIN diet_logs AS dl
                 ON dl.id = dli.diet_log_id AND dl.user_id = dli.user_id
             WHERE dli.user_id = ?
-              AND dli.source_type IN ('food', 'recipe')
+              AND dli.source_type IN ('food', 'recipe', 'catalog')
               AND dli.source_id IS NOT NULL
             GROUP BY dli.source_type, dli.source_id
             """,
@@ -803,6 +1451,35 @@ class DatabaseManager:
         return {
             (row["source_type"], row["source_id"]): dict(row) for row in rows
         }
+
+    async def get_user_catalog_history(
+        self, user_id: int
+    ) -> list[dict[str, Any]]:
+        """Active shared-catalog foods this user has actually logged before.
+
+        Suggestions must never enumerate the whole curated catalog — that is what
+        Search is for. Only foods with a completed meal behind them earn a place
+        in the picker.
+        """
+        rows = await self._query_all(
+            """
+            SELECT cf.*, cf.display_name AS name
+            FROM catalog_foods AS cf
+            WHERE cf.is_active = 1
+              AND EXISTS (
+                  SELECT 1
+                  FROM diet_log_items AS dli
+                  JOIN diet_logs AS dl
+                    ON dl.id = dli.diet_log_id AND dl.user_id = dli.user_id
+                  WHERE dli.user_id = ?
+                    AND dli.source_type = 'catalog'
+                    AND dli.source_id = cf.id
+              )
+            ORDER BY cf.name_key, cf.id
+            """,
+            (user_id,),
+        )
+        return [dict(row) for row in rows]
 
     async def get_recent_item_quantities(
         self,
@@ -899,6 +1576,325 @@ class DatabaseManager:
                     (1 if hidden else 0, _utc_timestamp_now(),
                      user_id, source_type, source_id),
                 )
+
+    # -------------------------------------------------------------------
+    # Private default quantities (Phase 1b "log my usual")
+    # -------------------------------------------------------------------
+    async def _resolve_quantity_locked(
+        self,
+        user_id: int,
+        source_type: str,
+        source_id: int,
+        tokens: Sequence[str],
+    ):
+        """Resolve ``tokens`` against a currently active, owner-scoped source.
+
+        The single validation boundary for defaults and quick logs: the shared
+        nutrition resolvers decide what a valid amount/unit is (finite, positive,
+        bounded, a known metric alias, a named portion, the recipe's yield unit),
+        so no handler ever invents its own rules. Raises ``NutritionError`` for an
+        unusable quantity and ``LookupError`` when the source itself is gone.
+
+        Imported lazily because the resolvers are pure functions that happen to
+        live in the handler package; importing them at module scope would make
+        the database module depend on the Telegram layer.
+        """
+        from .handlers.catalog import (
+            resolve_catalog_food_entry,
+            resolve_food_diet_entry,
+            resolve_recipe_diet_entry,
+        )
+
+        # The read helpers below re-enter the already-held connection lock rather
+        # than re-acquiring it, so these reads join the caller's transaction and
+        # see exactly the rows the write is about to act on.
+        if source_type == "food":
+            food = await self.get_food_by_id(user_id, source_id)
+            if food is None:
+                raise LookupError("food")
+            portions = await self.get_food_portions(user_id, source_id)
+            return resolve_food_diet_entry(food, portions, tokens)
+
+        if source_type == "recipe":
+            recipe = await self.get_recipe_by_id(user_id, source_id)
+            if recipe is None:
+                raise LookupError("recipe")
+            ingredients = await self.get_recipe_ingredients(user_id, source_id)
+            return resolve_recipe_diet_entry(recipe, ingredients, tokens)
+
+        if source_type == "catalog":
+            catalog_food = await self.get_catalog_food(source_id)
+            if catalog_food is None:
+                raise LookupError("catalog")
+            portions = await self.get_catalog_portions(source_id)
+            return resolve_catalog_food_entry(catalog_food, portions, tokens)
+
+        raise ValueError(f"Unknown source_type {source_type!r}")
+
+    async def resolve_quantity(
+        self,
+        user_id: int,
+        source_type: str,
+        source_id: int,
+        tokens: Sequence[str],
+    ):
+        """Resolve a quantity against a live source without writing anything.
+
+        Lets a handler preview or validate an amount (a proposed default, say)
+        using exactly the rules the write path will apply. Raises
+        ``NutritionError`` for an unusable quantity, ``LookupError`` when the
+        source is missing/archived/another user's.
+        """
+        async with self._read_operation():
+            return await self._resolve_quantity_locked(
+                user_id, source_type, source_id, tokens
+            )
+
+    async def get_default_quantity(
+        self, user_id: int, source_type: str, source_id: int
+    ) -> DefaultQuantity | None:
+        """Return a complete stored default, or ``None``.
+
+        A partial legacy pair (one column set, the other null) is deliberately
+        reported as absent rather than half-used — an incomplete default must be
+        repaired or removed, never guessed at.
+        """
+        row = await self._query_one(
+            "SELECT default_amount, default_unit FROM user_food_preferences "
+            "WHERE user_id = ? AND source_type = ? AND source_id = ?",
+            (user_id, source_type, source_id),
+        )
+        if row is None:
+            return None
+        amount, unit = row["default_amount"], row["default_unit"]
+        if amount is None or unit is None:
+            return None
+        return DefaultQuantity(amount=float(amount), unit=str(unit))
+
+    async def has_partial_default(
+        self, user_id: int, source_type: str, source_id: int
+    ) -> bool:
+        """Whether exactly one half of the default pair is stored (needs repair)."""
+        row = await self._query_one(
+            "SELECT default_amount, default_unit FROM user_food_preferences "
+            "WHERE user_id = ? AND source_type = ? AND source_id = ?",
+            (user_id, source_type, source_id),
+        )
+        if row is None:
+            return False
+        return (row["default_amount"] is None) != (row["default_unit"] is None)
+
+    async def set_default_quantity(
+        self,
+        user_id: int,
+        source_type: Literal["food", "recipe"],
+        source_id: int,
+        quantity: DefaultQuantity,
+    ) -> DefaultQuantity:
+        """Store a validated default amount/unit for one of this user's sources.
+
+        The pair is stored only after the nutrition resolver accepts it against
+        the source's *current* rows, and only as the normalized values the
+        resolver produced — so a stored default is always something that resolved
+        at least once. Pin/hide are preserved. Raises ``NutritionError`` for an
+        unusable quantity and ``ValueError`` when the source is missing, archived,
+        or another user's (both fail identically, revealing nothing).
+        """
+        if source_type not in ("food", "recipe"):
+            raise ValueError(f"Unknown source_type {source_type!r}")
+        tokens = [f"{float(quantity.amount):g}", str(quantity.unit)]
+        async with self._write_operation(begin_immediate=True):
+            try:
+                entry = await self._resolve_quantity_locked(
+                    user_id, source_type, source_id, tokens
+                )
+            except LookupError as exc:
+                raise ValueError(
+                    f"That {source_type} is no longer available."
+                ) from exc
+            stored = DefaultQuantity(
+                amount=float(entry.entered_amount), unit=str(entry.entered_unit)
+            )
+            await self.conn.execute(
+                "INSERT INTO user_food_preferences (user_id, source_type, source_id) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id, source_type, source_id) DO NOTHING",
+                (user_id, source_type, source_id),
+            )
+            await self.conn.execute(
+                "UPDATE user_food_preferences "
+                "SET default_amount = ?, default_unit = ?, updated_at = ? "
+                "WHERE user_id = ? AND source_type = ? AND source_id = ?",
+                (
+                    stored.amount,
+                    stored.unit,
+                    _utc_timestamp_now(),
+                    user_id,
+                    source_type,
+                    source_id,
+                ),
+            )
+            return stored
+
+    async def clear_default_quantity(
+        self,
+        user_id: int,
+        source_type: Literal["food", "recipe"],
+        source_id: int,
+    ) -> bool:
+        """Remove this user's stored default, keeping any pin/hide.
+
+        Deliberately does *not* require the source to still exist: an invalid
+        default left behind by an archived food must remain removable. Deletes
+        the row only when nothing else is left on it. A missing preference is a
+        harmless ``False``.
+        """
+        if source_type not in ("food", "recipe"):
+            raise ValueError(f"Unknown source_type {source_type!r}")
+        async with self._write_operation(begin_immediate=True):
+            cursor = await self.conn.execute(
+                "UPDATE user_food_preferences "
+                "SET default_amount = NULL, default_unit = NULL, updated_at = ? "
+                "WHERE user_id = ? AND source_type = ? AND source_id = ? "
+                "AND (default_amount IS NOT NULL OR default_unit IS NOT NULL)",
+                (_utc_timestamp_now(), user_id, source_type, source_id),
+            )
+            cleared = cursor.rowcount > 0
+            await self.conn.execute(
+                "DELETE FROM user_food_preferences "
+                "WHERE user_id = ? AND source_type = ? AND source_id = ? "
+                "AND default_amount IS NULL AND default_unit IS NULL "
+                "AND is_pinned = 0 AND hidden = 0",
+                (user_id, source_type, source_id),
+            )
+            return cleared
+
+    async def create_quick_meal(
+        self,
+        user_id: int,
+        meal_type: str,
+        source_type: Literal["food", "recipe", "catalog"],
+        source_id: int,
+        *,
+        quantity: DefaultQuantity | None = None,
+        set_as_default: bool = False,
+        source: MutationSource | None = None,
+    ) -> QuickMealResult:
+        """Log one complete single-item meal in a single transaction.
+
+        Either everything lands — header, child, the optional new default, and the
+        replay receipt — or nothing does. The quantity comes from the caller or
+        from the stored default; there is no third fallback, because silently
+        logging *some* amount is worse than asking. Every failure mode writes
+        nothing and says which one it was, so the handler can open the right
+        repair screen.
+        """
+        if source_type not in ("food", "recipe", "catalog"):
+            raise ValueError(f"Unknown source_type {source_type!r}")
+        if set_as_default and (source_type == "catalog" or quantity is None):
+            raise ValueError("A default needs a private source and an amount.")
+
+        async with self._write_operation(begin_immediate=True):
+            recorded = await self._get_mutation_receipt_locked(
+                source, user_id, "diet_quick"
+            )
+            if recorded is not None:
+                entity_type, entity_id = recorded
+                if entity_type != "diet":
+                    raise RuntimeError(
+                        f"Unexpected diet_quick receipt type {entity_type!r}"
+                    )
+                replayed = await self._get_meal_receipt_locked(user_id, entity_id)
+                if replayed is None:
+                    return QuickMealResult(
+                        status=QuickMealStatus.REPLAYED_REMOVED, receipt=None
+                    )
+                return QuickMealResult(
+                    status=QuickMealStatus.REPLAYED, receipt=replayed
+                )
+
+            supplied = quantity is not None
+            if not supplied:
+                if source_type == "catalog":
+                    return QuickMealResult(
+                        status=QuickMealStatus.QUANTITY_REQUIRED, receipt=None
+                    )
+                quantity = await self._get_default_quantity_locked(
+                    user_id, source_type, source_id
+                )
+                if quantity is None:
+                    return QuickMealResult(
+                        status=QuickMealStatus.QUANTITY_REQUIRED, receipt=None
+                    )
+
+            tokens = [f"{float(quantity.amount):g}", str(quantity.unit)]
+            try:
+                entry = await self._resolve_quantity_locked(
+                    user_id, source_type, source_id, tokens
+                )
+            except LookupError:
+                return QuickMealResult(
+                    status=QuickMealStatus.SOURCE_UNAVAILABLE, receipt=None
+                )
+            except NutritionError:
+                # A supplied amount is the user's mistake to fix; a stored one is
+                # a stale default that must be repaired rather than reused.
+                return QuickMealResult(
+                    status=(
+                        QuickMealStatus.QUANTITY_INVALID
+                        if supplied
+                        else QuickMealStatus.DEFAULT_INVALID
+                    ),
+                    receipt=None,
+                )
+
+            meal_id = await self._insert_diet_meal_locked(
+                user_id, meal_type, [entry.as_item()]
+            )
+            if set_as_default:
+                await self.conn.execute(
+                    "INSERT INTO user_food_preferences "
+                    "(user_id, source_type, source_id) VALUES (?, ?, ?) "
+                    "ON CONFLICT(user_id, source_type, source_id) DO NOTHING",
+                    (user_id, source_type, source_id),
+                )
+                await self.conn.execute(
+                    "UPDATE user_food_preferences "
+                    "SET default_amount = ?, default_unit = ?, updated_at = ? "
+                    "WHERE user_id = ? AND source_type = ? AND source_id = ?",
+                    (
+                        float(entry.entered_amount),
+                        str(entry.entered_unit),
+                        _utc_timestamp_now(),
+                        user_id,
+                        source_type,
+                        source_id,
+                    ),
+                )
+            if source is not None:
+                await self._record_receipt(
+                    source, user_id, "diet_quick", "diet", meal_id
+                )
+            return QuickMealResult(
+                status=QuickMealStatus.CREATED,
+                receipt=await self._get_meal_receipt_locked(user_id, meal_id),
+            )
+
+    async def _get_default_quantity_locked(
+        self, user_id: int, source_type: str, source_id: int
+    ) -> DefaultQuantity | None:
+        """Locked twin of :meth:`get_default_quantity` (complete pairs only)."""
+        cursor = await self.conn.execute(
+            "SELECT default_amount, default_unit FROM user_food_preferences "
+            "WHERE user_id = ? AND source_type = ? AND source_id = ?",
+            (user_id, source_type, source_id),
+        )
+        row = await cursor.fetchone()
+        if row is None or row["default_amount"] is None or row["default_unit"] is None:
+            return None
+        return DefaultQuantity(
+            amount=float(row["default_amount"]), unit=str(row["default_unit"])
+        )
 
     async def reset_food_preferences(self, user_id: int) -> int:
         """Clear all of a user's pins/hides while preserving defaults. Returns count of cleared pins/hides."""

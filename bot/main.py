@@ -49,6 +49,7 @@ from .handlers.diet import (
     stale_phase1_diet_callback,
     stale_receipt_callback,
 )
+from .handlers.receipts import RECEIPT_UNDO_PATTERN, undo_from_receipt
 from .handlers.catalog import food_command, recipe_command
 from .handlers.habits import (
     habits_setup_conv_handler,
@@ -247,10 +248,19 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("cancel", cancel_command, filters=AUTH_FILTER))
 
     # --- Callback query handlers ---
-    # Phase 1 durable receipt controls and revisioned base-36 diet families are
-    # retired inertly in Release A (answer + retire markup, no DB). Registered
-    # before the legacy stale handlers so base-36 dpin/dhide route here, while
-    # pre-A decimal payloads still fall through to the legacy handler below.
+    # Targeted Undo is a durable receipt control, deliberately outside every
+    # ConversationHandler: it removes one exact completed meal and never touches
+    # conversation state, so it stays usable during another guided flow. "Log
+    # another" is instead a Diet entry point (registered above) because it opens
+    # a flow.
+    application.add_handler(
+        CallbackQueryHandler(undo_from_receipt, pattern=RECEIPT_UNDO_PATTERN)
+    )
+    # Remaining receipt controls (Use current values, or Log another while a Diet
+    # flow owns the update) and revisioned base-36 diet families are retired
+    # inertly (answer + retire markup, no DB). Registered before the legacy stale
+    # handlers so base-36 dpin/dhide route here, while pre-A decimal payloads
+    # still fall through to the legacy handler below.
     application.add_handler(
         CallbackQueryHandler(stale_receipt_callback, pattern=_RECEIPT_CALLBACK_RE)
     )

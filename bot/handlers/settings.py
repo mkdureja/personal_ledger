@@ -49,7 +49,8 @@ async def suggestions_command(
     """Control personalized food ordering: /suggestions on|off|reset.
 
     History is always recorded; this only controls whether it reorders the tap
-    list. ``reset`` clears the user's pins and hides.
+    list. ``reset`` clears the user's pins and hides — deliberately *not* their
+    saved default quantities, which are separate per-item settings.
     """
     db = context.bot_data["db"]
     user = update.effective_user
@@ -79,7 +80,9 @@ async def suggestions_command(
         await reply_html(
             update.message,
             f"🧹 Cleared <b>{removed}</b> pin/hide preference(s). "
-            "Ranking now uses only your logged history.",
+            "Ranking now uses only your logged history.\n"
+            "Your saved “usual” amounts are kept — manage those with ⚙️ "
+            "beside an item.",
         )
         return
 

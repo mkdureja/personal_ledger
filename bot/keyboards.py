@@ -125,9 +125,34 @@ def _fmt_amount(value: object) -> str:
     return f"{number:g}"
 
 
+SUGGESTION_PAGE_SIZE = 8
+
+
+def paginate_choices(
+    choices: list[dict], page: int = 0
+) -> tuple[list[dict], int, int]:
+    """Return one clamped page of suggestions plus its normalized metadata.
+
+    Clamping rather than rejecting means a stale page number lands somewhere
+    sensible instead of erroring.
+    """
+    if len(choices) <= SUGGESTION_PAGE_SIZE:
+        return choices, 0, 1
+    page_count = (len(choices) + SUGGESTION_PAGE_SIZE - 1) // SUGGESTION_PAGE_SIZE
+    normalized = min(max(page, 0), page_count - 1)
+    start = normalized * SUGGESTION_PAGE_SIZE
+    return choices[start : start + SUGGESTION_PAGE_SIZE], normalized, page_count
+
+
 def food_choice_keyboard(
     user_id: int,
     choices: list[dict],
+    *,
+    manage: bool = False,
+    revision: int = 0,
+    page: int = 0,
+    paginate: bool = False,
+    change_meal: bool = False,
 ) -> InlineKeyboardMarkup:
     """Ranked saved foods/recipes as one-tap buttons, plus type/cancel escapes.
 
@@ -135,19 +160,70 @@ def food_choice_keyboard(
     ranked and hidden-filtered by the caller). Buttons carry only short numeric
     ids; every id is re-validated against the acting ``user_id`` before any
     lookup.
+
+    With ``manage`` on (Phase 1), each *private* row gains a ⚙️ button opening
+    that source's default-quantity menu. Shared catalog rows never get one —
+    defaults are a private preference. With ``paginate`` on, only one page of
+    suggestions is shown at a time so a long list stays thumb-sized.
     """
+    owner = to_base36(user_id)
+    rev = to_base36(revision)
+    page_count = 1
+    if paginate:
+        choices, page, page_count = paginate_choices(choices, page)
     rows: list[list[InlineKeyboardButton]] = []
     for choice in choices[:MAX_FOOD_CHOICES]:
-        if choice["source_type"] == "recipe":
+        kind = choice["source_type"]
+        if kind == "recipe":
             label = f"🍲 {_button_label(choice['name'])} (recipe)"
             data = f"drecipe_{user_id}_{choice['id']}"
-        elif choice["source_type"] == "catalog":
+        elif kind == "catalog":
             label = f"🔎 {_button_label(choice['name'])}"
             data = f"dcatalog_{user_id}_{choice['id']}"
         else:
             label = f"🥗 {_button_label(choice['name'])}"
             data = f"dfood_{user_id}_{choice['id']}"
-        rows.append([InlineKeyboardButton(label, callback_data=data)])
+        row = [InlineKeyboardButton(label, callback_data=data)]
+        if manage and kind in ("food", "recipe"):
+            row.append(
+                InlineKeyboardButton(
+                    "⚙️",
+                    callback_data=(
+                        f"dmanage_{owner}_{rev}_{kind[0]}_{to_base36(choice['id'])}"
+                    ),
+                )
+            )
+        rows.append(row)
+    if page_count > 1:
+        nav = []
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton(
+                    "◀️", callback_data=f"dpage_{owner}_{to_base36(page - 1)}"
+                )
+            )
+        # The counter is a label; tapping it re-renders the page it names.
+        nav.append(
+            InlineKeyboardButton(
+                f"{page + 1}/{page_count}",
+                callback_data=f"dpage_{owner}_{to_base36(page)}",
+            )
+        )
+        if page + 1 < page_count:
+            nav.append(
+                InlineKeyboardButton(
+                    "▶️", callback_data=f"dpage_{owner}_{to_base36(page + 1)}"
+                )
+            )
+        rows.append(nav)
+    if change_meal:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "🕒 Change meal type", callback_data=f"dchangemeal_{owner}"
+                )
+            ]
+        )
     rows.append(
         [InlineKeyboardButton("🔎 Search catalog", callback_data=f"dsearch_{user_id}")]
     )
@@ -160,6 +236,104 @@ def food_choice_keyboard(
         ]
     )
     return InlineKeyboardMarkup(rows)
+
+
+def quick_confirm_keyboard(
+    user_id: int, revision: int, *, can_set_default: bool
+) -> InlineKeyboardMarkup:
+    """Confirm a Quick-mode single-item meal (plan §9.4).
+
+    ``Log + set default`` is offered only for a user's own food/recipe: it is the
+    one tap that turns this amount into the "usual", which shared catalog rows
+    cannot have. Payloads carry owner/revision/action only — never nutrition.
+    """
+    owner = to_base36(user_id)
+    rev = to_base36(revision)
+    rows = [[InlineKeyboardButton("✅ Log it", callback_data=f"dq_log_{owner}_{rev}")]]
+    if can_set_default:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "⭐ Log + set as my usual",
+                    callback_data=f"dq_default_{owner}_{rev}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "✍️ Change amount", callback_data=f"dq_amount_{owner}_{rev}"
+            ),
+            InlineKeyboardButton(
+                "✖️ Cancel", callback_data=f"dq_cancel_{owner}_{rev}"
+            ),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def default_menu_keyboard(
+    user_id: int, revision: int, *, has_default: bool, needs_repair: bool
+) -> InlineKeyboardMarkup:
+    """Manage one source's default quantity (plan §9.4).
+
+    Three shapes: no default (Set), a valid one (Change/Remove), and a partial or
+    no-longer-resolvable one (Repair/Remove). A broken default is never silently
+    ignored — it is shown as needing a decision.
+    """
+    owner = to_base36(user_id)
+    rev = to_base36(revision)
+    rows = [
+        [
+            InlineKeyboardButton(
+                "✍️ Use a different amount", callback_data=f"dd_use_{owner}_{rev}"
+            )
+        ]
+    ]
+    if needs_repair:
+        edit_label = "🔧 Repair my usual"
+    elif has_default:
+        edit_label = "✏️ Change my usual"
+    else:
+        edit_label = "⭐ Set my usual"
+    rows.append(
+        [InlineKeyboardButton(edit_label, callback_data=f"dd_edit_{owner}_{rev}")]
+    )
+    if has_default or needs_repair:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "🗑 Remove my usual", callback_data=f"dd_clear_{owner}_{rev}"
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton("🔙 Back", callback_data=f"dd_back_{owner}_{rev}")]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def default_confirm_keyboard(user_id: int, revision: int) -> InlineKeyboardMarkup:
+    """Confirm the resolved amount before it becomes the stored default."""
+    owner = to_base36(user_id)
+    rev = to_base36(revision)
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Save as my usual", callback_data=f"dd_save_{owner}_{rev}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✍️ Re-enter", callback_data=f"dd_reenter_{owner}_{rev}"
+                ),
+                InlineKeyboardButton(
+                    "✖️ Cancel", callback_data=f"dd_cancel_{owner}_{rev}"
+                ),
+            ],
+        ]
+    )
 
 
 def _recent_quantity_rows(
@@ -275,23 +449,82 @@ def recipe_quantity_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
-def diet_save_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Meal preview: add another item, save the meal, or cancel."""
-    return InlineKeyboardMarkup(
+def diet_save_keyboard(
+    user_id: int,
+    *,
+    phase1_enabled: bool = False,
+    revision: int = 0,
+    items: list[dict] | None = None,
+) -> InlineKeyboardMarkup:
+    """Meal preview: add another item, save the meal, or cancel.
+
+    Two shapes on purpose (plan §9.2). With Phase 1 off, this emits the original
+    decimal payloads so a Release A rollback still has a fully saveable Builder.
+    With it on, Add/Save carry the UI revision and each drafted item gains
+    per-item edit controls — so an older keyboard left on screen stops working
+    the moment the draft changes.
+    """
+    if not phase1_enabled:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "➕ Add another item", callback_data=f"dadd_{user_id}"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "✅ Save meal", callback_data=f"dsave_{user_id}"
+                    ),
+                    InlineKeyboardButton(
+                        "✖️ Cancel", callback_data=f"dcancel_{user_id}"
+                    ),
+                ],
+            ]
+        )
+
+    owner = to_base36(user_id)
+    rev = to_base36(revision)
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, item in enumerate(items or []):
+        position = to_base36(index)
+        structured = str(item.get("source_type", "freetext")) != "freetext"
+        row = []
+        if structured:
+            row.append(
+                InlineKeyboardButton(
+                    f"#{index + 1} ✍️ amount",
+                    callback_data=f"dqty_{owner}_{rev}_{position}",
+                )
+            )
+        row.append(
+            InlineKeyboardButton(
+                f"#{index + 1} 🔁 replace" if structured else f"#{index + 1} 🔁",
+                callback_data=f"dedit_{owner}_{rev}_{position}",
+            )
+        )
+        row.append(
+            InlineKeyboardButton(
+                "🗑", callback_data=f"dremove_{owner}_{rev}_{position}"
+            )
+        )
+        rows.append(row)
+    rows.append(
         [
-            [
-                InlineKeyboardButton(
-                    "➕ Add another item", callback_data=f"dadd_{user_id}"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ Save meal", callback_data=f"dsave_{user_id}"
-                ),
-                InlineKeyboardButton("✖️ Cancel", callback_data=f"dcancel_{user_id}"),
-            ],
+            InlineKeyboardButton(
+                "➕ Add another item", callback_data=f"dadd_{owner}_{rev}"
+            )
         ]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "✅ Save meal", callback_data=f"dsave_{owner}_{rev}"
+            ),
+            InlineKeyboardButton("✖️ Cancel", callback_data=f"dcancel_{user_id}"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
 
 
 def log_another_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -306,6 +539,81 @@ def log_another_keyboard(user_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def meal_receipt_keyboard(
+    user_id: int, meal_id: int, *, can_use_current: bool = False
+) -> InlineKeyboardMarkup:
+    """Durable controls for one completed meal (plan §10.1).
+
+    Unlike the ephemeral guided-flow keyboards, this one stays valid after later
+    meals are logged: ``Undo`` names the exact meal it was rendered for, so a
+    receipt from three meals ago still removes *that* meal and nothing else.
+    Tokens are base-36 to stay far below Telegram's 64-byte callback limit.
+
+    ``Use current values`` appears only when the meal has a structured item to
+    re-price; an all-freetext meal has nothing to re-resolve.
+    """
+    owner = to_base36(user_id)
+    meal = to_base36(meal_id)
+    rows = [
+        [
+            InlineKeyboardButton("↩️ Undo", callback_data=f"mr_undo_{owner}_{meal}"),
+            InlineKeyboardButton("🍽️ Log another", callback_data=f"mr_more_{owner}"),
+        ]
+    ]
+    if can_use_current:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "🔄 Log again at today's values",
+                    callback_data=f"mr_current_{owner}_{meal}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(rows)
+
+
+def current_values_keyboard(
+    user_id: int, revision: int, proposals, *, can_save: bool
+) -> InlineKeyboardMarkup:
+    """Repair controls for a current-value preview (plan §10.5).
+
+    One Keep/Remove pair per item that could not be re-resolved. ``Save`` only
+    appears once every issue has an explicit answer and something is left to log
+    — there is no "save anyway" that quietly drops items.
+    """
+    owner = to_base36(user_id)
+    rev = to_base36(revision)
+    rows: list[list[InlineKeyboardButton]] = []
+    for position, proposal in enumerate(proposals, 1):
+        if str(proposal.decision) != "unresolved":
+            continue
+        child = to_base36(proposal.source_child_id)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"↩️ Keep #{position} as logged",
+                    callback_data=f"cv_keep_{owner}_{rev}_{child}",
+                ),
+                InlineKeyboardButton(
+                    f"🗑 Drop #{position}",
+                    callback_data=f"cv_remove_{owner}_{rev}_{child}",
+                ),
+            ]
+        )
+    final = []
+    if can_save:
+        final.append(
+            InlineKeyboardButton(
+                "✅ Log it", callback_data=f"cv_save_{owner}_{rev}"
+            )
+        )
+    final.append(
+        InlineKeyboardButton("✖️ Cancel", callback_data=f"cv_cancel_{owner}_{rev}")
+    )
+    rows.append(final)
+    return InlineKeyboardMarkup(rows)
 
 
 def yes_no_keyboard(prefix: str, user_id: int) -> InlineKeyboardMarkup:

@@ -1,10 +1,69 @@
 # Faster Logging + Nutrition Sourcing - Final Implementation Plan
 
-**Status:** Final architecture; ready to split into implementation build units  
+**Status:** Phases 0, 1a, and 1b built and merged into `hardening/review-fixes`;
+Phase 2 onward not started  
 **Project:** Ledger Telegram bot  
-**Plan date:** 2026-07-28  
+**Plan date:** 2026-07-28 (build status updated 2026-07-30)  
 **Code baseline:** `hardening/review-fixes` at `ee36415`  
-**Current database version:** v8  
+**Current database version:** v8 (unchanged — Phases 0/1a/1b add no migration)  
+
+## 0. Build status
+
+Delivery follows the reordered sequence in §12. Phase 1a/1b were executed against the
+detailed unit contract in `impl_plan_gemini.md` (units 0, A1-A3, B1-B5).
+
+| Phase | State | Evidence |
+|---|---|---|
+| 0 - harden v8 baseline | **Done** | `tests/test_phase0_hardening.py`, `test_phase0_structured_history.py` |
+| 1a - Home and routing (dark) | **Done** | `tests/test_phase1_routing.py`, `test_home.py`, `test_release_a.py` |
+| 1b - fast local mutations | **Done** | `tests/test_repeat_undo.py`, `test_quick_defaults.py`, `test_current_values.py`, `test_picker_and_draft.py` |
+| 2 - source schema and USDA lookup | Not started | needs migrations v9-v12 |
+| 3 - deterministic Describe | Not started | — |
+| 4 - optional external parser (Gemini) | Not started | first phase with an external dependency |
+| 5 - local voice | Not started | — |
+| 6 - recipe variants | Not started | independent track |
+| 7 - Supplements | Not started | independent track, needs v13 |
+
+Suite: 866 tests green. Phase 1 ships dark (`PHASE1_ENABLED_USER_IDS=` empty); see
+`docs/operations_runbook.md` for the rollout and rollback procedure.
+
+### 0.1 Accepted deviations from this plan
+
+These were deliberate proportionality decisions for a two-user bot, taken by the owner
+during the 1b build. They are recorded here so a later reader does not mistake them for
+oversights.
+
+1. **Current-value drift detection is a field signature, not a SHA-256 canonical-JSON
+   digest** (§10.5 of the unit contract). `bot/services/current_values.py` builds a
+   readable delimited string over exactly the fields that would be persisted; the commit
+   re-derives the preview inside its own transaction and compares. Same guarantee — a
+   meal that no longer matches what the user saw cannot be saved — without the canonical
+   JSON/decimal-normalization machinery. Revisit only if a second writer process appears.
+2. **No p95 latency benchmark gate** for Phase 1b (§12 Phase 1b gate). Dropped as
+   disproportionate; correctness gates were kept in full.
+3. **No multi-connection isolation test suite.** The process holds a single SQLite
+   connection behind one lock; `_write_operation(begin_immediate=True)` still opens the
+   transaction before the leading receipt read, so the guarantee is implemented — only
+   the multi-connection *test harness* was skipped.
+4. **Repeat/Undo/current-value orchestration lives in `bot/database.py` and
+   `bot/handlers/receipts.py`, not `bot/services/meal_logging.py`** (§13). The repository
+   methods are the transaction boundary and the handlers are thin; introducing a third
+   module would have added indirection without removing any. `bot/services/` currently
+   holds the pure helpers (`meal_logging.infer_meal_type`,
+   `current_values.preview_signature`). Reconsider if Phase 3's draft state machine
+   needs a home.
+
+### 0.2 Carry-over tasks (small, not blocking Phase 2)
+
+- `docs/user_guide.html` predates Phase 1 and documents no Home/Repeat/receipt/usual
+  behavior. Nothing in it is wrong (Phase 1 is additive and dark by default), but it is
+  incomplete. README and the operations runbook are current.
+- Catalog foods still have no pin/hide/default preference. This is per plan — the
+  preference table is rebuilt in Phase 2's v9 migration (§12 Phase 2), not earlier.
+- `/suggestions forget` and `reset-all` remain unimplemented and unadvertised, as
+  specified; `reset` continues to mean pin/hide only and now says so.
+- Two pre-existing unused imports (`bot/charts.py`, `bot/handlers/analytics.py`) are
+  unrelated to this work and left alone.
 
 This plan supersedes the earlier working drafts and resolves the review decisions. It
 contains no unresolved product or data-model choices. Values selected by deployment
@@ -884,7 +943,7 @@ provider/feature failures; never hide schema errors with `BaseException`.
 
 ## 12. Delivery sequence and build gates
 
-### Phase 0 - harden the v8 baseline
+### Phase 0 - harden the v8 baseline — DONE
 
 No new product feature begins until all are complete:
 
@@ -906,7 +965,7 @@ No new product feature begins until all are complete:
 **Gate:** all reproduced regressions have tests; the full existing suite is green;
 malformed/mis-stamped schemas fail closed; no cross-owner direct DB write succeeds.
 
-### Phase 1a - Home and routing, dark first
+### Phase 1a - Home and routing, dark first — DONE
 
 - Add Home snapshot and distinct greeting handling.
 - Add every reserved-label/state interceptor and stale-label compatibility handler.
@@ -918,7 +977,7 @@ malformed/mis-stamped schemas fail closed; no cross-owner direct DB write succee
 according to the currently enabled phase, with no draft loss or accidental external
 call; pre-Describe arbitrary text produces only the documented Home hint.
 
-### Phase 1b - fast local mutations
+### Phase 1b - fast local mutations — DONE
 
 - Clock-inferred meal type.
 - Default quantity UI for private foods/recipes using existing preference columns;
@@ -928,10 +987,11 @@ call; pre-Describe arbitrary text produces only the documented Home hint.
 - Add suggestion pagination and edit/remove/change-quantity controls.
 
 **Gate:** a private food/recipe with a default is two taps from Home; Repeat is one tap
-from Home; local handler processing p95 is below 500 ms on the target host excluding
-Telegram network; replay and intervening-log Undo tests pass.
+from Home; ~~local handler processing p95 is below 500 ms~~ (benchmark gate dropped, see
+§0.1); replay and intervening-log Undo tests pass. **Met**, with a saved "usual" making a
+private food *one* tap from Home rather than two.
 
-### Phase 2 - source schema and USDA lookup
+### Phase 2 - source schema and USDA lookup — NEXT
 
 - Ship v9-v12 with all external feature flags off.
 - Back up, migrate, verify, and smoke-test before polling resumes.

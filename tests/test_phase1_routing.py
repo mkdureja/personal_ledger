@@ -9,6 +9,7 @@ off. No network loop and no DB are needed to prove routing.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,6 +24,7 @@ from bot.handlers.diet import (
     stale_phase1_diet_callback,
     stale_receipt_callback,
 )
+from bot.handlers.receipts import undo_from_receipt
 from bot.handlers.gym import gym_conv_handler
 from bot.handlers.habits import habits_setup_conv_handler
 from bot.handlers.study import study_conv_handler
@@ -203,13 +205,41 @@ def test_phase1_base36_callbacks_route_to_inert_stale_handler(data):
     assert handler.callback is stale_phase1_diet_callback
 
 
-@pytest.mark.parametrize(
-    "data",
-    [f"mr_undo_{_O}_{to_base36(7)}", f"mr_more_{_O}", f"mr_current_{_O}_{to_base36(7)}"],
-)
-def test_receipt_callbacks_route_to_inert_receipt_handler(data):
+def test_receipt_undo_routes_to_its_real_handler():
+    """Undo lives outside every conversation so a receipt stays usable."""
     app = build_application()
-    handler = _first_handler(app, _callback_update(MANOJ, data))
+    handler = _first_handler(app, _callback_update(MANOJ, f"mr_undo_{_O}_{to_base36(7)}"))
+    assert handler.callback is undo_from_receipt
+
+
+def test_receipt_log_another_routes_to_the_diet_entry_point():
+    app = build_application()
+    handler = _first_handler(app, _callback_update(MANOJ, f"mr_more_{_O}"))
+    assert handler is diet_conv_handler
+
+
+def test_receipt_log_another_during_an_active_diet_flow_is_retired_inertly():
+    """Its entry point cannot fire mid-flow; the inert handler answers instead."""
+    app = build_application()
+    diet_conv_handler._conversations[(MANOJ, MANOJ)] = diet_mod.FOOD_CHOICE
+    handler = _first_handler(app, _callback_update(MANOJ, f"mr_more_{_O}"))
+    assert handler.callback is stale_receipt_callback
+
+
+def test_receipt_current_values_routes_to_the_diet_entry_point():
+    app = build_application()
+    handler = _first_handler(
+        app, _callback_update(MANOJ, f"mr_current_{_O}_{to_base36(7)}")
+    )
+    assert handler is diet_conv_handler
+
+
+def test_receipt_current_values_during_an_active_flow_is_retired_inertly():
+    app = build_application()
+    diet_conv_handler._conversations[(MANOJ, MANOJ)] = diet_mod.FOOD_CHOICE
+    handler = _first_handler(
+        app, _callback_update(MANOJ, f"mr_current_{_O}_{to_base36(7)}")
+    )
     assert handler.callback is stale_receipt_callback
 
 
@@ -262,3 +292,123 @@ def test_active_flow_voice_stays_in_flow():
     app = build_application()
     _activate(study_conv_handler, study_mod.SUBJECT)
     assert _first_handler(app, _voice_update(MANOJ)) is study_conv_handler
+
+
+# ---------------------------------------------------------------------------
+# Phase 1b states: every new screen must claim text and voice itself, or a
+# greeting typed mid-flow would open Home behind the user's back (plan §8.5).
+# ---------------------------------------------------------------------------
+_PHASE1B_STATES = [
+    "QUICK_CONFIRM",
+    "DEFAULT_MENU",
+    "DEFAULT_AMOUNT",
+    "DEFAULT_CONFIRM",
+    "CURRENT_VALUES_REVIEW",
+]
+
+
+@pytest.mark.parametrize("state_name", _PHASE1B_STATES)
+@pytest.mark.parametrize("text", ["Meal", "hi", "repeat", "banana"])
+def test_phase1b_states_claim_all_text(state_name, text):
+    app = build_application()
+    _activate(diet_conv_handler, getattr(diet_mod, state_name))
+    assert _first_handler(app, _text_update(MANOJ, text)) is diet_conv_handler
+
+
+@pytest.mark.parametrize("state_name", _PHASE1B_STATES)
+def test_phase1b_states_claim_voice_without_downloading(state_name):
+    app = build_application()
+    _activate(diet_conv_handler, getattr(diet_mod, state_name))
+    assert _first_handler(app, _voice_update(MANOJ)) is diet_conv_handler
+
+
+@pytest.mark.parametrize(
+    "state_name,data",
+    [
+        ("QUICK_CONFIRM", f"dq_log_{_O}_{_R}"),
+        ("QUICK_CONFIRM", f"dq_default_{_O}_{_R}"),
+        ("QUICK_CONFIRM", f"dq_amount_{_O}_{_R}"),
+        ("QUICK_CONFIRM", f"dq_cancel_{_O}_{_R}"),
+        ("DEFAULT_MENU", f"dd_use_{_O}_{_R}"),
+        ("DEFAULT_MENU", f"dd_edit_{_O}_{_R}"),
+        ("DEFAULT_MENU", f"dd_clear_{_O}_{_R}"),
+        ("DEFAULT_MENU", f"dd_back_{_O}_{_R}"),
+        ("DEFAULT_CONFIRM", f"dd_save_{_O}_{_R}"),
+        ("DEFAULT_CONFIRM", f"dd_reenter_{_O}_{_R}"),
+        ("DEFAULT_CONFIRM", f"dd_cancel_{_O}_{_R}"),
+        ("CURRENT_VALUES_REVIEW", f"cv_keep_{_O}_{_R}_{to_base36(3)}"),
+        ("CURRENT_VALUES_REVIEW", f"cv_remove_{_O}_{_R}_{to_base36(3)}"),
+        ("CURRENT_VALUES_REVIEW", f"cv_save_{_O}_{_R}"),
+        ("CURRENT_VALUES_REVIEW", f"cv_cancel_{_O}_{_R}"),
+        ("FOOD_CHOICE", f"dmanage_{_O}_{_R}_f_{to_base36(5)}"),
+        ("FOOD_CHOICE", f"dpage_{_O}_{to_base36(2)}"),
+        ("FOOD_CHOICE", f"dchangemeal_{_O}"),
+        ("CONFIRM_ITEM", f"dadd_{_O}_{_R}"),
+        ("CONFIRM_ITEM", f"dsave_{_O}_{_R}"),
+        ("CONFIRM_ITEM", f"dqty_{_O}_{_R}_{to_base36(0)}"),
+        ("CONFIRM_ITEM", f"dedit_{_O}_{_R}_{to_base36(0)}"),
+        ("CONFIRM_ITEM", f"dremove_{_O}_{_R}_{to_base36(0)}"),
+    ],
+)
+def test_phase1b_callbacks_reach_their_live_state_handler(state_name, data):
+    app = build_application()
+    _activate(diet_conv_handler, getattr(diet_mod, state_name))
+    assert _first_handler(app, _callback_update(MANOJ, data)) is diet_conv_handler
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        f"dq_log_{_O}_{_R}",
+        f"dd_save_{_O}_{_R}",
+        f"cv_save_{_O}_{_R}",
+        f"dqty_{_O}_{_R}_{to_base36(0)}",
+    ],
+)
+def test_phase1b_callbacks_after_the_flow_ends_are_retired_inertly(data):
+    """No active conversation: the global stale handler answers, never mutates."""
+    app = build_application()
+    handler = _first_handler(app, _callback_update(MANOJ, data))
+    assert handler.callback is stale_phase1_diet_callback
+
+
+def test_every_emitted_callback_fits_telegram_with_max_ids():
+    """64 bytes is a hard Telegram limit; base-36 must keep us well under it."""
+    from telegram import InlineKeyboardMarkup
+
+    from bot import keyboards
+
+    big = 2**63 - 1  # the largest signed 64-bit id Telegram could ever send
+    items = [
+        {"display_name": "x", "source_type": "food", "source_id": big}
+    ] * 20
+    proposals = [
+        SimpleNamespace(source_child_id=big, decision="unresolved")
+        for _ in range(5)
+    ]
+    markups: list[InlineKeyboardMarkup] = [
+        keyboards.meal_receipt_keyboard(big, big, can_use_current=True),
+        keyboards.quick_confirm_keyboard(big, big, can_set_default=True),
+        keyboards.default_menu_keyboard(
+            big, big, has_default=True, needs_repair=True
+        ),
+        keyboards.default_confirm_keyboard(big, big),
+        keyboards.current_values_keyboard(big, big, proposals, can_save=True),
+        keyboards.diet_save_keyboard(
+            big, phase1_enabled=True, revision=big, items=items
+        ),
+        keyboards.food_choice_keyboard(
+            big,
+            [{"source_type": "food", "id": big, "name": "x"}] * 30,
+            manage=True,
+            revision=big,
+            paginate=True,
+            change_meal=True,
+        ),
+    ]
+    for markup in markups:
+        for row in markup.inline_keyboard:
+            for button in row:
+                assert len(button.callback_data.encode("utf-8")) < 64, (
+                    button.callback_data
+                )

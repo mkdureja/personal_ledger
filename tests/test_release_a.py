@@ -17,6 +17,7 @@ from telegram import ReplyKeyboardRemove
 from telegram.constants import ChatType
 
 from bot import config
+from bot.callback_data import to_base36
 from bot.config import ALLOWED_USER_IDS
 from bot.handlers import diet, home
 from bot.main import build_application
@@ -120,7 +121,7 @@ async def test_show_home_never_sends_bar_in_remove_mode(monkeypatch):
 
 async def test_stale_receipt_synchronizes_removal():
     query = SimpleNamespace(
-        data=f"mr_undo_{diet.to_base36(UID)}_{diet.to_base36(7)}",
+        data=f"mr_undo_{to_base36(UID)}_{to_base36(7)}",
         message=SimpleNamespace(reply_text=AsyncMock()),
         answer=AsyncMock(),
         edit_message_reply_markup=AsyncMock(),

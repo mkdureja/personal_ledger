@@ -159,3 +159,67 @@ sent. `test_release_a.py` proves these synchronization paths in CI.
 
 `/keyboard hide` is momentary: the bar may reappear on the next eligible Home
 response. There is no durable per-user hide preference on v8.
+
+### Release B fast mutations
+
+Enabling `PHASE1_ENABLED_USER_IDS` turns on the whole fast-logging surface.
+Schema stays at `user_version = 8` throughout. What to check when smoke-testing:
+
+**Repeat and receipts**
+
+- **Repeat** re-logs the most recent meal as an *exact copy* — same meal type,
+  description, calories, macros, and item snapshots, with only a new id and
+  timestamp. Nothing is re-resolved, so editing a food afterwards never changes
+  what Repeat writes. Repeating with no history answers `Nothing to repeat yet`
+  and writes nothing.
+- Every fast log renders a **receipt**: the exact meal id plus `↩️ Undo`,
+  `🍽️ Log another`, and — when the meal has a structured item —
+  `🔄 Log again at today's values`. Receipts are durable: an older receipt keeps
+  working after newer meals are logged, and its `Undo` removes *that* meal.
+- **Undo** works during another guided flow (it only touches a completed meal);
+  the other two do not, because they open a flow. Undo is refused past 24h and
+  is a harmless no-op when pressed twice.
+
+**Quick mode and "usual" amounts**
+
+- Tapping 🍽️ **Meal** opens a one-item Quick log. A food with a saved *usual*
+  amount logs in a single tap; otherwise the user picks an amount and gets
+  `Log it` / `Log + set as my usual` / `Change amount` / `Cancel`.
+- `Log + set as my usual` commits the meal and the preference in one
+  transaction — you never get one without the other.
+- ⚙️ beside a saved item opens its default menu (set/change/repair/remove). A
+  default that no longer resolves (portion renamed, food archived) is reported
+  as needing repair; it is never silently ignored or approximated.
+- `/suggestions reset` still clears only pins/hides. Saved usual amounts survive.
+- Shared catalog items have no usual amount and no pin/hide on v8.
+
+**Log again at today's values**
+
+- Re-prices each structured item from the live source and shows old → new per
+  item and in total, then writes only on confirmation.
+- If an item cannot be re-priced, the user must choose `Keep as logged` or
+  `Drop` for it; `Log it` does not appear until every issue is answered and at
+  least one item remains.
+- If the underlying values change between preview and Save, the save is refused
+  and the fresh preview is shown for another confirmation.
+
+**Picker**
+
+- Suggestions paginate at 8 per page, and include shared-catalog foods the user
+  has actually logged before (never the whole catalog — that stays behind
+  Search). With `/suggestions off` the list is the user's own foods/recipes
+  alphabetically, with no learned catalog history.
+- `🕒 Change meal type` reopens the meal picker without disturbing the draft.
+- In the Builder, each drafted item has `✍️ amount`, `🔁 replace`, and `🗑`. Any
+  draft change bumps the UI revision, so a keyboard left on screen stops acting.
+
+**Replay and rollback**
+
+- Redelivered updates (the bot restarts with `drop_pending_updates=False`) replay
+  their recorded outcome instead of logging a second meal — including "there was
+  nothing to repeat", "that repeat was already undone", and the Quick/current
+  variants, which each carry their own operation key.
+- After a rollback to `PHASE1_ENABLED_USER_IDS=`, receipt and Phase 1 buttons
+  stop mutating: they answer, retire themselves, and point at the commands.
+  Meals already written stay written. The Builder falls back to its pre-Phase-1
+  decimal keyboard and remains fully saveable.

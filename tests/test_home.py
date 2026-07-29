@@ -18,6 +18,7 @@ from telegram.ext import ConversationHandler
 from bot.config import ALLOWED_USER_IDS
 from bot.handlers import diet, home
 from bot.handlers.common import activate_conversation, active_conversation_flow
+from bot.meal_models import RepeatStatus
 
 UID = next(iter(ALLOWED_USER_IDS))
 
@@ -152,13 +153,18 @@ async def test_router_enabled_greeting_shows_home(monkeypatch):
     assert update.effective_message.reply_text.await_count == 2
 
 
-async def test_router_enabled_repeat_is_no_op_message(monkeypatch):
+async def test_router_enabled_repeat_reaches_the_repeat_mutation(monkeypatch):
+    # Routing only: the exact-copy behavior lives in tests/test_repeat_undo.py.
     _enable_phase1(monkeypatch)
+    db = _snapshot_db()
+    db.ensure_user = AsyncMock()
+    db.repeat_last_meal = AsyncMock(
+        return_value=SimpleNamespace(status=RepeatStatus.EMPTY, receipt=None)
+    )
     update = _update("repeat")
-    await home.home_text_router(update, _context(_snapshot_db()))
-    reply = update.effective_message.reply_text
-    reply.assert_awaited_once()
-    assert "Repeat isn't enabled" in reply.call_args.args[0]
+    await home.home_text_router(update, _context(db))
+    db.repeat_last_meal.assert_awaited_once()
+    assert "Nothing to repeat" in update.effective_message.reply_text.call_args.args[0]
 
 
 async def test_router_enabled_meal_is_defensive_diet_guidance(monkeypatch):
@@ -250,6 +256,8 @@ async def test_diet_home_entry_enabled_opens_quick_food_choice(monkeypatch):
         ensure_user=AsyncMock(),
         list_foods=AsyncMock(return_value=[]),
         list_recipes=AsyncMock(return_value=[]),
+        get_suggestions_enabled=AsyncMock(return_value=True),
+        get_user_catalog_history=AsyncMock(return_value=[]),
     )
     context = _context(db)
     result = await diet.diet_home_entry(update, context)

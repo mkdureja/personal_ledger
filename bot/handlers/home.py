@@ -27,15 +27,18 @@ from ..keyboards import (
     main_menu_keyboard,
     reply_keyboard_remove,
 )
+from ..meal_models import RepeatStatus
 from .common import (
     GREETINGS,
     HOME_ACTIONS,
     HOME_WORDS,
     active_conversation_flow,
     escape_html,
+    mutation_source,
     normalize_control_text,
     reply_html,
 )
+from .receipts import send_meal_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +119,58 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Repeat — the one-tap exact re-log
+# ---------------------------------------------------------------------------
+async def repeat_last_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Re-log the user's most recent meal exactly, then show its receipt.
+
+    No confirmation and no live re-resolution: what was logged before is what is
+    logged again (plan §10.2). Callers have already established that no guided
+    flow is active and that Phase 1 is enabled; both are re-checked here because
+    this is the last point before a ledger write.
+    """
+    message = update.effective_message
+    user = update.effective_user
+    if active_conversation_flow(context) is not None:
+        await message.reply_text(_ACTIVE_FLOW_HINT)
+        return
+    if not phase1_enabled_for(user.id):
+        await _sync_keyboard(update, _MENU_GUIDANCE, user.id)
+        return
+
+    db = context.bot_data["db"]
+    try:
+        await db.ensure_user(user.id, user.username, user.first_name)
+        result = await db.repeat_last_meal(user.id, mutation_source(update))
+    except Exception:
+        # A failed tap must read as a failed tap. Report it in bounded terms and
+        # let the error handler log the detail; nothing was committed.
+        logger.exception("Repeat failed for user %s", user.id)
+        await message.reply_text("⚠️ Couldn't repeat that meal. Try again.")
+        return
+
+    if result.status is RepeatStatus.EMPTY:
+        await _sync_keyboard(
+            update, "🔁 Nothing to repeat yet — log a meal first.", user.id
+        )
+        return
+    if result.status is RepeatStatus.REPLAYED_REMOVED:
+        await _sync_keyboard(
+            update,
+            "↩️ That repeated meal was already undone; nothing changed.",
+            user.id,
+        )
+        return
+
+    headline = (
+        "🔁 <b>Repeated</b>"
+        if result.status is RepeatStatus.CREATED
+        else "🔁 <b>Already repeated</b>"
+    )
+    await send_meal_receipt(message, result.receipt, headline)
+
+
+# ---------------------------------------------------------------------------
 # Late text router (registered after every ConversationHandler + command)
 # ---------------------------------------------------------------------------
 async def home_text_router(
@@ -151,11 +206,7 @@ async def home_text_router(
         return
 
     if normalized == "repeat":
-        # Exact Repeat is a Release B (B1) mutation; the routing lands here now
-        # but performs no DB write until that unit ships.
-        await _sync_keyboard(
-            update, "🔁 Fast Repeat isn't enabled in this build yet.", uid
-        )
+        await repeat_last_meal(update, context)
     elif normalized == "describe":
         await _sync_keyboard(update, "📝 Describe isn't enabled yet.", uid)
     elif normalized == "meal":

@@ -141,6 +141,7 @@ async def test_meal_selection_still_offers_search_when_no_saved_items():
     db = SimpleNamespace(
         list_foods=AsyncMock(return_value=[]),
         list_recipes=AsyncMock(return_value=[]),
+        get_suggestions_enabled=AsyncMock(return_value=False),
     )
     query = _query(f"meal_{USER}_lunch", message_id=100)
     context = _context(db, {"diet_meal_message_id": 100})

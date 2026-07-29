@@ -1,8 +1,9 @@
 # Phase 1a + Phase 1b - Final Gemini Execution Plan
 
-**Status:** Final and ready for Gemini execution; execute in the order below  
+**Status:** ✅ **Executed — all units (0, A1-A3, B1-B5) are built.** Kept as the
+as-built reference for this surface; it is not pending work.  
 **Project:** Ledger Telegram bot  
-**Plan date:** 2026-07-28  
+**Plan date:** 2026-07-28 (executed 2026-07-29/30)  
 **Code baseline:** `hardening/review-fixes` at `a0a7204`  
 **Database before and after this phase:** v8  
 **Schema migrations in this phase:** none  
@@ -11,6 +12,14 @@ This document supersedes the earlier partial `impl_plan_gemini.md`. It is the co
 execution contract for Phase 1a and Phase 1b. Do not substitute a different handler
 layout, transaction boundary, callback shape, feature flag, or product behavior without
 updating `implementation_plan.md` and obtaining review.
+
+Four requirements here were built differently on purpose; see
+`implementation_plan.md` §0.1 for the reasoning. In short: the current-value digest
+(§10.5) is a readable field signature rather than SHA-256 canonical JSON, the §13.9
+performance gate and the multi-connection isolation *test harness* were dropped, and
+Repeat/Undo/current-value orchestration sits in `bot/database.py` +
+`bot/handlers/receipts.py` instead of `bot/services/meal_logging.py`. Everything else
+below matches the code.
 
 ## 1. Required outcome
 

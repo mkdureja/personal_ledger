@@ -24,12 +24,12 @@ from telegram.ext import (
     filters,
 )
 
-from ..callback_data import parse_base36, to_base36
+from ..callback_data import parse_base36
 from .common import (
     AUTH_FILTER,
-    CallbackResult,
     DIET_NONMEAL_CONTROL_FILTER,
     MEAL_LABEL_FILTER,
+    active_conversation_flow,
     active_conversation_hint,
     active_flow_control_interceptor,
     activate_conversation,
@@ -45,6 +45,11 @@ from .common import (
     timeout_handler,
     voice_not_enabled_interceptor,
 )
+from .receipts import (
+    RECEIPT_CURRENT_PATTERN,
+    RECEIPT_MORE_PATTERN,
+    send_meal_receipt,
+)
 from .catalog import (
     resolve_catalog_diet_entry,
     resolve_catalog_food_entry,
@@ -52,16 +57,27 @@ from .catalog import (
     resolve_recipe_diet_entry,
 )
 from ..keyboards import (
+    current_values_keyboard,
+    default_confirm_keyboard,
+    default_menu_keyboard,
     diet_save_keyboard,
     food_choice_keyboard,
     food_portion_keyboard,
     log_another_keyboard,
     meal_type_keyboard,
+    quick_confirm_keyboard,
     recipe_quantity_keyboard,
     reply_keyboard_remove,
 )
 from ..config import CONVERSATION_TIMEOUT, now_local, phase1_enabled_for
-from ..meal_models import DietEntryMode
+from ..meal_models import (
+    CurrentCommitStatus,
+    CurrentValueDecision,
+    CurrentValueIssueCode,
+    DefaultQuantity,
+    DietEntryMode,
+    QuickMealStatus,
+)
 from ..services.meal_logging import infer_meal_type
 from ..nutrition import MAX_LOG_CALORIES, MAX_LOG_MACRO_GRAMS, NutritionError
 from .. import suggestions
@@ -81,7 +97,14 @@ logger = logging.getLogger(__name__)
     CONFIRM_ITEM,
     LOG_ANOTHER,
     SEARCH,
-) = range(10)
+    # Phase 1b (appended, never renumbered — a stored state int must keep its
+    # meaning across a restart).
+    QUICK_CONFIRM,
+    DEFAULT_MENU,
+    DEFAULT_AMOUNT,
+    DEFAULT_CONFIRM,
+    CURRENT_VALUES_REVIEW,
+) = range(15)
 
 # Valid meal types
 VALID_MEALS = {"breakfast", "lunch", "dinner", "snack"}
@@ -127,17 +150,17 @@ def _parse_ts(value: object) -> datetime | None:
 async def _ranked_choices(
     context: ContextTypes.DEFAULT_TYPE, uid: int, meal_type: str
 ) -> list[dict]:
-    """Saved foods/recipes as ranked, hidden-filtered choice dicts for the list.
+    """Saved foods/recipes/known catalog items as ranked choice dicts.
 
-    With personalization off, returns the plain alphabetical union (foods then
-    recipes) unchanged. With it on, ranks by the user's completed history, pins,
-    and recency, and drops hidden sources.
+    With personalization off, returns the plain alphabetical union of the user's
+    *own* foods and recipes — no learned catalog history, no frequency, no
+    recency, because that is what "off" means. With it on, ranks everything the
+    user has actually used by meal-type frequency, recency, and overall use,
+    applies pins, and drops hidden sources.
     """
     db = context.bot_data["db"]
     foods = await db.list_foods(uid)
     recipes = await db.list_recipes(uid)
-    if not foods and not recipes:
-        return []
     if not await db.get_suggestions_enabled(uid):
         return [
             {"source_type": "food", "id": f["id"], "name": f["name"]} for f in foods
@@ -146,17 +169,28 @@ async def _ranked_choices(
             for r in recipes
         ]
 
+    # A catalog food only becomes a suggestion once it appears in this user's
+    # own history; the shared catalog itself stays behind Search.
+    catalog = await db.get_user_catalog_history(uid)
+    if not foods and not recipes and not catalog:
+        return []
+
     stats = await db.get_diet_item_stats(uid, meal_type)
     prefs = await db.get_food_preferences(uid)
     now = _utc_now()
     names: dict[tuple[str, int], str] = {}
     candidates: list[suggestions.Candidate] = []
-    for source_type, rows in (("food", foods), ("recipe", recipes)):
+    for source_type, rows in (
+        ("food", foods),
+        ("recipe", recipes),
+        ("catalog", catalog),
+    ):
         for row in rows:
             key = (source_type, row["id"])
             names[key] = row["name"]
             stat = stats.get(key, {})
-            pref = prefs.get(key, {})
+            # Catalog rows have no private preference on v8.
+            pref = prefs.get(key, {}) if source_type != "catalog" else {}
             candidates.append(
                 suggestions.Candidate(
                     source_type=source_type,
@@ -546,7 +580,19 @@ async def _prompt_food_choice(
             f"{emoji} <b>{title}</b> — 🔎 search the catalog or ✍️ type what you ate:"
         )
     prompt = await _send_tap_keyboard(
-        update, context, message, prompt_text, food_choice_keyboard(uid, choices)
+        update,
+        context,
+        message,
+        prompt_text,
+        food_choice_keyboard(
+            uid,
+            choices,
+            manage=phase1_enabled_for(uid),
+            revision=context.user_data.get("diet_ui_revision", 0),
+            page=int(context.user_data.get("diet_choice_page", 0) or 0),
+            paginate=phase1_enabled_for(uid),
+            change_meal=phase1_enabled_for(uid),
+        ),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
 
@@ -764,9 +810,6 @@ async def _save_diet(
     ``freetext`` child rather than replacing it — otherwise the previously
     confirmed items would be silently dropped.
     """
-    db = context.bot_data["db"]
-    user_id = update.effective_user.id
-    meal_type = context.user_data["diet_meal_type"]
     if food_items is None:
         pending_food = context.user_data["diet_food_items"]
         if not isinstance(pending_food, str):
@@ -789,7 +832,6 @@ async def _save_diet(
         "carbs_g": carbs_g,
         "fat_g": fat_g,
     }
-    
     items = [*draft, child] if isinstance(draft, list) and draft else [child]
     return await _finish_structured_meal(update, context, items)
 
@@ -797,22 +839,36 @@ async def _save_diet(
 # ---------------------------------------------------------------------------
 # Tap-first flow: select a saved food/recipe, choose a quantity, preview, save
 # ---------------------------------------------------------------------------
+_DIET_ENTRY_KEYS = (
+    "diet_meal_type",
+    "diet_food_items",
+    "diet_calories",
+    "diet_sel_kind",
+    "diet_sel_id",
+    "diet_recent_qtys",
+    "diet_items",
+    "diet_meal_message_id",
+    "diet_ui_message_id",
+    "diet_ui_revision",
+    "diet_entry_mode",
+    "diet_choice_page",
+    # Phase 1b working data. Drafts and pending values are intentionally
+    # in-memory only: after a restart their callbacks are simply stale.
+    "diet_quick_pending_item",
+    "diet_default_source_type",
+    "diet_default_source_id",
+    "diet_pending_default",
+    "diet_current_source_meal_id",
+    "diet_current_child_ids",
+    "diet_current_decisions",
+    "diet_current_digest",
+    "diet_edit_index",
+)
+
+
 def _clear_diet_entry_data(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Drop one meal's working data while keeping the conversation active."""
-    for key in (
-        "diet_meal_type",
-        "diet_food_items",
-        "diet_calories",
-        "diet_sel_kind",
-        "diet_sel_id",
-        "diet_recent_qtys",
-        "diet_items",
-        "diet_meal_message_id",
-        "diet_ui_message_id",
-        "diet_ui_revision",
-        "diet_entry_mode",
-        "diet_choice_page",
-    ):
+    for key in _DIET_ENTRY_KEYS:
         context.user_data.pop(key, None)
 
 
@@ -881,9 +937,16 @@ async def choose_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await _remove_callback_markup(query)
         return await _reprompt_food_choice(update, context, query.message)
 
-    await _remove_callback_markup(query)
     context.user_data["diet_sel_kind"] = "food"
     context.user_data["diet_sel_id"] = food_id
+    # In Quick mode a saved "usual" makes this tap the whole interaction: the
+    # keyboard stays up until the write succeeds so a failure can be retried.
+    if _quick_mode(context, uid):
+        handled = await _try_quick_default(update, context, query, "food", food_id)
+        if handled is not None:
+            return handled
+
+    await _remove_callback_markup(query)
     portions = await db.get_food_portions(uid, food_id)
     recent = await db.get_recent_item_quantities(uid, "food", food_id)
     context.user_data["diet_recent_qtys"] = recent
@@ -923,9 +986,16 @@ async def choose_recipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await _remove_callback_markup(query)
         return await _reprompt_food_choice(update, context, query.message)
 
-    await _remove_callback_markup(query)
     context.user_data["diet_sel_kind"] = "recipe"
     context.user_data["diet_sel_id"] = recipe_id
+    if _quick_mode(context, uid):
+        handled = await _try_quick_default(
+            update, context, query, "recipe", recipe_id
+        )
+        if handled is not None:
+            return handled
+
+    await _remove_callback_markup(query)
     recent = await db.get_recent_item_quantities(uid, "recipe", recipe_id)
     context.user_data["diet_recent_qtys"] = recent
     pref = await db.get_food_preference(uid, "recipe", recipe_id) or {}
@@ -1109,7 +1179,15 @@ async def _reprompt_food_choice(
         context,
         message,
         "Pick a saved item, 🔎 search, or ✍️ type it:",
-        food_choice_keyboard(uid, choices),
+        food_choice_keyboard(
+            uid,
+            choices,
+            manage=phase1_enabled_for(uid),
+            revision=context.user_data.get("diet_ui_revision", 0),
+            page=int(context.user_data.get("diet_choice_page", 0) or 0),
+            paginate=phase1_enabled_for(uid),
+            change_meal=phase1_enabled_for(uid),
+        ),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
 
@@ -1462,6 +1540,1131 @@ async def set_hide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 1b — Quick mode and private default quantities (plan §9.3/§9.4)
+# ---------------------------------------------------------------------------
+def _quick_mode(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """Whether this draft is a Phase 1 Quick log rather than the Builder.
+
+    Quick mode is only ever set by a Phase 1 entry point, and the flag is
+    re-read here so a mid-flow rollback degrades to the Builder rather than
+    continuing to offer fast mutations.
+    """
+    return (
+        context.user_data.get("diet_entry_mode") == DietEntryMode.QUICK
+        and phase1_enabled_for(user_id)
+    )
+
+
+def _bump_revision(context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Advance the UI revision, invalidating every callback issued before now."""
+    revision = int(context.user_data.get("diet_ui_revision", 0)) + 1
+    context.user_data["diet_ui_revision"] = revision
+    return revision
+
+
+async def _consume_phase1_tap(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    owner_index: int,
+    revision_index: int | None,
+) -> object | None:
+    """Answer and validate a base-36 tap, or ``None`` to ignore it.
+
+    Checks owner and the message we last sent — the two things that make a tap
+    "the live keyboard, pressed by its owner" — plus the revision for families
+    that carry one. ``revision_index=None`` is for compact payloads (paging)
+    whose slot is taken by another token; the tracked message id alone retires
+    their older keyboards. Anything else is answered as expired and its markup
+    retired, so a queued tap from a superseded screen cannot act on newer state.
+
+    Base-36 only: a Phase 1 payload must never reach the legacy decimal parser,
+    which would read the same characters as a different number (plan §9.2).
+    """
+    query = update.callback_query
+    parts = (query.data or "").split("_")
+    try:
+        owner_id = parse_base36(parts[owner_index])
+        revision = (
+            None if revision_index is None else parse_base36(parts[revision_index])
+        )
+    except (IndexError, ValueError):
+        await query.answer("This menu has expired.", show_alert=True)
+        await _remove_callback_markup(query)
+        return None
+    if owner_id != update.effective_user.id:
+        await query.answer("This menu belongs to another user.", show_alert=True)
+        return None
+    expected_rev = context.user_data.get("diet_ui_revision")
+    expected_msg = context.user_data.get("diet_ui_message_id")
+    actual_msg = getattr(query.message, "message_id", None)
+    stale_revision = revision is not None and (
+        expected_rev is None or revision != expected_rev
+    )
+    if stale_revision or expected_msg is None or actual_msg != expected_msg:
+        await query.answer("This menu has expired.", show_alert=True)
+        await _remove_callback_markup(query)
+        return None
+    await query.answer()
+    return query
+
+
+def _quantity_text(amount: object, unit: object) -> str:
+    """Render a stored amount/unit pair for a message."""
+    return f"{_format_grams(float(amount))} {escape_html(unit)}"
+
+
+async def _finish_with_receipt(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    receipt: object,
+    headline: str,
+) -> int:
+    """End the Diet flow and leave the durable receipt behind."""
+    finish_conversation(update, context, "diet")
+    try:
+        await send_meal_receipt(message, receipt, headline)
+    except TelegramError:
+        logger.warning("Could not deliver quick-log receipt", exc_info=True)
+    return ConversationHandler.END
+
+
+async def _commit_quick_meal(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    query: object,
+    kind: str,
+    source_id: int,
+    *,
+    quantity,
+    set_as_default: bool,
+    retry_state: int,
+) -> int:
+    """Log one single-item meal and route every outcome to the right screen.
+
+    Deliberately does not retire the source keyboard first: if the write fails,
+    the same tap must still be available to retry. A commit is the point of no
+    return, and only then is the keyboard replaced by a receipt.
+    """
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    meal_type = context.user_data.get("diet_meal_type")
+    if not isinstance(meal_type, str):
+        meal_type = infer_meal_type(now_local().time())
+    if not phase1_enabled_for(uid):
+        # Flag-off mid-flow: never mutate through a Phase 1 path.
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+
+    try:
+        result = await db.create_quick_meal(
+            uid,
+            meal_type,
+            kind,
+            source_id,
+            quantity=quantity,
+            set_as_default=set_as_default,
+            source=mutation_source(update),
+        )
+    except NutritionError as exc:
+        await query.answer(str(exc)[:190], show_alert=True)
+        return retry_state
+    except Exception:
+        logger.warning("Quick meal write failed; keeping controls", exc_info=True)
+        await query.answer("Couldn't log that — try again.", show_alert=True)
+        return retry_state
+
+    status = result.status
+    if status in (QuickMealStatus.CREATED, QuickMealStatus.REPLAYED):
+        await _remove_callback_markup(query)
+        headline = (
+            "✅ <b>Logged</b>"
+            if status is QuickMealStatus.CREATED
+            else "✅ <b>Already logged</b>"
+        )
+        if set_as_default and status is QuickMealStatus.CREATED:
+            headline = "✅ <b>Logged</b> · ⭐ saved as your usual"
+        return await _finish_with_receipt(
+            update, context, query.message, result.receipt, headline
+        )
+    if status is QuickMealStatus.REPLAYED_REMOVED:
+        await _remove_callback_markup(query)
+        finish_conversation(update, context, "diet")
+        try:
+            await query.message.reply_text(
+                "↩️ That entry was already undone; nothing changed."
+            )
+        except TelegramError:
+            logger.warning("Could not report undone quick log", exc_info=True)
+        return ConversationHandler.END
+    if status is QuickMealStatus.SOURCE_UNAVAILABLE:
+        await query.answer("That item is no longer available.", show_alert=True)
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    if status is QuickMealStatus.DEFAULT_INVALID:
+        await query.answer("Your saved amount no longer works.", show_alert=True)
+        await _remove_callback_markup(query)
+        return await _open_default_menu(
+            update, context, query.message, kind, source_id
+        )
+    if status is QuickMealStatus.QUANTITY_INVALID:
+        await query.answer("That amount no longer works.", show_alert=True)
+        await _remove_callback_markup(query)
+        return await _rerender_portion_choice(update, context, query.message)
+    # QUANTITY_REQUIRED: the default vanished between the read and the write.
+    await _remove_callback_markup(query)
+    return await _rerender_portion_choice(update, context, query.message)
+
+
+async def _try_quick_default(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    query: object,
+    kind: str,
+    source_id: int,
+) -> int | None:
+    """One-tap log when this source has a usable "usual" amount.
+
+    Returns the next state when the tap was fully handled, or ``None`` to fall
+    through to the ordinary quantity screen. A half-stored default is treated as
+    a repair prompt rather than an absent one, so a broken preference surfaces
+    instead of silently doing nothing.
+    """
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    if await db.has_partial_default(uid, kind, source_id):
+        await _remove_callback_markup(query)
+        return await _open_default_menu(
+            update, context, query.message, kind, source_id
+        )
+    if await db.get_default_quantity(uid, kind, source_id) is None:
+        return None
+    # Pass no quantity: the repository re-reads the stored pair inside its own
+    # transaction, which is both fresher and what makes a stale default report
+    # as DEFAULT_INVALID (repair it) rather than as a bad amount the user typed.
+    return await _commit_quick_meal(
+        update,
+        context,
+        query,
+        kind,
+        source_id,
+        quantity=None,
+        set_as_default=False,
+        retry_state=FOOD_CHOICE,
+    )
+
+
+async def _show_quick_confirm(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    entry: object,
+) -> int:
+    """Confirm one resolved Quick item, with the option to make it the usual."""
+    kind = context.user_data.get("diet_sel_kind")
+    source_id = context.user_data.get("diet_sel_id")
+    item = entry.as_item()
+    context.user_data["diet_quick_pending_item"] = {
+        "source_type": kind,
+        "source_id": source_id,
+        "entered_amount": item["entered_amount"],
+        "entered_unit": item["entered_unit"],
+        "display_name": item["display_name"],
+    }
+    revision = _bump_revision(context)
+    meal_type = context.user_data.get("diet_meal_type", "")
+    cal = item.get("calories")
+    cal_text = f"{cal} kcal" if cal is not None else "kcal ?"
+    text = (
+        f"👀 <b>{escape_html(str(meal_type).title())}</b>\n"
+        f"{escape_html(item['display_name'])} — {cal_text}"
+    )
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        message,
+        text,
+        quick_confirm_keyboard(
+            update.effective_user.id,
+            revision,
+            can_set_default=(
+                kind in ("food", "recipe") and item["entered_amount"] is not None
+            ),
+        ),
+    )
+    return QUICK_CONFIRM if prompt is not None else ConversationHandler.END
+
+
+def _pending_quantity(context: ContextTypes.DEFAULT_TYPE):
+    """The confirmed Quick item as a (kind, id, DefaultQuantity) triple."""
+    pending = context.user_data.get("diet_quick_pending_item")
+    if not isinstance(pending, dict):
+        return None
+    kind = pending.get("source_type")
+    source_id = pending.get("source_id")
+    amount = pending.get("entered_amount")
+    unit = pending.get("entered_unit")
+    if kind not in ("food", "recipe", "catalog") or source_id is None:
+        return None
+    if amount is None or unit is None:
+        return None
+    return kind, int(source_id), DefaultQuantity(amount=float(amount), unit=str(unit))
+
+
+async def _quick_commit_pending(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, *, set_as_default: bool
+) -> int:
+    """Shared body of the Quick ``Log`` and ``Log + set as usual`` buttons."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return QUICK_CONFIRM
+    pending = _pending_quantity(context)
+    if pending is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    kind, source_id, quantity = pending
+    if set_as_default and kind == "catalog":
+        # Catalog rows carry no private preference; log without one.
+        set_as_default = False
+    return await _commit_quick_meal(
+        update,
+        context,
+        query,
+        kind,
+        source_id,
+        quantity=quantity,
+        set_as_default=set_as_default,
+        retry_state=QUICK_CONFIRM,
+    )
+
+
+@authorized_callback
+async def quick_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """``Log it`` on the Quick confirmation."""
+    return await _quick_commit_pending(update, context, set_as_default=False)
+
+
+@authorized_callback
+async def quick_log_and_default(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """``Log + set as my usual``: one atomic meal-plus-preference write."""
+    return await _quick_commit_pending(update, context, set_as_default=True)
+
+
+@authorized_callback
+async def quick_change_amount(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Discard the pending Quick item and reopen its quantity screen."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return QUICK_CONFIRM
+    context.user_data.pop("diet_quick_pending_item", None)
+    await _remove_callback_markup(query)
+    return await _rerender_portion_choice(update, context, query.message)
+
+
+@authorized_callback
+async def quick_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Abandon the Quick item without logging anything."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return QUICK_CONFIRM
+    await _remove_callback_markup(query)
+    finish_conversation(update, context, "diet")
+    try:
+        await query.message.reply_text("✖️ Cancelled — nothing was logged.")
+    except TelegramError:
+        logger.warning("Could not deliver quick cancellation", exc_info=True)
+    return ConversationHandler.END
+
+
+# --- Default management ----------------------------------------------------
+async def _open_default_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    kind: str,
+    source_id: int,
+) -> int:
+    """Show one source's "usual" amount and what can be done about it."""
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    name = await _source_name(db, uid, kind, source_id)
+    if name is None:
+        return await _reprompt_food_choice(update, context, message)
+
+    context.user_data["diet_default_source_type"] = kind
+    context.user_data["diet_default_source_id"] = source_id
+    context.user_data.pop("diet_pending_default", None)
+    default = await db.get_default_quantity(uid, kind, source_id)
+    needs_repair = await db.has_partial_default(uid, kind, source_id)
+    if default is not None:
+        # A stored pair can still stop resolving (a portion was renamed, a
+        # recipe's yield unit changed); say so rather than logging it later.
+        try:
+            await db.resolve_quantity(
+                uid,
+                kind,
+                source_id,
+                [f"{default.amount:g}", default.unit],
+            )
+        except (NutritionError, LookupError):
+            needs_repair = True
+
+    if needs_repair:
+        body = "⚠️ Your saved amount no longer works — repair or remove it."
+    elif default is not None:
+        body = f"⭐ Your usual: <b>{_quantity_text(default.amount, default.unit)}</b>"
+    else:
+        body = "No usual amount saved yet."
+    revision = _bump_revision(context)
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        message,
+        f"⚙️ <b>{escape_html(name)}</b>\n{body}",
+        default_menu_keyboard(
+            uid,
+            revision,
+            has_default=default is not None,
+            needs_repair=needs_repair,
+        ),
+    )
+    return DEFAULT_MENU if prompt is not None else ConversationHandler.END
+
+
+async def _source_name(db, uid: int, kind: str, source_id: int) -> str | None:
+    """Display name of one active, owner-scoped source, or ``None``."""
+    if kind == "food":
+        row = await db.get_food_by_id(uid, source_id)
+    elif kind == "recipe":
+        row = await db.get_recipe_by_id(uid, source_id)
+    else:
+        return None
+    return str(row["name"]) if row is not None else None
+
+
+def _default_target(context: ContextTypes.DEFAULT_TYPE):
+    """The (kind, id) the default screens are acting on, if still coherent."""
+    kind = context.user_data.get("diet_default_source_type")
+    source_id = context.user_data.get("diet_default_source_id")
+    if kind not in ("food", "recipe") or source_id is None:
+        return None
+    return kind, int(source_id)
+
+
+@authorized_callback
+async def manage_default(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """The ⚙️ button beside a saved item: open its default menu, log nothing."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=2
+    )
+    if query is None:
+        return FOOD_CHOICE
+    parts = (query.data or "").split("_")
+    try:
+        kind = {"f": "food", "r": "recipe"}[parts[3]]
+        source_id = parse_base36(parts[4])
+    except (IndexError, KeyError, ValueError):
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    await _remove_callback_markup(query)
+    return await _open_default_menu(update, context, query.message, kind, source_id)
+
+
+@authorized_callback
+async def default_use_other(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Leave management mode and pick an amount, without touching the default."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return DEFAULT_MENU
+    target = _default_target(context)
+    if target is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    kind, source_id = target
+    await _remove_callback_markup(query)
+    context.user_data["diet_sel_kind"] = kind
+    context.user_data["diet_sel_id"] = source_id
+    db = context.bot_data["db"]
+    context.user_data["diet_recent_qtys"] = await db.get_recent_item_quantities(
+        update.effective_user.id, kind, source_id
+    )
+    return await _rerender_portion_choice(update, context, query.message)
+
+
+@authorized_callback
+async def default_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Ask for the amount that should become (or repair) the usual."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return DEFAULT_MENU
+    target = _default_target(context)
+    if target is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    kind, source_id = target
+    db = context.bot_data["db"]
+    name = await _source_name(db, update.effective_user.id, kind, source_id)
+    if name is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    await _remove_callback_markup(query)
+    context.user_data.pop("diet_ui_message_id", None)
+    try:
+        await reply_html(
+            query.message,
+            f"⭐ How much <b>{escape_html(name)}</b> is your usual? "
+            "e.g. <code>2 bowl</code> or <code>150 g</code>.",
+        )
+    except TelegramError:
+        logger.warning("Could not deliver default-amount prompt", exc_info=True)
+        finish_conversation(update, context, "diet")
+        return ConversationHandler.END
+    return DEFAULT_AMOUNT
+
+
+@authorized_callback
+async def default_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Remove the stored usual, including one that no longer resolves."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return DEFAULT_MENU
+    target = _default_target(context)
+    if target is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    kind, source_id = target
+    db = context.bot_data["db"]
+    await db.clear_default_quantity(update.effective_user.id, kind, source_id)
+    await _remove_callback_markup(query)
+    return await _open_default_menu(update, context, query.message, kind, source_id)
+
+
+@authorized_callback
+async def default_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Return to the picker with the draft untouched."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return DEFAULT_MENU
+    await _remove_callback_markup(query)
+    context.user_data.pop("diet_default_source_type", None)
+    context.user_data.pop("diet_default_source_id", None)
+    context.user_data.pop("diet_pending_default", None)
+    return await _reprompt_food_choice(update, context, query.message)
+
+
+async def receive_default_amount(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Resolve a typed default against the live source, then ask to confirm."""
+    target = _default_target(context)
+    if target is None:
+        finish_conversation(update, context, "diet")
+        await update.message.reply_text(
+            "⚠️ Lost track of that item. Start again with /diet."
+        )
+        return ConversationHandler.END
+    kind, source_id = target
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    tokens = update.message.text.split()
+    try:
+        entry = await db.resolve_quantity(uid, kind, source_id, tokens)
+    except LookupError:
+        finish_conversation(update, context, "diet")
+        await update.message.reply_text(
+            "⚠️ That item is no longer available. Start again with /diet."
+        )
+        return ConversationHandler.END
+    except NutritionError as exc:
+        await update.message.reply_text(
+            f"❌ {exc}\nTry again, e.g. 2 bowl or 150 g."
+        )
+        return DEFAULT_AMOUNT
+
+    item = entry.as_item()
+    context.user_data["diet_pending_default"] = {
+        "entered_amount": item["entered_amount"],
+        "entered_unit": item["entered_unit"],
+    }
+    revision = _bump_revision(context)
+    cal = item.get("calories")
+    cal_text = f" — {cal} kcal" if cal is not None else ""
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        update.effective_message,
+        f"⭐ Save <b>{_quantity_text(item['entered_amount'], item['entered_unit'])}"
+        f"</b> as your usual?{escape_html(cal_text)}",
+        default_confirm_keyboard(uid, revision),
+    )
+    return DEFAULT_CONFIRM if prompt is not None else ConversationHandler.END
+
+
+@authorized_callback
+async def default_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Store the confirmed pair. Never a toggle: it writes an explicit value."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return DEFAULT_CONFIRM
+    target = _default_target(context)
+    pending = context.user_data.get("diet_pending_default")
+    if target is None or not isinstance(pending, dict):
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    kind, source_id = target
+    db = context.bot_data["db"]
+    try:
+        await db.set_default_quantity(
+            update.effective_user.id,
+            kind,
+            source_id,
+            DefaultQuantity(
+                amount=float(pending["entered_amount"]),
+                unit=str(pending["entered_unit"]),
+            ),
+        )
+    except (NutritionError, ValueError) as exc:
+        await query.answer(str(exc)[:190], show_alert=True)
+        await _remove_callback_markup(query)
+        return await _open_default_menu(
+            update, context, query.message, kind, source_id
+        )
+    context.user_data.pop("diet_pending_default", None)
+    await _remove_callback_markup(query)
+    return await _open_default_menu(update, context, query.message, kind, source_id)
+
+
+@authorized_callback
+async def default_reenter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Discard only the pending pair and ask again."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return DEFAULT_CONFIRM
+    context.user_data.pop("diet_pending_default", None)
+    await _remove_callback_markup(query)
+    context.user_data.pop("diet_ui_message_id", None)
+    try:
+        await query.message.reply_text("✍️ Enter the amount again, e.g. 2 bowl.")
+    except TelegramError:
+        logger.warning("Could not deliver default re-entry prompt", exc_info=True)
+        finish_conversation(update, context, "diet")
+        return ConversationHandler.END
+    return DEFAULT_AMOUNT
+
+
+@authorized_callback
+async def default_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Drop the pending pair and go back to the menu, changing nothing."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return DEFAULT_CONFIRM
+    target = _default_target(context)
+    context.user_data.pop("diet_pending_default", None)
+    await _remove_callback_markup(query)
+    if target is None:
+        return await _reprompt_food_choice(update, context, query.message)
+    return await _open_default_menu(update, context, query.message, *target)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1b — "Log again at today's values" (plan §10.4/§10.5)
+# ---------------------------------------------------------------------------
+_ISSUE_TEXT = {
+    CurrentValueIssueCode.SOURCE_MISSING: "that food/recipe is gone",
+    CurrentValueIssueCode.QUANTITY_MISSING: "no amount was recorded",
+    CurrentValueIssueCode.QUANTITY_INVALID: "the old amount no longer works",
+    CurrentValueIssueCode.RECIPE_EMPTY: "that recipe has no ingredients",
+}
+
+
+def _nutrient_delta_line(preview) -> str:
+    """The old → new calorie/macro line, or a note that it is unknown."""
+    old, new, delta = (
+        preview.original_totals,
+        preview.proposed_totals,
+        preview.delta,
+    )
+    if new.calories is None or old.calories is None:
+        return "🔥 Total: some values unknown"
+    sign = "+" if delta.calories and delta.calories > 0 else ""
+    change = f" ({sign}{delta.calories})" if delta.calories else " (no change)"
+    return f"🔥 Total: {old.calories} → <b>{new.calories}</b> kcal{change}"
+
+
+def _current_values_text(preview) -> str:
+    """Render each item's old → new value and what still needs a decision."""
+    lines = [
+        f"🔄 <b>{escape_html(preview.meal_type.title())}</b> at today's values:"
+    ]
+    for position, proposal in enumerate(preview.items, 1):
+        name = escape_html(proposal.original.display_name)
+        if proposal.decision is CurrentValueDecision.UNRESOLVED:
+            reason = _ISSUE_TEXT.get(
+                proposal.issue.code if proposal.issue else None, "needs a decision"
+            )
+            lines.append(f"{position}. ⚠️ <b>{name}</b> — {reason}")
+        elif proposal.decision is CurrentValueDecision.REMOVE:
+            lines.append(f"{position}. 🗑 <s>{name}</s> — dropped")
+        elif proposal.decision is CurrentValueDecision.KEEP_ORIGINAL:
+            lines.append(f"{position}. ↩️ {name} — kept as originally logged")
+        else:
+            old_cal = proposal.original.calories
+            new_cal = proposal.proposed.calories if proposal.proposed else None
+            if old_cal is not None and new_cal is not None and old_cal != new_cal:
+                lines.append(f"{position}. {name} — {old_cal} → <b>{new_cal}</b> kcal")
+            else:
+                cal = "kcal ?" if new_cal is None else f"{new_cal} kcal"
+                lines.append(f"{position}. {name} — {cal}")
+    lines.append(_nutrient_delta_line(preview))
+    if not preview.can_save:
+        lines.append("Pick Keep or Drop for each ⚠️ item to continue.")
+    return "\n".join(lines)
+
+
+def _current_decisions(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    """The child-id → decision map for the review in progress."""
+    decisions = context.user_data.get("diet_current_decisions")
+    if not isinstance(decisions, dict):
+        decisions = {}
+        context.user_data["diet_current_decisions"] = decisions
+    return decisions
+
+
+async def _render_current_values(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    preview,
+) -> int:
+    """Store the server-created preview and draw its review screen."""
+    context.user_data["diet_current_source_meal_id"] = preview.source_meal_id
+    context.user_data["diet_current_digest"] = preview.digest
+    context.user_data["diet_current_child_ids"] = [
+        p.source_child_id for p in preview.items
+    ]
+    revision = _bump_revision(context)
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        message,
+        _current_values_text(preview),
+        current_values_keyboard(
+            update.effective_user.id,
+            revision,
+            preview.items,
+            can_save=preview.can_save,
+        ),
+    )
+    return CURRENT_VALUES_REVIEW if prompt is not None else ConversationHandler.END
+
+
+@authorized_callback
+async def current_values_entry(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """``Log again at today's values`` on a receipt: open the review screen.
+
+    Distinct from Repeat on purpose. Repeat copies the old numbers exactly; this
+    re-prices the same items from the sources as they are now and shows the
+    difference before anything is written.
+    """
+    query = update.callback_query
+    parts = (query.data or "").split("_")
+    try:
+        owner = parse_base36(parts[2])
+        source_meal_id = parse_base36(parts[3])
+    except (IndexError, ValueError):
+        await query.answer("This action isn't available.", show_alert=True)
+        return ConversationHandler.END
+    if owner != update.effective_user.id:
+        await query.answer("This action belongs to another user.", show_alert=True)
+        return ConversationHandler.END
+
+    await query.answer()
+    if not phase1_enabled_for(owner):
+        try:
+            await update.effective_message.reply_text(
+                "Use /diet to log a meal.", reply_markup=reply_keyboard_remove()
+            )
+        except TelegramError:
+            logger.warning("Could not deliver diet compatibility guidance", exc_info=True)
+        return ConversationHandler.END
+    if not await conversation_available(update, context, "diet"):
+        return ConversationHandler.END
+
+    db = context.bot_data["db"]
+    preview = await db.get_current_value_preview(owner, source_meal_id)
+    if preview is None:
+        try:
+            await query.message.reply_text("That meal is no longer available.")
+        except TelegramError:
+            logger.debug("Could not report missing source meal", exc_info=True)
+        return ConversationHandler.END
+
+    await db.ensure_user(
+        owner, update.effective_user.username, update.effective_user.first_name
+    )
+    activate_conversation(update, context, "diet")
+    context.user_data["diet_entry_mode"] = DietEntryMode.QUICK
+    context.user_data["diet_meal_type"] = preview.meal_type
+    context.user_data["diet_ui_revision"] = 0
+    context.user_data["diet_current_decisions"] = {}
+    return await _render_current_values(update, context, query.message, preview)
+
+
+async def _apply_current_decision(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    decision: CurrentValueDecision,
+) -> int:
+    """Record one Keep/Drop repair choice and redraw the review."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return CURRENT_VALUES_REVIEW
+    parts = (query.data or "").split("_")
+    try:
+        child_id = parse_base36(parts[4])
+    except (IndexError, ValueError):
+        return CURRENT_VALUES_REVIEW
+    # Identity is the child row id from the snapshot we rendered — item_order is
+    # display order and is not unique, so it can never be the key here.
+    known = context.user_data.get("diet_current_child_ids") or []
+    meal_id = context.user_data.get("diet_current_source_meal_id")
+    if child_id not in known or meal_id is None:
+        await query.answer("That item is no longer part of this meal.")
+        return CURRENT_VALUES_REVIEW
+
+    _current_decisions(context)[child_id] = decision
+    db = context.bot_data["db"]
+    preview = await db.get_current_value_preview(
+        update.effective_user.id, meal_id, _current_decisions(context)
+    )
+    await _remove_callback_markup(query)
+    if preview is None:
+        finish_conversation(update, context, "diet")
+        try:
+            await query.message.reply_text("That meal is no longer available.")
+        except TelegramError:
+            logger.debug("Could not report missing source meal", exc_info=True)
+        return ConversationHandler.END
+    return await _render_current_values(update, context, query.message, preview)
+
+
+@authorized_callback
+async def current_values_keep(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Keep one item exactly as it was originally logged."""
+    return await _apply_current_decision(
+        update, context, CurrentValueDecision.KEEP_ORIGINAL
+    )
+
+
+@authorized_callback
+async def current_values_remove(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Drop one item from the re-logged meal."""
+    return await _apply_current_decision(
+        update, context, CurrentValueDecision.REMOVE
+    )
+
+
+@authorized_callback
+async def current_values_save(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Commit the re-priced meal, re-checking that it still matches the preview."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return CURRENT_VALUES_REVIEW
+    uid = update.effective_user.id
+    meal_id = context.user_data.get("diet_current_source_meal_id")
+    digest = context.user_data.get("diet_current_digest")
+    if meal_id is None or digest is None:
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+    if not phase1_enabled_for(uid):
+        await _remove_callback_markup(query)
+        return await _reprompt_food_choice(update, context, query.message)
+
+    db = context.bot_data["db"]
+    try:
+        result = await db.commit_current_value_meal(
+            uid,
+            meal_id,
+            _current_decisions(context),
+            digest,
+            source=mutation_source(update),
+        )
+    except NutritionError as exc:
+        await query.answer(str(exc)[:190], show_alert=True)
+        return CURRENT_VALUES_REVIEW
+    except Exception:
+        logger.warning("Current-value save failed; keeping controls", exc_info=True)
+        await query.answer("Couldn't log that — try again.", show_alert=True)
+        return CURRENT_VALUES_REVIEW
+
+    status = result.status
+    if status is CurrentCommitStatus.REVIEW_REQUIRED:
+        # The sources moved under us (or an issue is still open): show what it
+        # would be *now* and make the user confirm that instead.
+        await query.answer("Values changed — take another look.", show_alert=True)
+        await _remove_callback_markup(query)
+        return await _render_current_values(
+            update, context, query.message, result.preview
+        )
+    if status is CurrentCommitStatus.SOURCE_MEAL_REMOVED:
+        await _remove_callback_markup(query)
+        finish_conversation(update, context, "diet")
+        try:
+            await query.message.reply_text("That meal is no longer available.")
+        except TelegramError:
+            logger.debug("Could not report missing source meal", exc_info=True)
+        return ConversationHandler.END
+    if status is CurrentCommitStatus.REPLAYED_REMOVED:
+        await _remove_callback_markup(query)
+        finish_conversation(update, context, "diet")
+        try:
+            await query.message.reply_text(
+                "↩️ That entry was already undone; nothing changed."
+            )
+        except TelegramError:
+            logger.debug("Could not report undone replay", exc_info=True)
+        return ConversationHandler.END
+
+    await _remove_callback_markup(query)
+    headline = (
+        "🔄 <b>Logged at today's values</b>"
+        if status is CurrentCommitStatus.CREATED
+        else "🔄 <b>Already logged</b>"
+    )
+    return await _finish_with_receipt(
+        update, context, query.message, result.receipt, headline
+    )
+
+
+@authorized_callback
+async def current_values_cancel(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Abandon the review; the original meal is untouched either way."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=2, revision_index=3
+    )
+    if query is None:
+        return CURRENT_VALUES_REVIEW
+    await _remove_callback_markup(query)
+    finish_conversation(update, context, "diet")
+    try:
+        await query.message.reply_text("✖️ Cancelled — nothing was logged.")
+    except TelegramError:
+        logger.warning("Could not deliver current-values cancellation", exc_info=True)
+    return ConversationHandler.END
+
+
+# ---------------------------------------------------------------------------
+# Phase 1b — picker pagination, meal-type change, draft editing (plan §9.5-§9.7)
+# ---------------------------------------------------------------------------
+@authorized_callback
+async def change_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Move to another page of suggestions.
+
+    The payload carries a page, not a revision, so this validates owner plus the
+    current picker message; the new message id is what invalidates a queued tap
+    from the page being left.
+    """
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=None
+    )
+    if query is None:
+        return FOOD_CHOICE
+    try:
+        page = parse_base36((query.data or "").split("_")[2])
+    except (IndexError, ValueError):
+        return FOOD_CHOICE
+    context.user_data["diet_choice_page"] = page
+    await _remove_callback_markup(query)
+    meal_type = context.user_data.get("diet_meal_type", "")
+    return await _prompt_food_choice(update, context, query.message, meal_type)
+
+
+@authorized_callback
+async def change_meal_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Reopen the meal-type picker without disturbing the draft (plan §9.5)."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=None
+    )
+    if query is None:
+        return FOOD_CHOICE
+
+    await _remove_callback_markup(query)
+    try:
+        prompt = await reply_html(
+            query.message,
+            "🍽️ Which meal is this?",
+            reply_markup=meal_type_keyboard(update.effective_user.id),
+        )
+    except TelegramError:
+        logger.warning("Could not deliver meal-type keyboard", exc_info=True)
+        finish_conversation(update, context, "diet")
+        return ConversationHandler.END
+    context.user_data["diet_meal_message_id"] = prompt.message_id
+    return MEAL_TYPE
+
+
+def _draft_index(context: ContextTypes.DEFAULT_TYPE, data: str) -> int | None:
+    """The validated draft position a ``d(qty|edit|remove)`` payload names."""
+    items = context.user_data.get("diet_items")
+    if not isinstance(items, list):
+        return None
+    try:
+        index = parse_base36((data or "").split("_")[3])
+    except (IndexError, ValueError):
+        return None
+    return index if 0 <= index < len(items) else None
+
+
+async def _rerender_draft(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    message: object,
+    *,
+    bump: bool = True,
+) -> int:
+    """Redraw the meal preview from the current draft.
+
+    ``bump=False`` is for a read-only redraw (the ``Meal`` control): nothing about
+    the draft changed, so the existing callbacks stay meaningful — the new
+    message id alone retires the previous keyboard (plan §9.2).
+    """
+    items = context.user_data.get("diet_items")
+    meal_type = context.user_data.get("diet_meal_type", "")
+    if not isinstance(items, list) or not items:
+        return await _reprompt_food_choice(update, context, message)
+    revision = (
+        _bump_revision(context)
+        if bump
+        else int(context.user_data.get("diet_ui_revision", 0))
+    )
+    prompt = await _send_tap_keyboard(
+        update,
+        context,
+        message,
+        _meal_preview(meal_type, items),
+        diet_save_keyboard(
+            update.effective_user.id,
+            phase1_enabled=phase1_enabled_for(update.effective_user.id),
+            revision=revision,
+            items=items,
+        ),
+    )
+    return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
+
+
+@authorized_callback
+async def draft_change_quantity(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Re-enter the amount for one drafted item, keeping the old one until it resolves."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=2
+    )
+    if query is None:
+        return CONFIRM_ITEM
+    index = _draft_index(context, query.data or "")
+    if index is None:
+        await _remove_callback_markup(query)
+        return await _rerender_draft(update, context, query.message)
+    item = context.user_data["diet_items"][index]
+    source_type = str(item.get("source_type", "freetext"))
+    if source_type == "freetext" or item.get("source_id") is None:
+        await query.answer("Type-it items have no amount to change.")
+        return CONFIRM_ITEM
+
+    # The item stays in the draft until a new amount successfully resolves.
+    context.user_data["diet_edit_index"] = index
+    context.user_data["diet_sel_kind"] = source_type
+    context.user_data["diet_sel_id"] = item["source_id"]
+    await _remove_callback_markup(query)
+    db = context.bot_data["db"]
+    uid = update.effective_user.id
+    context.user_data["diet_recent_qtys"] = await db.get_recent_item_quantities(
+        uid, source_type, item["source_id"]
+    )
+    return await _rerender_portion_choice(update, context, query.message)
+
+
+@authorized_callback
+async def draft_replace(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Pick a different source for one drafted item."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=2
+    )
+    if query is None:
+        return CONFIRM_ITEM
+    index = _draft_index(context, query.data or "")
+    if index is None:
+        await _remove_callback_markup(query)
+        return await _rerender_draft(update, context, query.message)
+    context.user_data["diet_edit_index"] = index
+    await _remove_callback_markup(query)
+    return await _reprompt_food_choice(update, context, query.message)
+
+
+@authorized_callback
+async def draft_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Delete exactly one drafted item; an emptied draft reopens the picker."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=2
+    )
+    if query is None:
+        return CONFIRM_ITEM
+    index = _draft_index(context, query.data or "")
+    if index is None:
+        await _remove_callback_markup(query)
+        return await _rerender_draft(update, context, query.message)
+    items = context.user_data["diet_items"]
+    items.pop(index)
+    await _remove_callback_markup(query)
+    if not items:
+        context.user_data.pop("diet_edit_index", None)
+        return await _reprompt_food_choice(update, context, query.message)
+    return await _rerender_draft(update, context, query.message)
+
+
 def _meal_total(items: list[dict], field: str, *, integer: bool = False):
     """Sum one nutrient across items, or None if any item's value is unknown."""
     values = [item.get(field) for item in items]
@@ -1518,18 +2721,27 @@ async def _show_item_preview(
     message: object,
     entry: object,
 ) -> int:
-    """Append the resolved item to the meal draft and preview the whole meal."""
-    meal_type = context.user_data.get("diet_meal_type", "")
+    """Append the resolved item to the meal draft and preview the whole meal.
+
+    In Quick mode the first resolved item is not a draft at all — it goes
+    straight to a one-tap confirmation, which is the point of the mode. Once a
+    draft exists (the user chose to add more), the Builder preview takes over.
+    """
+    edit_index = context.user_data.pop("diet_edit_index", None)
+    if (
+        edit_index is None
+        and _quick_mode(context, update.effective_user.id)
+        and not context.user_data.get("diet_items")
+    ):
+        return await _show_quick_confirm(update, context, message, entry)
+
     items: list[dict] = context.user_data.setdefault("diet_items", [])
-    items.append(entry.as_item())
-    prompt = await _send_tap_keyboard(
-        update,
-        context,
-        message,
-        _meal_preview(meal_type, items),
-        diet_save_keyboard(update.effective_user.id),
-    )
-    return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
+    if isinstance(edit_index, int) and 0 <= edit_index < len(items):
+        # Atomic replacement: the old item was kept until this one resolved.
+        items[edit_index] = entry.as_item()
+    else:
+        items.append(entry.as_item())
+    return await _rerender_draft(update, context, message)
 
 
 @authorized_callback
@@ -1541,7 +2753,34 @@ async def add_another_item(
     if query is None:
         return CONFIRM_ITEM
     await _remove_callback_markup(query)
+    context.user_data.pop("diet_edit_index", None)
     return await _reprompt_food_choice(update, context, query.message)
+
+
+@authorized_callback
+async def add_another_item_p1(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Revisioned ``Add another item`` (Phase 1 Builder keyboard)."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=2
+    )
+    if query is None:
+        return CONFIRM_ITEM
+    await _remove_callback_markup(query)
+    context.user_data.pop("diet_edit_index", None)
+    return await _reprompt_food_choice(update, context, query.message)
+
+
+@authorized_callback
+async def save_item_p1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Revisioned ``Save meal`` (Phase 1 Builder keyboard)."""
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=2
+    )
+    if query is None:
+        return CONFIRM_ITEM
+    return await _persist_draft(update, context, query)
 
 
 @authorized_callback
@@ -1550,6 +2789,13 @@ async def save_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = await _consume_diet_tap(update, context)
     if query is None:
         return CONFIRM_ITEM
+    return await _persist_draft(update, context, query)
+
+
+async def _persist_draft(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, query: object
+) -> int:
+    """Write the assembled draft; on failure keep it intact for a retry."""
     items = context.user_data.get("diet_items")
     meal_type = context.user_data.get("diet_meal_type")
     if not isinstance(items, list) or not items or not isinstance(meal_type, str):
@@ -1578,28 +2824,23 @@ async def save_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         # The assembled meal violates a bound (e.g. aggregate calories/macros).
         # Keep the draft and re-render the preview so the user can fix it.
         await _remove_callback_markup(query)
-        prompt = await _send_tap_keyboard(
-            update,
-            context,
-            query.message,
-            f"⚠️ {escape_html(str(exc))}\n\n{_meal_preview(meal_type, items)}",
-            diet_save_keyboard(update.effective_user.id),
-        )
-        return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
+        try:
+            await reply_html(query.message, f"⚠️ {escape_html(str(exc))}")
+        except TelegramError:
+            logger.debug("Could not report meal bound error", exc_info=True)
+        return await _rerender_draft(update, context, query.message)
     except Exception:
         # Transient failure (e.g. database write error). Re-render the preview so
         # the Save/Add/Cancel controls remain available for a retry.
         logger.warning("Diet meal save failed; offering retry", exc_info=True)
         await _remove_callback_markup(query)
-        prompt = await _send_tap_keyboard(
-            update,
-            context,
-            query.message,
-            f"⚠️ Couldn't save that meal — try again.\n\n"
-            f"{_meal_preview(meal_type, items)}",
-            diet_save_keyboard(update.effective_user.id),
-        )
-        return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
+        try:
+            await reply_html(
+                query.message, "⚠️ Couldn't save that meal — try again."
+            )
+        except TelegramError:
+            logger.debug("Could not report meal save failure", exc_info=True)
+        return await _rerender_draft(update, context, query.message)
 
     await _remove_callback_markup(query)
     totals = _meal_totals(items)
@@ -1756,16 +2997,25 @@ async def stale_phase1_diet_callback(
 async def stale_receipt_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Inertly retire a receipt control (Undo/Log another/Use current values).
+    """Inertly retire a receipt control that no live handler claimed.
 
-    Release A has no fast-mutation receipts, so this only ever fires defensively:
-    it answers, retires the inline markup, and synchronizes keyboard removal
-    without any DB read/write (plan §8.2 / §10.1).
+    Reached by ``Use current values`` (not yet implemented) and by ``Log another``
+    while a Diet flow is active — its entry point cannot fire then. Either way
+    this answers and, unless a flow is simply in the way, retires the inline
+    markup and synchronizes keyboard removal, with no DB read/write
+    (plan §8.2 / §10.1).
     """
     query = update.callback_query
     owner = _owned_base36(query.data or "", 2)
     if owner is not None and owner != update.effective_user.id:
         await query.answer("This action belongs to another user.", show_alert=True)
+        return
+    if active_conversation_flow(context) is not None:
+        # The receipt is still good; the user just has something else open. Keep
+        # its buttons so the action works once that flow finishes.
+        await query.answer(
+            "Finish the flow you're in (or /cancel) first.", show_alert=True
+        )
         return
     await query.answer("This action isn't available.", show_alert=True)
     await _remove_callback_markup(query)
@@ -1804,6 +3054,18 @@ async def diet_home_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.warning("Could not deliver diet compatibility guidance", exc_info=True)
         return ConversationHandler.END
 
+    return await _start_quick_meal(update, context)
+
+
+async def _start_quick_meal(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Open a fresh Quick meal draft at ``FOOD_CHOICE`` for the acting user.
+
+    The caller owns the active-flow and Phase 1 checks; this is only the draft
+    setup shared by the ``Meal`` label and a receipt's ``Log another``.
+    """
+    user = update.effective_user
     db = context.bot_data["db"]
     await db.ensure_user(user.id, user.username, user.first_name)
     activate_conversation(update, context, "diet")
@@ -1815,6 +3077,38 @@ async def diet_home_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return await _prompt_food_choice(
         update, context, update.effective_message, meal_type
     )
+
+
+@authorized_callback
+async def diet_receipt_more_entry(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """``Log another`` on a meal receipt: start a new Quick meal (plan §10.1).
+
+    A receipt outlives its conversation, so this validates the embedded owner and
+    re-checks the Phase 1 flag before any DB call. Unlike ``Undo``, it needs an
+    idle user: it opens a flow, so another active flow gets the standard hint and
+    keeps ownership.
+    """
+    query = update.callback_query
+    owner = _owned_base36(query.data or "", 2)
+    if owner is None or owner != update.effective_user.id:
+        await query.answer("This action belongs to another user.", show_alert=True)
+        return ConversationHandler.END
+
+    await query.answer()
+    if not phase1_enabled_for(owner):
+        try:
+            await update.effective_message.reply_text(
+                "Use /diet to log a meal.",
+                reply_markup=reply_keyboard_remove(),
+            )
+        except TelegramError:
+            logger.warning("Could not deliver diet compatibility guidance", exc_info=True)
+        return ConversationHandler.END
+    if not await conversation_available(update, context, "diet"):
+        return ConversationHandler.END
+    return await _start_quick_meal(update, context)
 
 
 async def _diet_draft_expired(
@@ -1936,11 +3230,7 @@ async def _rerender_diet_state(
         items = context.user_data.get("diet_items")
         if not isinstance(items, list) or not items or not meal_type:
             return await _diet_draft_expired(update, context)
-        prompt = await _send_tap_keyboard(
-            update, context, message, _meal_preview(meal_type, items),
-            diet_save_keyboard(uid),
-        )
-        return CONFIRM_ITEM if prompt is not None else ConversationHandler.END
+        return await _rerender_draft(update, context, message, bump=False)
 
     if state == LOG_ANOTHER:
         prompt = await _send_tap_keyboard(
@@ -1948,6 +3238,65 @@ async def _rerender_diet_state(
             log_another_keyboard(uid),
         )
         return LOG_ANOTHER if prompt is not None else ConversationHandler.END
+
+    if state == QUICK_CONFIRM:
+        pending = context.user_data.get("diet_quick_pending_item")
+        if not isinstance(pending, dict) or not meal_type:
+            return await _diet_draft_expired(update, context)
+        revision = _bump_revision(context)
+        prompt = await _send_tap_keyboard(
+            update,
+            context,
+            message,
+            f"👀 <b>{escape_html(str(meal_type).title())}</b>\n"
+            f"{escape_html(str(pending.get('display_name', '')))}",
+            quick_confirm_keyboard(
+                uid,
+                revision,
+                can_set_default=pending.get("source_type") in ("food", "recipe"),
+            ),
+        )
+        return QUICK_CONFIRM if prompt is not None else ConversationHandler.END
+
+    if state in (DEFAULT_MENU, DEFAULT_CONFIRM):
+        target = _default_target(context)
+        if target is None:
+            return await _diet_draft_expired(update, context)
+        # A re-render of the confirmation step drops back to the menu on
+        # purpose: the pending pair is not worth re-showing out of context.
+        context.user_data.pop("diet_pending_default", None)
+        return await _open_default_menu(update, context, message, *target)
+
+    if state == CURRENT_VALUES_REVIEW:
+        meal_id = context.user_data.get("diet_current_source_meal_id")
+        if meal_id is None:
+            return await _diet_draft_expired(update, context)
+        db = context.bot_data["db"]
+        preview = await db.get_current_value_preview(
+            uid, meal_id, _current_decisions(context)
+        )
+        if preview is None:
+            return await _diet_draft_expired(update, context)
+        return await _render_current_values(update, context, message, preview)
+
+    if state == DEFAULT_AMOUNT:
+        target = _default_target(context)
+        db = context.bot_data["db"]
+        name = (
+            await _source_name(db, uid, *target) if target is not None else None
+        )
+        if name is None:
+            return await _diet_draft_expired(update, context)
+        context.user_data.pop("diet_ui_message_id", None)
+        try:
+            await reply_html(
+                message,
+                f"⭐ How much <b>{escape_html(name)}</b> is your usual? "
+                "e.g. <code>2 bowl</code> or <code>150 g</code>.",
+            )
+        except TelegramError:
+            return await _diet_draft_expired(update, context)
+        return DEFAULT_AMOUNT
 
     if state == SEARCH:
         context.user_data.pop("diet_ui_message_id", None)
@@ -2046,6 +3395,17 @@ diet_conv_handler = ConversationHandler(
         # The persistent-keyboard "Meal" label is a real Quick entry point, not a
         # global Home handler; it re-validates the flag/active-flow internally.
         MessageHandler(AUTH_FILTER & MEAL_LABEL_FILTER, diet_home_entry),
+        # "Log another" on a durable receipt opens the next Quick meal. As an
+        # entry point it is claimed here whenever no Diet flow is active; with
+        # one active, the stale receipt handler answers with the flow hint.
+        CallbackQueryHandler(
+            diet_receipt_more_entry, pattern=RECEIPT_MORE_PATTERN
+        ),
+        # "Log again at today's values" also opens a flow (a review screen), so
+        # it is an entry point for the same reason.
+        CallbackQueryHandler(
+            current_values_entry, pattern=RECEIPT_CURRENT_PATTERN
+        ),
     ],
     states={
         # Every state leads with a voice guard (reject, no download), then the
@@ -2071,6 +3431,16 @@ diet_conv_handler = ConversationHandler(
             CallbackQueryHandler(choose_catalog, pattern=r"^dcatalog_\d+_\d+$"),
             CallbackQueryHandler(start_search, pattern=r"^dsearch_\d+$"),
             CallbackQueryHandler(type_food_instead, pattern=r"^dtype_\d+$"),
+            CallbackQueryHandler(
+                manage_default,
+                pattern=r"^dmanage_[0-9a-z]+_[0-9a-z]+_[fr]_[0-9a-z]+$",
+            ),
+            CallbackQueryHandler(
+                change_page, pattern=r"^dpage_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                change_meal_type, pattern=r"^dchangemeal_[0-9a-z]+$"
+            ),
             _diet_text_catchall,
         ],
         SEARCH: [
@@ -2102,8 +3472,26 @@ diet_conv_handler = ConversationHandler(
             _diet_voice_guard,
             _diet_meal_guard(CONFIRM_ITEM),
             _diet_control_guard,
+            # Legacy decimal payloads stay live so a Release A rollback (or a
+            # keyboard drawn before the flag flipped) can still save its draft.
             CallbackQueryHandler(add_another_item, pattern=r"^dadd_\d+$"),
             CallbackQueryHandler(save_item, pattern=r"^dsave_\d+$"),
+            CallbackQueryHandler(
+                add_another_item_p1, pattern=r"^dadd_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                save_item_p1, pattern=r"^dsave_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                draft_change_quantity,
+                pattern=r"^dqty_[0-9a-z]+_[0-9a-z]+_[0-9a-z]+$",
+            ),
+            CallbackQueryHandler(
+                draft_replace, pattern=r"^dedit_[0-9a-z]+_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                draft_remove, pattern=r"^dremove_[0-9a-z]+_[0-9a-z]+_[0-9a-z]+$"
+            ),
             _diet_text_catchall,
         ],
         LOG_ANOTHER: [
@@ -2111,6 +3499,86 @@ diet_conv_handler = ConversationHandler(
             _diet_meal_guard(LOG_ANOTHER),
             _diet_control_guard,
             CallbackQueryHandler(log_another, pattern=r"^dmore_\d+_(yes|no)$"),
+            _diet_text_catchall,
+        ],
+        # --- Phase 1b: Quick confirmation and default management ---
+        QUICK_CONFIRM: [
+            _diet_voice_guard,
+            _diet_meal_guard(QUICK_CONFIRM),
+            _diet_control_guard,
+            CallbackQueryHandler(
+                quick_log, pattern=r"^dq_log_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                quick_log_and_default, pattern=r"^dq_default_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                quick_change_amount, pattern=r"^dq_amount_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                quick_cancel, pattern=r"^dq_cancel_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            _diet_text_catchall,
+        ],
+        DEFAULT_MENU: [
+            _diet_voice_guard,
+            _diet_meal_guard(DEFAULT_MENU),
+            _diet_control_guard,
+            CallbackQueryHandler(
+                default_use_other, pattern=r"^dd_use_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                default_edit, pattern=r"^dd_edit_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                default_clear, pattern=r"^dd_clear_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                default_back, pattern=r"^dd_back_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            _diet_text_catchall,
+        ],
+        DEFAULT_AMOUNT: [
+            _diet_voice_guard,
+            _diet_meal_guard(DEFAULT_AMOUNT),
+            _diet_control_guard,
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND, receive_default_amount
+            ),
+        ],
+        DEFAULT_CONFIRM: [
+            _diet_voice_guard,
+            _diet_meal_guard(DEFAULT_CONFIRM),
+            _diet_control_guard,
+            CallbackQueryHandler(
+                default_save, pattern=r"^dd_save_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                default_reenter, pattern=r"^dd_reenter_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                default_cancel, pattern=r"^dd_cancel_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            _diet_text_catchall,
+        ],
+        CURRENT_VALUES_REVIEW: [
+            _diet_voice_guard,
+            _diet_meal_guard(CURRENT_VALUES_REVIEW),
+            _diet_control_guard,
+            CallbackQueryHandler(
+                current_values_keep,
+                pattern=r"^cv_keep_[0-9a-z]+_[0-9a-z]+_[0-9a-z]+$",
+            ),
+            CallbackQueryHandler(
+                current_values_remove,
+                pattern=r"^cv_remove_[0-9a-z]+_[0-9a-z]+_[0-9a-z]+$",
+            ),
+            CallbackQueryHandler(
+                current_values_save, pattern=r"^cv_save_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(
+                current_values_cancel, pattern=r"^cv_cancel_[0-9a-z]+_[0-9a-z]+$"
+            ),
             _diet_text_catchall,
         ],
         FOOD_ITEMS: [

@@ -133,6 +133,42 @@ Dimensions are never converted unless you configure an explicit food-specific
 mapping such as `piece=50g` or `ml=1.4g`. A recipe can be logged in grams or
 millilitres only when its recorded yield uses that unit dimension.
 
+### Fast logging (Phase 1)
+
+Gated per user by `PHASE1_ENABLED_USER_IDS` — see
+[docs/operations_runbook.md](docs/operations_runbook.md) for the rollout flags.
+With it off, everything above behaves exactly as documented.
+
+Say **hi** (or `home`) to open a page with today's totals and the main menu.
+Enabled users also get a persistent `[🍽️ Meal] [🔁 Repeat]` bar
+(`/keyboard hide|show`).
+
+| Action | What it does |
+|---|---|
+| 🍽️ **Meal** | Opens a one-item Quick log: tap a food, tap an amount, done |
+| 🔁 **Repeat** | Re-logs your most recent meal as an *exact copy* — same items, same numbers, nothing re-priced |
+| ⚙️ beside a saved item | Set, change, repair, or remove that item's "usual" amount |
+
+Once a food has a **usual** amount, tapping it in Quick mode logs the whole meal
+in one tap. Without one you pick an amount and get
+`Log it` / `Log + set as my usual`.
+
+Every fast log leaves a **receipt** you can act on later:
+
+| Button | What it does |
+|---|---|
+| ↩️ **Undo** | Removes *that exact meal* (within 24h), never a newer one |
+| 🍽️ **Log another** | Starts the next Quick meal |
+| 🔄 **Log again at today's values** | Re-prices the same items from your current foods and shows the difference before saving |
+
+`Repeat` and `Log again at today's values` are deliberately different: the first
+preserves history exactly, the second reflects edits you have made since. If an
+item can no longer be re-priced (its food was deleted, a portion renamed), you
+are asked to keep or drop that item — nothing is guessed or silently omitted.
+
+Redelivered updates (which happen when the bot restarts) never double-log:
+each action's outcome is recorded once and replayed.
+
 ### Habits
 | Command | Description |
 |---|---|
