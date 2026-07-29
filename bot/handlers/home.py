@@ -16,6 +16,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from .. import config
 from ..config import (
     home_keyboard_action_for,
     phase1_enabled_for,
@@ -97,15 +98,19 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await reply_html(update.effective_message, text, reply_markup=main_menu_keyboard())
 
+    # The persistent quick-action bar is a Phase 1 (B) extra, not part of Home
+    # itself. Send it only to keyboard-eligible users; send an explicit removal
+    # only during a rollback (mode "remove"); otherwise say nothing — a plain
+    # dark Home is just the snapshot + inline menu above, with no keyboard noise.
     if home_keyboard_action_for(uid) == "send":
         await update.effective_message.reply_text(
             "Tap 🍽️ <b>Meal</b> to log, or 🔁 <b>Repeat</b> your last meal.",
             parse_mode="HTML",
             reply_markup=home_reply_keyboard(),
         )
-    else:
+    elif config.HOME_KEYBOARD_MODE == "remove":
         await update.effective_message.reply_text(
-            "Use /diet to log a meal.",
+            "Quick-action bar is off.",
             reply_markup=reply_keyboard_remove(),
         )
 
@@ -128,42 +133,36 @@ async def home_text_router(
         await message.reply_text(_ACTIVE_FLOW_HINT)
         return
 
-    uid = update.effective_user.id
     normalized = normalize_control_text(text)
-    is_control = (
-        normalized in HOME_ACTIONS
-        or normalized in HOME_WORDS
-        or normalized in GREETINGS
-    )
 
-    # 2. Phase 1 disabled: control text gets /menu guidance + keyboard removal;
-    # arbitrary text gets no Phase 1 surface (no snapshot, no mutation).
-    if not phase1_enabled_for(uid):
-        if is_control:
-            await _remove_keyboard(update, _MENU_GUIDANCE)
-        return
-
-    # 3. Phase 1 enabled.
+    # 2. Home is the app's home page — a greeting or "home" always opens it (some
+    # text + the main menu), for every authorized user, regardless of the Phase 1
+    # flag. The flag only governs the B quick-action bar inside show_home.
     if normalized in GREETINGS or normalized in HOME_WORDS:
         await show_home(update, context)
-    elif normalized == "repeat":
+        return
+
+    # 3. Meal/Repeat/Describe are the Phase 1 (B) fast actions. ("Meal" text is
+    # normally claimed by the Diet entry point before it reaches here.)
+    uid = update.effective_user.id
+    if not phase1_enabled_for(uid):
+        if normalized in HOME_ACTIONS:
+            await message.reply_text('Not enabled yet — say "hi" for your menu.')
+        return
+
+    if normalized == "repeat":
         # Exact Repeat is a Release B (B1) mutation; the routing lands here now
         # but performs no DB write until that unit ships.
         await _sync_keyboard(
             update, "🔁 Fast Repeat isn't enabled in this build yet.", uid
         )
     elif normalized == "describe":
-        await _sync_keyboard(
-            update, "📝 Describe isn't enabled yet.", uid
-        )
+        await _sync_keyboard(update, "📝 Describe isn't enabled yet.", uid)
     elif normalized == "meal":
-        # "Meal" is a real Diet entry point; reaching the router means an entry
-        # point failed to claim it. Never mutate; point at /diet.
         logger.warning("Home router received 'meal'; expected Diet entry point")
         await message.reply_text("Use /diet to log a meal.")
     else:
         await show_home(update, context)
-        await message.reply_text("Use 🍽️ Meal or /diet to log a meal.")
 
 
 # ---------------------------------------------------------------------------

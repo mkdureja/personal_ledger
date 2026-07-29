@@ -77,9 +77,12 @@ async def test_safe_off_config_builds_application():
 # ---------------------------------------------------------------------------
 # Every synchronization path removes the keyboard when Phase 1 is disabled
 # ---------------------------------------------------------------------------
-async def test_greeting_sync_removes_keyboard():
+async def test_greeting_sync_removes_keyboard(monkeypatch):
+    # In rollback (remove mode) a greeting opens Home whose second message carries
+    # an explicit ReplyKeyboardRemove, synchronizing the client.
+    monkeypatch.setattr("bot.config.HOME_KEYBOARD_MODE", "remove")
     update = _update("hi")
-    await home.home_text_router(update, _context())
+    await home.home_text_router(update, _context(_snapshot_db()))
     assert isinstance(_last_markup(update.effective_message.reply_text), ReplyKeyboardRemove)
 
 

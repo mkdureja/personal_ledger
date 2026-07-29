@@ -68,27 +68,22 @@ def _enable_phase1(monkeypatch, *, keyboard="off"):
 # ---------------------------------------------------------------------------
 # show_home
 # ---------------------------------------------------------------------------
-async def test_show_home_sends_two_messages_snapshot_then_quick_bar():
+async def test_show_home_off_mode_is_single_message_snapshot_plus_menu():
     update = _update()
     db = _snapshot_db()
     await home.show_home(update, _context(db))
 
     reply = update.effective_message.reply_text
-    assert reply.await_count == 2
+    # Dark Home is one clean message: today snapshot + inline main menu, no bar,
+    # no keyboard-removal noise.
+    assert reply.await_count == 1
     snapshot_text = reply.call_args_list[0].args[0]
     assert "2 meal(s)" in snapshot_text
     assert "1500 cal (some incomplete)" in snapshot_text
     assert "90 min" in snapshot_text
     assert "3 exercise(s)" in snapshot_text
     assert "1/2 done" in snapshot_text
-    # Inline main menu on message 1; never combined with a reply keyboard.
     assert isinstance(_markup(reply, 0), InlineKeyboardMarkup)
-
-
-async def test_show_home_removes_keyboard_when_mode_off():
-    update = _update()
-    await home.show_home(update, _context(_snapshot_db()))
-    assert isinstance(_markup(update.effective_message.reply_text, 1), ReplyKeyboardRemove)
 
 
 async def test_show_home_sends_keyboard_when_eligible(monkeypatch):
@@ -111,13 +106,23 @@ async def test_show_home_escapes_first_name():
 # ---------------------------------------------------------------------------
 # home_text_router — Phase 1 disabled (Release A production)
 # ---------------------------------------------------------------------------
-async def test_router_disabled_control_gets_menu_guidance_and_removal():
+async def test_router_greeting_opens_home_even_when_disabled():
+    # The whole point of the fix: a greeting opens the home page (snapshot +
+    # inline menu) for everyone, not the terse "Use /menu" guidance.
     update = _update("hi")
+    await home.home_text_router(update, _context(_snapshot_db()))
+    reply = update.effective_message.reply_text
+    assert reply.await_count == 1
+    assert isinstance(_markup(reply, 0), InlineKeyboardMarkup)
+
+
+async def test_router_disabled_fast_action_says_not_enabled():
+    # Meal/Repeat/Describe (the B fast actions) stay gated when Phase 1 is off.
+    update = _update("repeat")
     await home.home_text_router(update, _context())
     reply = update.effective_message.reply_text
     reply.assert_awaited_once()
-    assert "/menu" in reply.call_args.args[0]
-    assert isinstance(reply.call_args.kwargs.get("reply_markup"), ReplyKeyboardRemove)
+    assert "hi" in reply.call_args.args[0].lower()
 
 
 async def test_router_disabled_arbitrary_text_is_silent():
@@ -140,10 +145,10 @@ async def test_router_active_flow_gets_hint_and_no_mutation():
 # home_text_router — Phase 1 enabled
 # ---------------------------------------------------------------------------
 async def test_router_enabled_greeting_shows_home(monkeypatch):
-    _enable_phase1(monkeypatch)
+    _enable_phase1(monkeypatch, keyboard="on")
     update = _update("hello")
     await home.home_text_router(update, _context(_snapshot_db()))
-    # show_home sends two messages.
+    # Home snapshot + (keyboard on) the quick-action bar = two messages.
     assert update.effective_message.reply_text.await_count == 2
 
 

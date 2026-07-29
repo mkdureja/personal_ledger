@@ -7,6 +7,9 @@ codex_review.md
 *.db-wal
 *.db-shm
 *.db-journal
+# Database backups (real user data) — never commit.
+*.db.bak*
+*.bak-*
 __pycache__/
 *.pyc
 *.pyo
