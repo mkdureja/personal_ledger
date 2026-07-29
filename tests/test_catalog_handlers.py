@@ -368,6 +368,9 @@ def test_main_registers_food_and_recipe_commands(monkeypatch) -> None:
         def token(self, _value):
             return self
 
+        def concurrent_updates(self, _value):
+            return self
+
         def post_init(self, _value):
             return self
 

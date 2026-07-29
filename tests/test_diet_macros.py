@@ -14,6 +14,22 @@ from bot.config import ALLOWED_USER_IDS
 from bot.handlers import diet
 from bot.handlers.common import activate_conversation, active_conversation_flow
 
+def assert_log_diet(db_mock, user_id, meal_type, food_items, calories, protein_g=None, carbs_g=None, fat_g=None, source=None):
+    db_mock.log_diet_with_items.assert_awaited_once()
+    args, kwargs = db_mock.log_diet_with_items.call_args
+    assert args[0] == user_id
+    assert args[1] == meal_type
+    assert kwargs.get("source") == source
+    assert len(args[2]) == 1
+    child = args[2][0]
+    assert child["source_type"] == "freetext"
+    assert child["display_name"] == food_items
+    assert child["calories"] == calories
+    assert child.get("protein_g") == protein_g
+    assert child.get("carbs_g") == carbs_g
+    assert child.get("fat_g") == fat_g
+
+
 
 def _user() -> SimpleNamespace:
     return SimpleNamespace(
@@ -61,13 +77,14 @@ def _update(message: SimpleNamespace | None = None) -> SimpleNamespace:
 async def test_shortcut_without_macros_remains_backward_compatible(
     args: list[str], food_items: str, calories: int | None
 ) -> None:
-    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet=AsyncMock())
+    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet_with_items=AsyncMock())
     context = _context(db, args=args)
 
     result = await diet.diet_command(_update(), context)
 
     assert result == ConversationHandler.END
-    db.log_diet.assert_awaited_once_with(
+    assert_log_diet(
+        db,
         _user().id,
         args[0],
         food_items,
@@ -81,7 +98,7 @@ async def test_shortcut_without_macros_remains_backward_compatible(
 
 @pytest.mark.asyncio
 async def test_shortcut_accepts_case_insensitive_decimal_macro_suffix() -> None:
-    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet=AsyncMock())
+    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet_with_items=AsyncMock())
     message = _message()
     context = _context(
         db,
@@ -91,7 +108,8 @@ async def test_shortcut_accepts_case_insensitive_decimal_macro_suffix() -> None:
     result = await diet.diet_command(_update(message), context)
 
     assert result == ConversationHandler.END
-    db.log_diet.assert_awaited_once_with(
+    assert_log_diet(
+        db,
         _user().id,
         "lunch",
         "dal, rice",
@@ -108,12 +126,13 @@ async def test_shortcut_accepts_case_insensitive_decimal_macro_suffix() -> None:
 
 @pytest.mark.asyncio
 async def test_shortcut_allows_partial_macros_without_calories() -> None:
-    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet=AsyncMock())
+    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet_with_items=AsyncMock())
     context = _context(db, args=["breakfast", "eggs", "P=30", "f=12"])
 
     await diet.diet_command(_update(), context)
 
-    db.log_diet.assert_awaited_once_with(
+    assert_log_diet(
+        db,
         _user().id,
         "breakfast",
         "eggs",
@@ -140,14 +159,14 @@ async def test_shortcut_allows_partial_macros_without_calories() -> None:
 async def test_shortcut_rejects_invalid_or_duplicate_macros(
     macro_tokens: list[str],
 ) -> None:
-    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet=AsyncMock())
+    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet_with_items=AsyncMock())
     message = _message()
     context = _context(db, args=["lunch", "dal", *macro_tokens])
 
     result = await diet.diet_command(_update(message), context)
 
     assert result == ConversationHandler.END
-    db.log_diet.assert_not_awaited()
+    db.log_diet_with_items.assert_not_awaited()
     message.reply_text.assert_awaited_once()
 
 
@@ -191,7 +210,7 @@ def test_macro_confirmation_escapes_food_and_only_renders_known_values() -> None
 
 @pytest.mark.asyncio
 async def test_guided_calories_advance_to_macro_prompt() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {"diet_meal_type": "lunch", "diet_food_items": "dal"}
     context = _context(db, user_data=state)
     message = _message("650")
@@ -202,12 +221,12 @@ async def test_guided_calories_advance_to_macro_prompt() -> None:
     assert context.user_data["diet_food_items"] == "dal"
     assert context.user_data["diet_calories"] == 650
     assert "protein carbs fat" in message.reply_text.await_args.args[0]
-    db.log_diet.assert_not_awaited()
+    db.log_diet_with_items.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_guided_skip_calories_still_offers_macros() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {"diet_meal_type": "lunch", "diet_food_items": "dal"}
     context = _context(db, user_data=state)
     message = _message("/skip")
@@ -217,12 +236,12 @@ async def test_guided_skip_calories_still_offers_macros() -> None:
     assert result == diet.MACROS
     assert context.user_data["diet_food_items"] == "dal"
     assert context.user_data["diet_calories"] is None
-    db.log_diet.assert_not_awaited()
+    db.log_diet_with_items.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_guided_macros_are_saved_and_loop_is_offered() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {
         "diet_meal_type": "dinner",
         "diet_food_items": "tofu & rice",
@@ -237,7 +256,8 @@ async def test_guided_macros_are_saved_and_loop_is_offered() -> None:
 
     # After a save, the flow stays open with a keep-logging prompt.
     assert result == diet.LOG_ANOTHER
-    db.log_diet.assert_awaited_once_with(
+    assert_log_diet(
+        db,
         _user().id,
         "dinner",
         "tofu & rice",
@@ -269,7 +289,7 @@ async def test_guided_macros_are_saved_and_loop_is_offered() -> None:
     ],
 )
 async def test_guided_invalid_macros_stay_in_macro_state(text: str) -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {
         "diet_meal_type": "dinner",
         "diet_food_items": "rice",
@@ -282,13 +302,13 @@ async def test_guided_invalid_macros_stay_in_macro_state(text: str) -> None:
 
     assert result == diet.MACROS
     assert context.user_data == state
-    db.log_diet.assert_not_awaited()
+    db.log_diet_with_items.assert_not_awaited()
     message.reply_text.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_guided_skip_macros_saves_null_macro_values() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {
         "diet_meal_type": "snack",
         "diet_food_items": "apple",
@@ -301,7 +321,8 @@ async def test_guided_skip_macros_saves_null_macro_values() -> None:
     result = await diet.skip_macros(update, context)
 
     assert result == diet.LOG_ANOTHER
-    db.log_diet.assert_awaited_once_with(
+    assert_log_diet(
+        db,
         _user().id,
         "snack",
         "apple",
@@ -320,7 +341,7 @@ async def test_guided_skip_macros_saves_null_macro_values() -> None:
 
 @pytest.mark.asyncio
 async def test_macro_prompt_failure_cleans_unpersisted_conversation() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {"diet_meal_type": "lunch", "diet_food_items": "dal"}
     context = _context(db, user_data=state)
     message = _message("650")
@@ -332,12 +353,12 @@ async def test_macro_prompt_failure_cleans_unpersisted_conversation() -> None:
 
     assert result == ConversationHandler.END
     assert context.user_data == {}
-    db.log_diet.assert_not_awaited()
+    db.log_diet_with_items.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_macro_validation_delivery_failure_cleans_conversation() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {
         "diet_meal_type": "lunch",
         "diet_food_items": "dal",
@@ -353,12 +374,12 @@ async def test_macro_validation_delivery_failure_cleans_conversation() -> None:
 
     assert result == ConversationHandler.END
     assert context.user_data == {}
-    db.log_diet.assert_not_awaited()
+    db.log_diet_with_items.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_macro_database_failure_preserves_pending_state() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock(side_effect=RuntimeError("db down")))
+    db = SimpleNamespace(log_diet_with_items=AsyncMock(side_effect=RuntimeError("db down")))
     state = {
         "diet_meal_type": "dinner",
         "diet_food_items": "rice",
@@ -379,7 +400,7 @@ async def test_macro_database_failure_preserves_pending_state() -> None:
 
 @pytest.mark.asyncio
 async def test_macro_confirmation_failure_still_ends_persisted_flow() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {
         "diet_meal_type": "dinner",
         "diet_food_items": "rice",
@@ -394,5 +415,5 @@ async def test_macro_confirmation_failure_still_ends_persisted_flow() -> None:
     result = await diet.receive_macros(update, context)
 
     assert result == ConversationHandler.END
-    db.log_diet.assert_awaited_once()
+    db.log_diet_with_items.assert_awaited_once()
     assert context.user_data == {}

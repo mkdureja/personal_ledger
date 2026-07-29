@@ -8,7 +8,12 @@ from telegram import Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from .common import authorized_callback, escape_html, reply_html
+from .common import (
+    active_conversation_flow,
+    authorized_callback,
+    escape_html,
+    reply_html,
+)
 from ..keyboards import main_menu_keyboard, analytics_keyboard
 
 
@@ -110,6 +115,13 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await query.edit_message_reply_markup(reply_markup=None)
         except TelegramError:
             pass
+        return
+
+    # Honor an active guided flow: a menu tap must not switch sections mid-flow
+    # (plan §8.6). The Study/Gym/Diet menu taps are claimed by their own
+    # ConversationHandler entry points before reaching here.
+    if active_conversation_flow(context) is not None:
+        await query.answer("Finish this flow or /cancel first.", show_alert=True)
         return
 
     await query.answer()

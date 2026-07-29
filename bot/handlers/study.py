@@ -23,9 +23,11 @@ from telegram.ext import (
 )
 
 from .common import (
+    ACTIVE_CONTROL_FILTER,
     AUTH_FILTER,
     activate_conversation,
     active_conversation_hint,
+    active_flow_control_interceptor,
     authorized_callback,
     cancel_handler,
     conversation_available,
@@ -36,6 +38,7 @@ from .common import (
     parse_int,
     reply_html,
     timeout_handler,
+    voice_not_enabled_interceptor,
 )
 from ..config import CONVERSATION_TIMEOUT
 
@@ -306,16 +309,33 @@ async def skip_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ---------------------------------------------------------------------------
 # ConversationHandler
 # ---------------------------------------------------------------------------
+# Reject voice mid-flow (no download) and nudge on any Home control word before
+# it can be captured as a subject/note (plan §8.5/§8.6).
+_voice_guard = MessageHandler(filters.VOICE, voice_not_enabled_interceptor)
+_control_guard = MessageHandler(
+    ACTIVE_CONTROL_FILTER, active_flow_control_interceptor
+)
+
 study_conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler("study", study_command, filters=AUTH_FILTER),
         CallbackQueryHandler(study_menu_entry, pattern=r"^menu_study$"),
     ],
     states={
-        SUBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_subject)],
-        DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_duration)],
+        SUBJECT: [
+            _voice_guard,
+            _control_guard,
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_subject),
+        ],
+        DURATION: [
+            _voice_guard,
+            _control_guard,
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_duration),
+        ],
         NOTES: [
             CommandHandler("skip", skip_notes),
+            _voice_guard,
+            _control_guard,
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_notes),
         ],
         ConversationHandler.TIMEOUT: [TypeHandler(Update, timeout_handler)],

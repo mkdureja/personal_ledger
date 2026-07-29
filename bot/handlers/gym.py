@@ -26,10 +26,13 @@ from telegram.ext import (
 )
 
 from .common import (
+    ACTIVE_CONTROL_FILTER,
     AUTH_FILTER,
     active_conversation_hint,
     activate_conversation,
+    active_flow_control_interceptor,
     authorized_callback,
+    buttons_or_cancel_catchall,
     cancel_handler,
     conversation_available,
     deliver_or_end,
@@ -40,6 +43,7 @@ from .common import (
     parse_int,
     reply_html,
     timeout_handler,
+    voice_not_enabled_interceptor,
 )
 from ..keyboards import yes_no_keyboard
 from ..config import CONVERSATION_TIMEOUT
@@ -393,20 +397,50 @@ async def more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # ---------------------------------------------------------------------------
 # ConversationHandler
 # ---------------------------------------------------------------------------
+# Reject voice mid-flow (no download) and nudge on any Home control word before
+# it can be captured as an exercise name (plan §8.5/§8.6). MORE is callback-only,
+# so it also gets a text catchall so arbitrary text never reaches the Home router.
+_voice_guard = MessageHandler(filters.VOICE, voice_not_enabled_interceptor)
+_control_guard = MessageHandler(
+    ACTIVE_CONTROL_FILTER, active_flow_control_interceptor
+)
+_text_catchall = MessageHandler(
+    filters.TEXT & ~filters.COMMAND, buttons_or_cancel_catchall
+)
+
 gym_conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler("gym", gym_command, filters=AUTH_FILTER),
         CallbackQueryHandler(gym_menu_entry, pattern=r"^menu_gym$"),
     ],
     states={
-        EXERCISE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_exercise)],
-        SETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sets)],
-        REPS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reps)],
+        EXERCISE: [
+            _voice_guard,
+            _control_guard,
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_exercise),
+        ],
+        SETS: [
+            _voice_guard,
+            _control_guard,
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sets),
+        ],
+        REPS: [
+            _voice_guard,
+            _control_guard,
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reps),
+        ],
         WEIGHT: [
             CommandHandler("skip", skip_weight),
+            _voice_guard,
+            _control_guard,
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_weight),
         ],
-        MORE: [CallbackQueryHandler(more_callback, pattern=r"^gym_\d+_(yes|no)$")],
+        MORE: [
+            _voice_guard,
+            CallbackQueryHandler(more_callback, pattern=r"^gym_\d+_(yes|no)$"),
+            _control_guard,
+            _text_catchall,
+        ],
         ConversationHandler.TIMEOUT: [TypeHandler(Update, timeout_handler)],
     },
     fallbacks=[

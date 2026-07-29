@@ -861,11 +861,22 @@ class DatabaseManager:
         is_pinned: bool | None = None,
         hidden: bool | None = None,
     ) -> None:
-        """Upsert a source's pin/hide flags (only the fields provided change)."""
+        """Upsert a source's pin/hide flags. Enforces mutual exclusivity and active sources."""
         if source_type not in ("food", "recipe"):
             raise ValueError(f"Unknown source_type {source_type!r}")
         async with self._write_operation():
             await self._assert_source_not_cross_owner(user_id, source_type, source_id)
+            
+            if is_pinned or hidden:
+                table = "foods" if source_type == "food" else "recipes"
+                cursor = await self.conn.execute(
+                    f"SELECT is_active, user_id FROM {table} WHERE id = ?",
+                    (source_id,)
+                )
+                row = await cursor.fetchone()
+                if not row or not row["is_active"] or row["user_id"] != user_id:
+                    raise ValueError(f"Cannot set true preference on missing or inactive {source_type}.")
+
             await self.conn.execute(
                 "INSERT INTO user_food_preferences (user_id, source_type, source_id) "
                 "VALUES (?, ?, ?) "
@@ -873,27 +884,43 @@ class DatabaseManager:
                 (user_id, source_type, source_id),
             )
             if is_pinned is not None:
+                hidden_sql = ", hidden = 0" if is_pinned else ""
                 await self.conn.execute(
-                    "UPDATE user_food_preferences SET is_pinned = ?, updated_at = ? "
+                    f"UPDATE user_food_preferences SET is_pinned = ?, updated_at = ?{hidden_sql} "
                     "WHERE user_id = ? AND source_type = ? AND source_id = ?",
                     (1 if is_pinned else 0, _utc_timestamp_now(),
                      user_id, source_type, source_id),
                 )
-            if hidden is not None:
+            elif hidden is not None:
+                pinned_sql = ", is_pinned = 0" if hidden else ""
                 await self.conn.execute(
-                    "UPDATE user_food_preferences SET hidden = ?, updated_at = ? "
+                    f"UPDATE user_food_preferences SET hidden = ?, updated_at = ?{pinned_sql} "
                     "WHERE user_id = ? AND source_type = ? AND source_id = ?",
                     (1 if hidden else 0, _utc_timestamp_now(),
                      user_id, source_type, source_id),
                 )
 
     async def reset_food_preferences(self, user_id: int) -> int:
-        """Delete all of a user's pins/hides. Returns how many rows were removed."""
+        """Clear all of a user's pins/hides while preserving defaults. Returns count of cleared pins/hides."""
         async with self._write_operation():
-            cursor = await self.conn.execute(
-                "DELETE FROM user_food_preferences WHERE user_id = ?", (user_id,)
+            count_cursor = await self.conn.execute(
+                "SELECT COUNT(*) as c FROM user_food_preferences WHERE user_id = ? AND (is_pinned = 1 OR hidden = 1)",
+                (user_id,)
             )
-            return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+            row = await count_cursor.fetchone()
+            cleared_count = row["c"] if row else 0
+
+            await self.conn.execute(
+                "UPDATE user_food_preferences SET is_pinned = 0, hidden = 0 "
+                "WHERE user_id = ? AND default_amount IS NOT NULL",
+                (user_id,)
+            )
+            await self.conn.execute(
+                "DELETE FROM user_food_preferences "
+                "WHERE user_id = ? AND default_amount IS NULL",
+                (user_id,)
+            )
+            return cleared_count
 
     async def get_suggestions_enabled(self, user_id: int) -> bool:
         """Whether personalized ordering is on (default on; missing row = on)."""

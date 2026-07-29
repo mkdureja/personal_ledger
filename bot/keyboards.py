@@ -6,7 +6,14 @@ from __future__ import annotations
 
 from datetime import date
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+
+from .callback_data import to_base36
 
 
 # A checklist uses two buttons per habit plus a date row and a day-toggle row.
@@ -35,6 +42,26 @@ def paginate_habits(
         normalized_page,
         page_count,
     )
+
+
+def home_reply_keyboard() -> ReplyKeyboardMarkup:
+    """The persistent Home quick-action bar: ``[Meal] [Repeat]``.
+
+    ``Describe`` is reserved but not rendered in Phase 1. The bar is only sent to
+    keyboard-eligible users (plan §8.4); every other Home/compatibility response
+    removes it via :func:`reply_keyboard_remove`.
+    """
+    return ReplyKeyboardMarkup(
+        [["Meal", "Repeat"]],
+        resize_keyboard=True,
+        is_persistent=True,
+        one_time_keyboard=False,
+    )
+
+
+def reply_keyboard_remove() -> ReplyKeyboardRemove:
+    """Remove any persistent reply keyboard from the user's client."""
+    return ReplyKeyboardRemove()
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -151,16 +178,26 @@ def _recent_quantity_rows(
     return rows
 
 
-def _pref_row(user_id: int, is_pinned: bool, hidden: bool) -> list[InlineKeyboardButton]:
-    """A pin/unpin + hide/unhide control row for the selected source."""
+def _pref_row(
+    user_id: int, is_pinned: bool, hidden: bool, revision: int
+) -> list[InlineKeyboardButton]:
+    """A pin/unpin + hide/unhide control row for the selected source.
+
+    The callbacks carry the acting user, the current UI revision, and the
+    *desired* next state (``1`` to pin/hide, ``0`` to unpin/unhide) as strict
+    base-36 tokens, so repeated delivery converges instead of toggling and a
+    stale revision is rejected (plan §7.5 / §9.2).
+    """
+    owner = to_base36(user_id)
+    rev = to_base36(revision)
     return [
         InlineKeyboardButton(
             "📌 Unpin" if is_pinned else "📌 Pin",
-            callback_data=f"dpin_{user_id}",
+            callback_data=f"dpin_{owner}_{rev}_{0 if is_pinned else 1}",
         ),
         InlineKeyboardButton(
             "👁 Unhide" if hidden else "🙈 Hide",
-            callback_data=f"dhide_{user_id}",
+            callback_data=f"dhide_{owner}_{rev}_{0 if hidden else 1}",
         ),
     ]
 
@@ -173,6 +210,7 @@ def food_portion_keyboard(
     is_pinned: bool = False,
     hidden: bool = False,
     show_prefs: bool = True,
+    revision: int = 0,
 ) -> InlineKeyboardMarkup:
     """Recent quantities + named portions for a food, with custom/back/pref rows.
 
@@ -200,7 +238,7 @@ def food_portion_keyboard(
         ]
     )
     if show_prefs:
-        rows.append(_pref_row(user_id, is_pinned, hidden))
+        rows.append(_pref_row(user_id, is_pinned, hidden, revision))
     return InlineKeyboardMarkup(rows)
 
 
@@ -211,6 +249,7 @@ def recipe_quantity_keyboard(
     *,
     is_pinned: bool = False,
     hidden: bool = False,
+    revision: int = 0,
 ) -> InlineKeyboardMarkup:
     """Recent quantities + a quick '1 <yield_unit>' button, with custom/back/pref."""
     rows: list[list[InlineKeyboardButton]] = _recent_quantity_rows(
@@ -232,7 +271,7 @@ def recipe_quantity_keyboard(
             InlineKeyboardButton("🔙 Back", callback_data=f"dback_{user_id}"),
         ]
     )
-    rows.append(_pref_row(user_id, is_pinned, hidden))
+    rows.append(_pref_row(user_id, is_pinned, hidden, revision))
     return InlineKeyboardMarkup(rows)
 
 

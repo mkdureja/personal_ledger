@@ -17,6 +17,8 @@ from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
+    MessageHandler,
+    filters,
 )
 
 from .config import BOT_TOKEN, DB_PATH, REMINDER_TIME, ROUTINE_PATH, LOCAL_TZ, LOG_FORMAT
@@ -31,12 +33,21 @@ from .handlers.common import (
     undo_confirm_callback,
 )
 from .handlers.start import start_command, help_command, menu_command, menu_callback
+from .handlers.home import (
+    home_text_router,
+    home_voice_router,
+    keyboard_command,
+)
 from .handlers.study import study_conv_handler
 from .handlers.gym import gym_conv_handler, stale_gym_callback
 from .handlers.diet import (
+    _DIET_PHASE1_CALLBACK_RE,
+    _RECEIPT_CALLBACK_RE,
     diet_conv_handler,
     stale_diet_callback,
     stale_meal_callback,
+    stale_phase1_diet_callback,
+    stale_receipt_callback,
 )
 from .handlers.catalog import food_command, recipe_command
 from .handlers.habits import (
@@ -201,6 +212,10 @@ def build_application() -> Application:
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+        # ConversationHandler relies on one-update-at-a-time processing to keep
+        # per-user draft state consistent; make PTB's requirement explicit
+        # rather than depending on the default (plan §8.7).
+        .concurrent_updates(False)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
@@ -226,11 +241,24 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("settings", settings_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("reminders", reminders_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("suggestions", suggestions_command, filters=AUTH_FILTER))
+    application.add_handler(CommandHandler("keyboard", keyboard_command, filters=AUTH_FILTER))
     # Conversation fallbacks consume /cancel while active; this catches a
     # stale marker or a cancel command sent outside an active conversation.
     application.add_handler(CommandHandler("cancel", cancel_command, filters=AUTH_FILTER))
 
     # --- Callback query handlers ---
+    # Phase 1 durable receipt controls and revisioned base-36 diet families are
+    # retired inertly in Release A (answer + retire markup, no DB). Registered
+    # before the legacy stale handlers so base-36 dpin/dhide route here, while
+    # pre-A decimal payloads still fall through to the legacy handler below.
+    application.add_handler(
+        CallbackQueryHandler(stale_receipt_callback, pattern=_RECEIPT_CALLBACK_RE)
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            stale_phase1_diet_callback, pattern=_DIET_PHASE1_CALLBACK_RE
+        )
+    )
     # Guided-flow callbacks are consumed by their ConversationHandlers while
     # active. These handlers safely retire the same buttons after timeout.
     application.add_handler(
@@ -275,6 +303,20 @@ def build_application() -> Application:
     )
     # Analytics callbacks
     application.add_handler(CallbackQueryHandler(analytics_callback, pattern=r"^(analytics_|chart_)"))
+
+    # --- Home routers (last in group 0) ---
+    # Registered after every ConversationHandler and command handler, so an
+    # active flow claims its own text/voice first. These only see leftover
+    # greetings/Home/Home-action text and voice, and are flag-gated internally
+    # ("Meal" is a Diet entry point, not handled here). Plan §8.7.
+    application.add_handler(
+        MessageHandler(
+            AUTH_FILTER & filters.TEXT & ~filters.COMMAND, home_text_router
+        )
+    )
+    application.add_handler(
+        MessageHandler(AUTH_FILTER & filters.VOICE, home_voice_router)
+    )
 
     # --- Error handler ---
     application.add_error_handler(error_handler)

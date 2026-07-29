@@ -93,3 +93,69 @@ prior reviews. Upgrade only to compatible versions with the full suite still gre
   token from any remaining log output; a regression test guards this.
 - Migration and delivery diagnostics contain only sanitized counts/categories —
   never a token, username, first name, or raw Telegram ID.
+
+## Phase 1 rollout flags (Home / fast logging)
+
+Phase 1 adds no schema migration (SQLite stays at `user_version = 8`); it is
+gated entirely by three startup env vars, read once — **changing them requires a
+supervised restart.**
+
+| Var | Meaning |
+|---|---|
+| `PHASE1_ENABLED_USER_IDS` | Comma-separated subset of `ALLOWED_USER_IDS` with Phase 1 Home + fast mutations on. Empty = off for everyone. |
+| `HOME_KEYBOARD_MODE` | One of `off` / `pilot` / `on` / `remove`. |
+| `HOME_KEYBOARD_PILOT_USER_IDS` | Subset of `PHASE1_ENABLED_USER_IDS`; consulted only in `pilot`. |
+
+Startup fails closed on a malformed ID, a duplicate, an unknown mode, or a
+non-subset ID.
+
+### Release A — dark production configuration (rollback target)
+
+Release A installs all Home routing, disabled-label compatibility, and keyboard
+removal, but keeps every fast mutation dark. **This is the only Phase 1 binary
+rollback target.** Ship it with:
+
+```text
+PHASE1_ENABLED_USER_IDS=
+HOME_KEYBOARD_MODE=off
+HOME_KEYBOARD_PILOT_USER_IDS=
+```
+
+With these, greetings/`Home`/`Meal`/`Repeat`/`Describe` return `/menu`
+compatibility guidance plus `ReplyKeyboardRemove`; arbitrary text gets no Phase 1
+surface; no snapshot query or mutation runs; and the persistent keyboard is never
+sent. `test_release_a.py` proves these synchronization paths in CI.
+
+### Rollback (disable Phase 1 without a DB restore)
+
+1. Set the exact safe block — note `remove`, which forces keyboard removal for
+   **every** authorized user regardless of `PHASE1_ENABLED_USER_IDS`:
+
+   ```text
+   PHASE1_ENABLED_USER_IDS=
+   HOME_KEYBOARD_MODE=remove
+   HOME_KEYBOARD_PILOT_USER_IDS=
+   ```
+
+2. Restart the current compatible binary (or roll the binary back **only** to
+   Release A — it still carries the label/removal handlers).
+3. Have each previously enabled user send a greeting or `/keyboard hide` and
+   confirm the client keyboard disappears. Rollback is **not** accepted until
+   every known user has confirmed this synchronization; no proactive Telegram
+   message is implied.
+4. Never restore an older DB merely to disable Phase 1 — Phase 1 adds no schema
+   and accepted ledger rows must be preserved. Verify `/start`, `/diet`,
+   `/recent`, reminders, schema `user_version = 8`, and `PRAGMA foreign_key_check`
+   afterward.
+
+### Pilot expansion (enabling Release B fast logging)
+
+1. Add one authorized user to `PHASE1_ENABLED_USER_IDS`, set
+   `HOME_KEYBOARD_MODE=pilot`, add only that user to the pilot list, restart.
+2. Smoke-test and observe sanitized errors/latency.
+3. Add the second user to both lists, restart, complete acceptance.
+4. Only then set `HOME_KEYBOARD_MODE=on`, clear `HOME_KEYBOARD_PILOT_USER_IDS`,
+   restart, and verify both users.
+
+`/keyboard hide` is momentary: the bar may reappear on the next eligible Home
+response. There is no durable per-user hide preference on v8.

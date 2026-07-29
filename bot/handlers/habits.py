@@ -24,9 +24,11 @@ from telegram.ext import (
 )
 
 from .common import (
+    ACTIVE_CONTROL_FILTER,
     AUTH_FILTER,
     active_conversation_hint,
     activate_conversation,
+    active_flow_control_interceptor,
     authorized_callback,
     cancel_handler,
     conversation_available,
@@ -35,6 +37,7 @@ from .common import (
     finish_conversation,
     reply_html,
     timeout_handler,
+    voice_not_enabled_interceptor,
 )
 from ..keyboards import (
     MAX_ACTIVE_HABITS,
@@ -588,10 +591,19 @@ async def habit_setup_done_callback(
 # ---------------------------------------------------------------------------
 # ConversationHandler for setup
 # ---------------------------------------------------------------------------
+# Reject voice mid-setup (no download) and nudge on any Home control word before
+# it can be captured as a habit name (plan §8.5/§8.6). Ordinary text remains a
+# valid habit name, so the control guard sits just before add_habit_text.
+_voice_guard = MessageHandler(filters.VOICE, voice_not_enabled_interceptor)
+_control_guard = MessageHandler(
+    ACTIVE_CONTROL_FILTER, active_flow_control_interceptor
+)
+
 habits_setup_conv_handler = ConversationHandler(
     entry_points=[CommandHandler("habits", habits_command, filters=AUTH_FILTER)],
     states={
         ADDING_HABIT: [
+            _voice_guard,
             CallbackQueryHandler(
                 habit_setup_done_callback, pattern=r"^habit_setup_done_"
             ),
@@ -601,6 +613,7 @@ habits_setup_conv_handler = ConversationHandler(
             CallbackQueryHandler(
                 habit_setup_page_callback, pattern=r"^habit_setup_page_"
             ),
+            _control_guard,
             MessageHandler(filters.TEXT & ~filters.COMMAND, add_habit_text),
         ],
         ConversationHandler.TIMEOUT: [TypeHandler(Update, timeout_handler)],

@@ -14,6 +14,7 @@ from telegram.ext import CommandHandler, ConversationHandler, TypeHandler
 from bot.config import ALLOWED_USER_IDS
 from bot.handlers import common, diet, gym, habits, study
 from bot.handlers.common import (
+
     activate_conversation,
     authorized_callback,
     cancel_command,
@@ -24,6 +25,21 @@ from bot.handlers.common import (
     reply_html,
     timeout_handler,
 )
+
+def assert_log_diet(db_mock, user_id, meal_type, food_items, calories, protein_g=None, carbs_g=None, fat_g=None, source=None):
+    db_mock.log_diet_with_items.assert_awaited_once()
+    args, kwargs = db_mock.log_diet_with_items.call_args
+    assert args[0] == user_id
+    assert args[1] == meal_type
+    assert kwargs.get("source") == source
+    assert len(args[2]) == 1
+    child = args[2][0]
+    assert child["source_type"] == "freetext"
+    assert child["display_name"] == food_items
+    assert child["calories"] == calories
+    assert child.get("protein_g") == protein_g
+    assert child.get("carbs_g") == carbs_g
+    assert child.get("fat_g") == fat_g
 
 
 def _allowed_user() -> SimpleNamespace:
@@ -150,7 +166,7 @@ async def test_cancel_preserves_other_conversation_state() -> None:
     state = {"study_subject": "Math", "diet_food_items": "dal"}
     context = _context(SimpleNamespace(), state)
     update = SimpleNamespace(
-        message=message,
+        message=message, effective_message=message,
         effective_chat=SimpleNamespace(id=10),
     )
     activate_conversation(update, context, "study")
@@ -216,7 +232,7 @@ async def test_undo_is_blocked_during_active_guided_flow() -> None:
     context = _context(db)
     message = _message()
     update = SimpleNamespace(
-        message=message,
+        message=message, effective_message=message,
         effective_user=_allowed_user(),
         effective_chat=SimpleNamespace(id=10),
     )
@@ -236,7 +252,7 @@ async def test_undo_is_blocked_when_flow_is_active_in_another_chat() -> None:
     activate_conversation(owner_update, context, "gym")
     message = _message()
     other_chat_update = SimpleNamespace(
-        message=message,
+        message=message, effective_message=message,
         effective_user=_allowed_user(),
         effective_chat=SimpleNamespace(id=20),
     )
@@ -291,7 +307,7 @@ async def test_guided_workout_auto_finishes_at_exercise_limit() -> None:
     context = _context(db, state)
     message = _message()
     update = SimpleNamespace(
-        message=message,
+        message=message, effective_message=message,
         effective_user=_allowed_user(),
         effective_chat=SimpleNamespace(id=10),
     )
@@ -312,7 +328,7 @@ async def test_study_state_survives_database_failure() -> None:
     state = {"study_subject": "Math", "study_duration": 45, "diet_food_items": "dal"}
     context = _context(db, state)
     message = _message("notes")
-    update = SimpleNamespace(message=message, effective_user=_allowed_user())
+    update = SimpleNamespace(message=message, effective_message=message, effective_user=_allowed_user())
 
     with pytest.raises(RuntimeError, match="db down"):
         await study.receive_notes(update, context)
@@ -333,7 +349,7 @@ async def test_gym_state_survives_database_failure() -> None:
     }
     context = _context(db, state)
     message = _message()
-    update = SimpleNamespace(message=message, effective_user=_allowed_user())
+    update = SimpleNamespace(message=message, effective_message=message, effective_user=_allowed_user())
 
     with pytest.raises(RuntimeError, match="db down"):
         await gym._save_current_exercise(update, context, 40.0)
@@ -344,7 +360,7 @@ async def test_gym_state_survives_database_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_diet_state_survives_database_failure() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock(side_effect=RuntimeError("db down")))
+    db = SimpleNamespace(log_diet_with_items=AsyncMock(side_effect=RuntimeError("db down")))
     state = {
         "diet_meal_type": "lunch",
         "diet_food_items": "dal",
@@ -352,7 +368,7 @@ async def test_diet_state_survives_database_failure() -> None:
     }
     context = _context(db, state)
     message = _message()
-    update = SimpleNamespace(message=message, effective_user=_allowed_user())
+    update = SimpleNamespace(message=message, effective_message=message, effective_user=_allowed_user())
 
     with pytest.raises(RuntimeError, match="db down"):
         await diet._save_diet(update, context, 650)
@@ -369,7 +385,7 @@ async def test_study_confirmation_failure_still_ends_persisted_flow() -> None:
     message = _message("notes")
     message.reply_text.side_effect = NetworkError("offline")
     update = SimpleNamespace(
-        message=message,
+        message=message, effective_message=message,
         effective_user=_allowed_user(),
         effective_chat=SimpleNamespace(id=10),
     )
@@ -395,7 +411,7 @@ async def test_gym_progress_failure_still_ends_persisted_flow() -> None:
     message = _message()
     message.reply_text.side_effect = NetworkError("offline")
     update = SimpleNamespace(
-        message=message,
+        message=message, effective_message=message,
         effective_user=_allowed_user(),
         effective_chat=SimpleNamespace(id=10),
     )
@@ -410,13 +426,13 @@ async def test_gym_progress_failure_still_ends_persisted_flow() -> None:
 
 @pytest.mark.asyncio
 async def test_diet_confirmation_failure_still_ends_persisted_flow() -> None:
-    db = SimpleNamespace(log_diet=AsyncMock())
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {"diet_meal_type": "lunch", "diet_food_items": "dal"}
     context = _context(db, state)
     message = _message()
     message.reply_text.side_effect = NetworkError("offline")
     update = SimpleNamespace(
-        message=message,
+        message=message, effective_message=message,
         effective_user=_allowed_user(),
         effective_chat=SimpleNamespace(id=10),
     )
@@ -425,7 +441,7 @@ async def test_diet_confirmation_failure_still_ends_persisted_flow() -> None:
     result = await diet._save_diet(update, context, 650)
 
     assert result == ConversationHandler.END
-    db.log_diet.assert_awaited_once()
+    db.log_diet_with_items.assert_awaited_once()
     assert context.user_data == {}
 
 
@@ -451,16 +467,16 @@ async def test_timeout_delivery_failure_still_clears_flow() -> None:
 async def test_diet_shortcut_rejects_invalid_numeric_calorie_tokens(
     calorie_token: str,
 ) -> None:
-    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet=AsyncMock())
+    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet_with_items=AsyncMock())
     context = _context(db, args=["lunch", "dal", calorie_token])
     message = _message()
     user = SimpleNamespace(id=_allowed_user().id, username="tester", first_name="Test")
-    update = SimpleNamespace(message=message, effective_user=user)
+    update = SimpleNamespace(message=message, effective_message=message, effective_user=user)
 
     result = await diet.diet_command(update, context)
 
     assert result == ConversationHandler.END
-    db.log_diet.assert_not_awaited()
+    db.log_diet_with_items.assert_not_awaited()
     message.reply_text.assert_awaited_once()
 
 

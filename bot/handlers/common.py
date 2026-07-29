@@ -35,6 +35,59 @@ CallbackResult = TypeVar("CallbackResult")
 # sent in a group never exposes personal activity to other members.
 AUTH_FILTER = filters.User(user_id=ALLOWED_USER_IDS) & filters.ChatType.PRIVATE
 
+def normalize_control_text(text: str) -> str:
+    """Trim and case-fold a message for whole-string control matching.
+
+    Phase 1 controls are matched on the trimmed, case-folded, *whole* string; no
+    Unicode compatibility normalization or internal-whitespace collapsing is
+    applied (plan §8.1), so ``hi there`` and ``meal prep`` stay ordinary text.
+    """
+    return text.strip().casefold()
+
+
+HOME_ACTIONS = {
+    "meal": "meal",
+    "repeat": "repeat",
+    "describe": "describe",
+}
+HOME_WORDS = {"home"}
+GREETINGS = {"hi", "hello", "hey"}
+
+
+class _NormalizedControlFilter(filters.MessageFilter):
+    """Match a message whose whole normalized text is one of ``allowed``."""
+
+    def __init__(self, allowed: set[str], name: str) -> None:
+        super().__init__(name=name)
+        self._allowed = frozenset(allowed)
+
+    def filter(self, message: Any) -> bool:
+        text = getattr(message, "text", None)
+        if not text:
+            return False
+        return normalize_control_text(text) in self._allowed
+
+
+# Exactly "meal" — the reply-keyboard label that is a real Diet entry point.
+MEAL_LABEL_FILTER = _NormalizedControlFilter({"meal"}, name="MealLabel")
+# Any Home action (meal/repeat/describe).
+HOME_ACTION_FILTER = _NormalizedControlFilter(set(HOME_ACTIONS), name="HomeAction")
+# Greetings or the word "home".
+GREETING_HOME_FILTER = _NormalizedControlFilter(
+    set(GREETINGS) | set(HOME_WORDS), name="GreetingHome"
+)
+# Every active-flow control word (used by state control interceptors).
+ACTIVE_CONTROL_FILTER = _NormalizedControlFilter(
+    set(HOME_ACTIONS) | set(GREETINGS) | set(HOME_WORDS), name="ActiveControl"
+)
+# Diet states re-render on "meal" but nudge on every other control word, so a
+# non-meal control interceptor excludes it.
+DIET_NONMEAL_CONTROL_FILTER = _NormalizedControlFilter(
+    (set(HOME_ACTIONS) - {"meal"}) | set(GREETINGS) | set(HOME_WORDS),
+    name="DietNonMealControl",
+)
+
+
 _ACTIVE_CONVERSATION_KEY = "_ledger_active_conversation"
 _CONVERSATION_LABELS = {
     "study": "a study session",
@@ -57,6 +110,9 @@ _CONVERSATION_DATA_KEYS = {
         "diet_food_items",
         "diet_calories",
         "diet_ui_message_id",
+        "diet_ui_revision",
+        "diet_entry_mode",
+        "diet_choice_page",
         "diet_sel_kind",
         "diet_sel_id",
         "diet_recent_qtys",
@@ -334,6 +390,56 @@ async def active_conversation_hint(
     await update.effective_message.reply_text(
         f"⏳ You're already in {label}. Finish it or use /cancel in this chat."
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared per-state interceptors (Phase 1 routing matrix, plan §8.5/§8.6)
+# ---------------------------------------------------------------------------
+async def _safe_reply(update: Update, text: str) -> None:
+    """Reply plainly, swallowing a transient send failure."""
+    message = getattr(update, "effective_message", None)
+    if message is None:
+        return
+    try:
+        await message.reply_text(text)
+    except TelegramError:
+        logger.warning("Could not deliver a routing hint", exc_info=True)
+
+
+async def active_flow_control_interceptor(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """A Home control word arrived during an active flow: nudge, do not consume.
+
+    Registered before a state's ordinary text handler so ``Repeat``/``Describe``/
+    a greeting/``Home`` (and ``Meal`` outside Diet) can never become a subject,
+    exercise, habit name, or food description. Returns ``None`` so PTB keeps the
+    current conversation state and every draft key is untouched.
+    """
+    await _safe_reply(update, "⏳ Finish this flow or /cancel first.")
+    return None
+
+
+async def voice_not_enabled_interceptor(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Reject a voice note mid-flow without downloading it (plan §8.6).
+
+    Never calls ``get_file`` or downloads content. Returns ``None`` to preserve
+    the current state.
+    """
+    await _safe_reply(
+        update, "🎤 Voice logging isn't enabled yet. Use the buttons or /cancel."
+    )
+    return None
+
+
+async def buttons_or_cancel_catchall(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Absorb arbitrary text in a callback-only state so it never reaches Home."""
+    await _safe_reply(update, "Use the buttons or /cancel.")
+    return None
 
 
 # ---------------------------------------------------------------------------

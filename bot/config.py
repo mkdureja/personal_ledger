@@ -87,18 +87,24 @@ def local_date_from_utc(utc_dt: datetime) -> date:
 # ---------------------------------------------------------------------------
 # Access control
 # ---------------------------------------------------------------------------
-def _parse_allowed_user_ids(raw: str) -> frozenset[int]:
-    """Parse ALLOWED_USER_IDS into validated, positive Telegram IDs.
+def _parse_id_tokens(
+    raw: str, setting: str, *, allow_empty: bool
+) -> frozenset[int]:
+    """Parse a comma-separated Telegram-ID list into validated positive IDs.
 
     Rejects non-integers, zero, negatives, and duplicates with actionable,
     setting-specific errors rather than silently normalizing them — Telegram user
     IDs are always positive. The duplicate diagnostic reports a count, not the ID
-    value, so a real Telegram ID is never echoed into a crash log.
+    value, so a real Telegram ID is never echoed into a crash log. When
+    ``allow_empty`` is false an empty list is itself an error (used for the
+    mandatory ``ALLOWED_USER_IDS``); the Phase 1 rollout lists default to empty.
     """
     tokens = [tok.strip() for tok in raw.split(",") if tok.strip()]
     if not tokens:
+        if allow_empty:
+            return frozenset()
         raise RuntimeError(
-            "ALLOWED_USER_IDS not set in .env — add your Telegram user ID "
+            f"{setting} not set in .env — add your Telegram user ID "
             "(message @userinfobot to find it)"
         )
     seen: set[int] = set()
@@ -108,12 +114,12 @@ def _parse_allowed_user_ids(raw: str) -> frozenset[int]:
             value = int(token)
         except ValueError as exc:
             raise RuntimeError(
-                "ALLOWED_USER_IDS must be a comma-separated list of integer "
+                f"{setting} must be a comma-separated list of integer "
                 f"Telegram IDs; {token!r} is not an integer."
             ) from exc
         if value <= 0:
             raise RuntimeError(
-                "ALLOWED_USER_IDS must contain positive Telegram IDs; "
+                f"{setting} must contain positive Telegram IDs; "
                 f"got a non-positive value ({value})."
             )
         if value in seen:
@@ -121,15 +127,85 @@ def _parse_allowed_user_ids(raw: str) -> frozenset[int]:
         seen.add(value)
     if duplicate_count:
         raise RuntimeError(
-            f"ALLOWED_USER_IDS lists {duplicate_count} duplicate ID(s); "
+            f"{setting} lists {duplicate_count} duplicate ID(s); "
             "include each authorized Telegram ID exactly once."
         )
     return frozenset(seen)
 
 
+def _parse_allowed_user_ids(raw: str) -> frozenset[int]:
+    """Parse the mandatory ``ALLOWED_USER_IDS`` list (must be non-empty)."""
+    return _parse_id_tokens(raw, "ALLOWED_USER_IDS", allow_empty=False)
+
+
 ALLOWED_USER_IDS: frozenset[int] = _parse_allowed_user_ids(
     os.getenv("ALLOWED_USER_IDS", "")
 )
+
+# ---------------------------------------------------------------------------
+# Phase 1 rollout flags (read once at startup; changing them needs a restart)
+# ---------------------------------------------------------------------------
+# ``PHASE1_ENABLED_USER_IDS`` is a subset of ``ALLOWED_USER_IDS``; empty means
+# Phase 1 Home and fast mutations are off for everyone.
+PHASE1_ENABLED_USER_IDS: frozenset[int] = _parse_id_tokens(
+    os.getenv("PHASE1_ENABLED_USER_IDS", ""),
+    "PHASE1_ENABLED_USER_IDS",
+    allow_empty=True,
+)
+_phase1_not_allowed = PHASE1_ENABLED_USER_IDS - ALLOWED_USER_IDS
+if _phase1_not_allowed:
+    raise RuntimeError(
+        "PHASE1_ENABLED_USER_IDS must be a subset of ALLOWED_USER_IDS; "
+        f"{len(_phase1_not_allowed)} ID(s) are not authorized."
+    )
+
+# ``HOME_KEYBOARD_MODE`` is exactly one of off/pilot/on/remove.
+#   off    — never send the persistent keyboard; remove a stale one.
+#   pilot  — send only to HOME_KEYBOARD_PILOT_USER_IDS; remove for others.
+#   on     — send to every Phase 1-enabled user; remove for others.
+#   remove — send ReplyKeyboardRemove to every authorized user (rollback).
+HOME_KEYBOARD_MODES = ("off", "pilot", "on", "remove")
+HOME_KEYBOARD_MODE: str = os.getenv("HOME_KEYBOARD_MODE", "off").strip()
+if HOME_KEYBOARD_MODE not in HOME_KEYBOARD_MODES:
+    raise RuntimeError(
+        "HOME_KEYBOARD_MODE must be one of "
+        f"{', '.join(HOME_KEYBOARD_MODES)}; got {HOME_KEYBOARD_MODE!r}."
+    )
+
+# ``HOME_KEYBOARD_PILOT_USER_IDS`` is a subset of both ALLOWED_USER_IDS and
+# PHASE1_ENABLED_USER_IDS. It is consulted only in ``pilot`` mode.
+HOME_KEYBOARD_PILOT_USER_IDS: frozenset[int] = _parse_id_tokens(
+    os.getenv("HOME_KEYBOARD_PILOT_USER_IDS", ""),
+    "HOME_KEYBOARD_PILOT_USER_IDS",
+    allow_empty=True,
+)
+_pilot_not_enabled = HOME_KEYBOARD_PILOT_USER_IDS - PHASE1_ENABLED_USER_IDS
+if _pilot_not_enabled:
+    raise RuntimeError(
+        "HOME_KEYBOARD_PILOT_USER_IDS must be a subset of "
+        "PHASE1_ENABLED_USER_IDS (and thus ALLOWED_USER_IDS); "
+        f"{len(_pilot_not_enabled)} ID(s) are not Phase 1-enabled."
+    )
+
+
+def phase1_enabled_for(user_id: int) -> bool:
+    """Whether Phase 1 Home and fast mutations are enabled for this user."""
+    return user_id in PHASE1_ENABLED_USER_IDS
+
+
+def home_keyboard_action_for(user_id: int) -> str:
+    """Return ``"send"`` or ``"remove"`` for this user's persistent keyboard.
+
+    Encodes the effective-keyboard table: ``off``/``remove`` always remove,
+    ``pilot`` sends only to the pilot list, ``on`` sends to every Phase
+    1-enabled user; everyone else has the stale keyboard removed.
+    """
+    if HOME_KEYBOARD_MODE == "pilot":
+        return "send" if user_id in HOME_KEYBOARD_PILOT_USER_IDS else "remove"
+    if HOME_KEYBOARD_MODE == "on":
+        return "send" if user_id in PHASE1_ENABLED_USER_IDS else "remove"
+    # "off" and "remove" never send.
+    return "remove"
 
 # ---------------------------------------------------------------------------
 # Reminders

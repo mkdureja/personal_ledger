@@ -84,7 +84,7 @@ async def test_menu_command(user_id):
 async def test_menu_callback_analytics(db, user_id):
     """The Analytics tap opens the analytics report sub-menu."""
     update = create_callback_query("menu_analytics", user_id=user_id)
-    context = SimpleNamespace(bot_data={"db": db})
+    context = SimpleNamespace(bot_data={"db": db}, user_data={})
 
     await menu_callback(update, context)
 
@@ -100,7 +100,7 @@ async def test_menu_callback_habits(db, user_id, monkeypatch):
     monkeypatch.setattr("bot.handlers.habits.show_habits_checklist", mock_checklist)
 
     update = create_callback_query("menu_habits", user_id=user_id)
-    context = SimpleNamespace(bot_data={"db": db})
+    context = SimpleNamespace(bot_data={"db": db}, user_data={})
 
     await menu_callback(update, context)
 
