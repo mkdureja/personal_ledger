@@ -177,7 +177,7 @@ async def test_menu_callback_conversation_categories_not_served_here(user_id):
     handler it is treated as an expired button rather than served here."""
     for action in ("menu_study", "menu_gym", "menu_diet"):
         update = create_callback_query(action, user_id=user_id)
-        context = SimpleNamespace()
+        context = SimpleNamespace(user_data={})
 
         await menu_callback(update, context)
 
@@ -189,8 +189,8 @@ async def test_menu_callback_conversation_categories_not_served_here(user_id):
 async def test_menu_callback_invalid_action(user_id):
     """Test invalid menu action alerts user and removes keyboard."""
     update = create_callback_query("invalid_menu", user_id=user_id)
-    context = SimpleNamespace()
-    
+    context = SimpleNamespace(user_data={})
+
     await menu_callback(update, context)
     
     update.callback_query.answer.assert_called_once_with("This menu is no longer valid.", show_alert=True)

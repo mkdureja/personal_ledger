@@ -15,11 +15,32 @@ checkpoint. Always back up with one of the consistent methods below; never copy
 
 | Decision | Value |
 |---|---|
-| Destination | `E:\ledger-backups` |
-| Scope | **Local-only**, on a different physical disk than the repository (`D:`) |
-| Cloud sync | **Excluded.** Never place a plaintext database backup in cloud storage |
-| Encryption | Relies on device/disk encryption of the host volume |
-| Retention | Rolling: the newest 10 routine backups per schema version |
+| Decision | Value | Status |
+|---|---|---|
+| Destination | `E:\ledger-backups` | ✅ in place, verified |
+| Scope | **Local-only**, on a different physical disk than the repository (`D:`) | ✅ |
+| Cloud sync | **Excluded.** Never place a plaintext database backup in cloud storage | ✅ |
+| At-rest encryption | Intended: device/disk encryption of the host volume | ❌ **not satisfied** — see below |
+| Filesystem permissions | Intended: restricted to the operating account | ❌ not reviewed |
+| Retention | Rolling: the newest 10 routine backups per schema version | ✅ enforced by the tool |
+| Scheduling | Daily task on the host that runs the bot | ❌ not registered |
+
+> **Open gap, checked 2026-07-30.** `Get-BitLockerVolume` reports every volume on
+> this host — including `E:` — as `FullyDecrypted`, `ProtectionStatus: Off`. The
+> recorded policy allows a plaintext local backup **only** on a
+> device/disk-encrypted volume, so the backups now sitting on `E:` do not yet meet
+> it. They are a complete, unencrypted copy of both users' ledgers on a drive with
+> inherited default permissions. Close this by either:
+>
+> 1. enabling BitLocker on `E:` (`Enable-BitLocker -MountPoint E: …`) and
+>    tightening the folder ACL to the operating account; or
+> 2. deciding the household accepts unencrypted local backups, and editing the
+>    policy above to say so — an accepted risk is fine, an undocumented one is not.
+>
+> No scheduled task exists yet either (`Get-ScheduledTask` matches nothing named
+> Ledger), so backups are currently manual. The command to register one is in
+> **Scheduling** below; it is not run automatically because it changes the host's
+> configuration.
 
 The two acceptable policies are: a plaintext local backup on a verified
 device/disk-encrypted volume that is excluded from cloud sync (the choice

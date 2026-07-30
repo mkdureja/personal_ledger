@@ -366,6 +366,18 @@ def test_a_long_food_name_keeps_its_amount_visible():
     assert label.startswith("⚡ ") and label.endswith(" · 45 g")
 
 
+def test_a_pathological_unit_cannot_blow_out_the_label():
+    """The unit is user-supplied, so the "fixed" part of a label is bounded too."""
+    decorated = suggestions.annotate_defaults(
+        [_FOOD],
+        _prefs(food={"default_amount": 1.0, "default_unit": "h" * 60}),
+    )
+    label = keyboards.choice_button_label(decorated[0], quick=True)
+    assert label.startswith("⚡ Banana · 1 ")
+    assert len(label) < 40
+    assert label.endswith("…")
+
+
 def test_amounts_render_without_a_needless_decimal():
     decorated = suggestions.annotate_defaults(
         [_FOOD], _prefs(food={"default_amount": 220.0, "default_unit": "g"})
@@ -748,6 +760,40 @@ async def test_a_guided_diet_prompt_teaches_cancel(monkeypatch):
 
     labels = _labels(update.effective_message.reply_text.call_args.kwargs["reply_markup"])
     assert "✖️ Cancel" in labels
+
+
+@pytest.mark.parametrize(
+    "flow,data",
+    [("study", "menu_study"), ("gym", "menu_gym"), ("diet", "menu_diet")],
+)
+async def test_a_section_tap_during_its_own_flow_is_not_called_expired(db, flow, data):
+    """The button is current; the flow is busy. Say so, and keep it usable.
+
+    An active conversation offers only its state handlers, so a Home section tap
+    falls through to ``menu_callback`` while that section's flow is live.
+    """
+    query = SimpleNamespace(
+        data=data,
+        answer=AsyncMock(),
+        message=SimpleNamespace(reply_text=AsyncMock()),
+        edit_message_reply_markup=AsyncMock(),
+    )
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_user=SimpleNamespace(id=UID),
+        effective_chat=SimpleNamespace(id=UID, type=ChatType.PRIVATE),
+    )
+    context = _context(db)
+    activate_conversation(update, context, flow)
+    context.user_data["study_subject"] = "Poetry"
+
+    await start.menu_callback(update, context)
+
+    assert "Finish this flow" in query.answer.call_args.args[0]
+    # The keyboard is not retired, and the draft is untouched.
+    query.edit_message_reply_markup.assert_not_awaited()
+    assert context.user_data["study_subject"] == "Poetry"
+    assert active_conversation_flow(context) == flow
 
 
 def test_menu_recent_is_a_served_action_not_an_expired_button():

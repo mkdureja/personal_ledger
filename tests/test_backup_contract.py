@@ -224,6 +224,65 @@ def test_resolve_expect_version_accepts_latest_and_integers():
     assert resolve_expect_version(None) is None
     with pytest.raises(BackupError):
         resolve_expect_version("v8")
+    with pytest.raises(BackupError):
+        resolve_expect_version(-1)
+
+
+def test_an_undescribable_version_cannot_be_asserted_or_certified(
+    tmp_path, outside_repo
+):
+    """A version with no table contract must not be certifiable at all.
+
+    Otherwise asserting a future version yields a copy checked only for integrity
+    and foreign keys — verification that proves nothing about its shape.
+    """
+    future = LATEST_SCHEMA_VERSION + 1
+    with pytest.raises(BackupError, match="no known table contract"):
+        resolve_expect_version(future)
+
+    source = _make_versioned_db(tmp_path / "ledger.db", LATEST_SCHEMA_VERSION)
+    conn = sqlite3.connect(str(source))
+    try:
+        conn.execute(f"PRAGMA user_version = {future}")
+        conn.commit()
+    finally:
+        conn.close()
+    dest = tmp_path / "future-copy.db"
+    with pytest.raises(BackupError, match="no known table contract"):
+        create_backup(source, dest, expect_version=future)
+    assert not dest.exists()
+
+    # Defence in depth: even reached directly, the create-path contract refuses.
+    facts = inspect_database(source)
+    with pytest.raises(VerificationFailed, match="no known table contract"):
+        verify_created_backup(facts, source_version=future)
+
+
+@pytest.mark.parametrize(
+    "content",
+    # A zero-byte file is deliberately absent: SQLite treats it as a valid *empty*
+    # database, so it is rejected by the version rule (stamped 0), not by the
+    # driver. These are the shapes that make sqlite3 itself raise.
+    [b"not a database at all" * 40, b"SQLite format 3\x00truncated"],
+)
+def test_a_damaged_file_fails_with_a_controlled_error(tmp_path, content):
+    """A driver traceback is not a verification result.
+
+    The CLI must exit non-zero with an actionable message, and the migration
+    preflight — which wraps ``BackupError`` — must be able to catch this.
+    """
+    broken = tmp_path / "broken.db"
+    broken.write_bytes(content)
+    with pytest.raises(VerificationFailed) as excinfo:
+        verify_backup_file(broken)
+    assert "rollback point" in str(excinfo.value)
+
+
+def test_cli_reports_a_damaged_file_without_a_traceback(tmp_path, capsys):
+    broken = tmp_path / "broken.db"
+    broken.write_bytes(b"definitely not sqlite")
+    assert backup_db.main(["--verify-only", str(broken)]) == 1
+    assert "ERROR" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,9 @@ from .common import (
 from ..config import phase1_enabled_for
 from ..keyboards import analytics_keyboard
 
+#: Home actions whose ConversationHandler entry point normally claims the tap.
+_CONVERSATION_MENU_ACTIONS = frozenset({"menu_study", "menu_gym", "menu_diet"})
+
 
 # ---------------------------------------------------------------------------
 # /start
@@ -150,6 +153,18 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """
     query = update.callback_query
     data = query.data or ""
+    flow_active = active_conversation_flow(context) is not None
+
+    # A Study/Gym/Diet tap normally never reaches here — their ConversationHandler
+    # entry points claim it first. But an *active* conversation offers only its
+    # state handlers, so while one is live the same tap falls through to this
+    # handler. Treating it as an expired button would be a lie: the button is
+    # current, the flow is simply busy. Answer with the finish-or-cancel hint and
+    # leave the keyboard usable.
+    if flow_active and data in _CONVERSATION_MENU_ACTIONS:
+        await query.answer("Finish this flow or /cancel first.", show_alert=True)
+        return
+
     valid_actions = {"menu_habits", "menu_analytics", "menu_recent"}
     if data not in valid_actions:
         await query.answer("This menu is no longer valid.", show_alert=True)
@@ -160,9 +175,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # Honor an active guided flow: a menu tap must not switch sections mid-flow
-    # (plan §8.6). The Study/Gym/Diet menu taps are claimed by their own
-    # ConversationHandler entry points before reaching here.
-    if active_conversation_flow(context) is not None:
+    # (plan §8.6).
+    if flow_active:
         await query.answer("Finish this flow or /cancel first.", show_alert=True)
         return
 

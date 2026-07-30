@@ -25,25 +25,29 @@ its second-pass addendum covering deployment safety, CI, and branch state.
 
 ## Current baseline
 
-- The baseline worktree was clean at `16d1f3a` before these two artifacts were
-  written. The current worktree contains the rewritten canonical plan, the
-  untracked `review_codex.md`, current-document corrections, and three proposed
-  historical-file deletions. Settle and commit that documentation-only change
-  before code work.
-- **892 tests pass**; compilation and installed dependency checks pass.
-- The database is schema v8 with a clean integrity and foreign-key check.
-- Two users are authorized and both are in the current keyboard pilot.
+Updated 2026-07-30 after implementing Releases 0 and 1 and a follow-up Codex
+review. The planning-time baseline (clean at `16d1f3a`, 892 tests) is history; see
+the per-release status sections below for what each slice delivered.
+
+- Releases 0 and 1 are implemented on `hardening/review-fixes`. **1036 tests
+  pass**; compilation and installed dependency checks pass; GitHub CI is green on
+  `windows-latest` and `ubuntu-latest`.
+- The database is schema v8 with a clean integrity and foreign-key check. An
+  external verified backup exists at `E:\ledger-backups`, and no database or
+  backup file remains inside the repository.
+- Two users are authorized and both are in the current keyboard `pilot` mode.
 - Home, Quick Meal, exact Repeat, targeted Undo, current-value replay, editable
-  meal drafts, suggestions, a curated catalog, and atomic recipe duplication are
-  implemented.
-- The post-fix build has not been documented as accepted on both real Telegram
-  clients.
-- The process was not running during this review; that observation is not itself
-  a defect, but live acceptance requires one supervised polling process.
-- At the review snapshot, neither ledger had a private food, recipe, or food
-  preference. Phase 1 is enabled for both users in `pilot` mode. This affects the
-  live-test setup because an instant-usual row cannot yet render; it does not
+  meal drafts, suggestions, a curated catalog, atomic recipe duplication, the
+  single-instance lock, and the pre-migration backup gate are implemented.
+- **Still not accepted on both real Telegram clients**, and no polling process was
+  running during either review. Live acceptance requires one supervised process.
+- Neither ledger has a private food, recipe, or food preference yet. This blocks
+  the Release 1 live gate's `⚡` case until the setup pre-step is done; it does not
   justify promoting a speculative feature or migration.
+- **Open, and owner-owned:** the branch is 35+ commits ahead of `main` with no
+  pull request, `main` has no branch protection, and the backup destination does
+  not yet meet its own at-rest encryption policy (see
+  [docs/backup_runbook.md](docs/backup_runbook.md)).
 
 ## Product rules for every slice
 

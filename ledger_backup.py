@@ -107,9 +107,25 @@ def inspect_database(path: Path | str) -> DatabaseFacts:
     path = Path(path)
     if not path.exists():
         raise BackupError(f"database not found: {path}")
-    conn = sqlite3.connect(str(path))
+    # A truncated, encrypted, or simply wrong file raises from deep inside sqlite3.
+    # Letting that escape means an operator verifying a rollback point gets a raw
+    # traceback, and the migration preflight — which only wraps BackupError — would
+    # abort startup with a driver error instead of its own actionable refusal.
+    try:
+        conn = sqlite3.connect(str(path))
+    except sqlite3.Error as exc:
+        raise VerificationFailed(
+            f"{path}: could not be opened as a SQLite database ({exc}). Do NOT use "
+            "this file as a rollback point."
+        ) from exc
     try:
         return _facts_from_connection(conn, path)
+    except sqlite3.Error as exc:
+        raise VerificationFailed(
+            f"{path}: could not be read as a SQLite database ({exc}) — it may be "
+            "truncated, encrypted, or not a database. Do NOT use this file as a "
+            "rollback point."
+        ) from exc
     finally:
         conn.close()
 
@@ -203,6 +219,17 @@ def resolve_expect_version(raw: str | int | None) -> int | None:
     value = int(raw)
     if value < LEGACY_UNVERSIONED:
         raise BackupError(f"--expect-version cannot be negative; got {value}.")
+    if value > LATEST_SCHEMA_VERSION:
+        # Without this, a caller could assert a version this checkout cannot
+        # describe and get a "verified" copy that was never checked against any
+        # table contract — integrity and foreign keys only. Certifying a schema
+        # whose required objects are unknown is exactly what verification is for.
+        raise BackupError(
+            f"--expect-version {value} is newer than this checkout understands "
+            f"({LATEST_SCHEMA_VERSION}), so it has no known table contract and a "
+            "copy at that version cannot be certified. Use the matching (or "
+            "newer) build."
+        )
     return value
 
 
@@ -277,6 +304,16 @@ def verify_created_backup(
         problems.append(
             f"copy is stamped version {facts.user_version} but its source is "
             f"version {source_version}"
+        )
+    if facts.user_version != LEGACY_UNVERSIONED and not is_known_schema_version(
+        facts.user_version
+    ):
+        # Defence in depth behind resolve_expect_version: never certify a version
+        # with no table contract. Legacy 0 is the one documented exception, and it
+        # is only reachable through the migration preflight's rehearsal path.
+        problems.append(
+            f"version {facts.user_version} has no known table contract in this "
+            f"checkout (1 through {LATEST_SCHEMA_VERSION})"
         )
     problems.extend(_shape_problems(facts))
     if problems:

@@ -130,8 +130,13 @@ MAX_FOOD_CHOICES = 40
 _MAX_BUTTON_LABEL = 40
 # However tight the budget gets, a name must stay identifiable. When the fixed
 # decoration is unusually long the total may exceed the soft cap rather than
-# reduce a food's name to a couple of letters.
+# reduce a food's name to a couple of letters — a slightly wide button is better
+# than an unreadable one.
 _MIN_NAME_CHARS = 12
+# The unit in a stored "usual" is user-supplied text, so it is bounded too.
+# Without this the "fixed" part of a label is not actually fixed, and one odd
+# unit could push a row far past any budget.
+_MAX_UNIT_CHARS = 12
 
 
 def _button_label(text: object, limit: int = _MAX_BUTTON_LABEL) -> str:
@@ -208,7 +213,8 @@ def choice_button_label(choice: dict, *, quick: bool) -> str:
             prefix, suffix = REPAIR_PREFIX, suffix + _REPAIR_SUFFIX
         elif default:
             prefix = INSTANT_PREFIX
-            quantity = f" · {_fmt_amount(default['amount'])} {default['unit']}"
+            unit = _button_label(default["unit"], _MAX_UNIT_CHARS)
+            quantity = f" · {_fmt_amount(default['amount'])} {unit}"
 
     budget = max(_MIN_NAME_CHARS, _MAX_BUTTON_LABEL - len(prefix + suffix + quantity))
     return f"{prefix}{_button_label(choice['name'], budget)}{suffix}{quantity}"
