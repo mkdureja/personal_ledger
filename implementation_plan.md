@@ -314,6 +314,44 @@ the suite is CI-ready without deployment `.env` leakage.
   requires both before merge; this external GitHub setting is an assigned owner
   action, not an implementation detail.
 
+### Release 0 status — implemented 2026-07-30
+
+All six slices are implemented on `hardening/review-fixes`. **960 tests pass.**
+The owner settled the blocking input: destination `E:\ledger-backups`, local-only
+on a separate physical disk, excluded from cloud sync, plaintext under host disk
+encryption, rolling retention of 10; the three superseded documents were confirmed
+for deletion.
+
+The gate below was executed against the **real** database (every migration case on
+an online-backup copy in a temporary directory; the live file only read):
+**20/20 checks passed.** Recorded results:
+
+- A new external backup at `E:\ledger-backups` verified at v8: `integrity_check =
+  ok`, zero foreign-key violations, all v8 tables, sanitized row counts.
+- That backup, copied to a temporary path, passed `--verify-only` — restore
+  rehearsed, not assumed.
+- The historical in-tree rollback point was verified, relocated to
+  `E:\ledger-backups\ledger-legacy-manual-v8-*.db`, and confirmed. No database or
+  backup file remains inside the repository. Because it is itself v8, the
+  "rejected as non-current" half of this check is proven by a v7 source in
+  `tests/test_backup_contract.py` and by the live v7 rehearsal below.
+- An in-repository destination is refused (exit 2), including a path beside
+  `ledger.db`.
+- A second real `python -m bot` exited 1 naming the lock file, never reached
+  polling, and left the live database byte-identical.
+- A v7-stamped copy of the real database: refused with no destination
+  (`user_version` unchanged), then produced a backup that verifies at v7 and is
+  rejected as current, migrated to v8 with no user rows lost, and left the
+  rollback copy still at v7.
+- A populated legacy v0 copy was backed up at v0, rehearsed on a throwaway copy,
+  and only then migrated; an empty new database started with no backup and no
+  destination; a v9-stamped copy aborted with `UnsupportedSchemaError` creating no
+  backup.
+
+**Owner actions still open:** enable branch protection on `main` requiring both CI
+jobs (an external GitHub setting), and confirm both matrix runners are green on the
+pushed branch.
+
 ### Release 0 gate
 
 - A new off-repository backup passes full v8 schema/integrity verification.

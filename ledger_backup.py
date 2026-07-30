@@ -15,6 +15,14 @@ single self-contained ``.db`` file. Copying ``ledger.db`` on its own is not a
 backup: it misses the ``-wal``/``-shm`` sidecars and can restore a torn, older
 state.
 
+One documented side effect: the source is opened read-write, so closing it
+**checkpoints the WAL** into the main database file and removes the
+``-wal``/``-shm`` sidecars. No row changes — the WAL held already-committed data —
+and it is the same thing a clean shutdown does. Read-only access is deliberately
+not used: a read-only connection cannot recover a leftover WAL if its ``-shm`` is
+gone, which would make the tool fail exactly when a post-crash backup matters
+most.
+
 Two verification contracts, deliberately distinct:
 
 **Creation** (:func:`create_backup`) proves the copy matches the source it was

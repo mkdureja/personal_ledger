@@ -33,6 +33,19 @@ Separate disk, same host: this survives a repository mistake, a bad migration, o
 a `D:` failure. It does **not** survive loss of the machine. That is an accepted
 limit of a two-user household ledger, not an oversight.
 
+The one historical rollback point that used to sit in the working tree
+(`ledger.db.bak-*`, created by a manual file copy) was verified and relocated to
+this destination as `ledger-legacy-manual-v8-*.db`. Its `ledger-legacy-` prefix
+keeps it outside rolling retention. No database or backup file remains inside the
+repository.
+
+**Side effect worth knowing:** creating or verifying a backup opens the file
+read-write, so closing it checkpoints the WAL into the main file and removes the
+`-wal`/`-shm` sidecars. No rows change — the WAL held already-committed data — and
+it is what a clean shutdown does anyway. Read-only access is deliberately not
+used, because a read-only connection cannot recover a leftover WAL whose `-shm` is
+missing, and that is precisely the post-crash case where a backup matters most.
+
 ## Option A — online backup while the bot is running (preferred)
 
 Uses SQLite's online backup API, which folds pending WAL state into a single
