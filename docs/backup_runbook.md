@@ -151,18 +151,50 @@ automatically.
    pre-migration backup and previous allowlist. Confirm row counts match the
    backup report before re-enabling both users.
 
-## Pre-migration checklist
+## Pre-migration backup: enforced at startup
 
-Before any production migration (see `implementation_plan.md`, Release 0 and its
-release gate):
+Migrations are no longer gated by a checklist you have to remember. Startup runs
+`bot/migration_preflight.py::prepare_database_for_startup()` after connecting and
+**before** `init_db()`, and it refuses to migrate without a freshly verified
+backup of the exact source it is about to change.
 
-> The current build does not enforce this checklist automatically. Complete it
-> before starting code with a newer schema. The planned Release 0 preflight will
-> create and verify the backup itself and refuse migration when no external
-> destination is configured; do not use its planned flags until they are shipped.
+Set the destination once in `.env`:
 
-- [ ] Fresh backup taken with Option A or B and its path recorded.
-- [ ] `integrity_check` and `foreign_key_check` pass on the backup.
-- [ ] Row counts captured (sanitized) for before/after comparison.
-- [ ] Restore rehearsed to a temporary path and verified.
+```ini
+BACKUP_DEST_DIR=E:\ledger-backups
+```
+
+It must resolve outside the project root, and a value inside the repository is
+rejected at startup. What the preflight does, by case:
+
+| Live `user_version` | Behavior |
+|---|---|
+| equal to this build's | Start normally; no backup created |
+| newer than this build's | Abort with `UnsupportedSchemaError`; **no** backup, no schema change |
+| `0` with no application tables | Genuinely new database: create the schema, no meaningless backup |
+| `1`..latest-1 | Create and verify `ledger-premigration-v<N>-<stamp>Z.db`, then migrate |
+| `0` but populated (legacy) | Create a source-matching backup, then rehearse the whole migration on a throwaway copy; touch the live file only if the rehearsal reaches and verifies the latest version |
+| any pending, `BACKUP_DEST_DIR` unset | **Refuse to start**, exit non-zero, no schema change |
+
+The rollback copy is kept at its **source** version — a v7 backup taken before a
+v8 migration is correct at v7 — and the copy itself is never migrated. Rehearsals
+run on a temporary file that is deleted afterwards. Pre-migration backups are
+never touched by rolling retention.
+
+`run_migrations()` stays the low-level primitive the migration tests drive
+directly; it acquires no operational paths and reads no deployment configuration.
+That is why the whole suite passes with no exemption flag. **Any future
+executable migration or administration entry point must call the same preflight
+function** — calling `run_migrations()` directly is not an approved production
+path.
+
+### Before a schema-changing deployment
+
+Automation covers the backup itself. These remain human steps:
+
+- [ ] Confirm `BACKUP_DEST_DIR` points at the recorded destination and the disk
+      has room.
+- [ ] Read the startup log line naming the verified backup, and record the path.
+- [ ] Rehearse a restore of that backup with `--verify-only` (see Restore above).
+- [ ] Note the sanitized row counts for a before/after comparison.
 - [ ] User A/User B numeric-ID mapping confirmed out of band, without changing rows.

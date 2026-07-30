@@ -21,9 +21,21 @@ from telegram.ext import (
     filters,
 )
 
-from .config import BOT_TOKEN, DB_PATH, REMINDER_TIME, ROUTINE_PATH, LOCAL_TZ, LOG_FORMAT
+from .config import (
+    BACKUP_DEST_DIR,
+    BOT_TOKEN,
+    DB_PATH,
+    REMINDER_TIME,
+    ROUTINE_PATH,
+    LOCAL_TZ,
+    LOG_FORMAT,
+)
 from .database import DatabaseManager
 from .instance_lock import AlreadyRunningError, SingleInstanceLock, lock_path_for
+from .migration_preflight import (
+    MigrationPreflightError,
+    prepare_database_for_startup,
+)
 from .routine import load_routine
 from .handlers.common import (
     AUTH_FILTER,
@@ -148,7 +160,22 @@ async def post_init(application) -> None:
     db = DatabaseManager(DB_PATH)
     await db.connect()
     try:
+        # No production migration runs without a freshly verified backup of the
+        # exact source it is about to change. This is the only approved
+        # executable migration path; init_db()/run_migrations() below stay the
+        # low-level primitive that migration tests drive directly.
+        outcome = await prepare_database_for_startup(
+            db.conn, db_path=DB_PATH, backup_dest_dir=BACKUP_DEST_DIR
+        )
+        if outcome.backup_path is not None:
+            logger.info("Pre-migration backup verified before migrating")
         await db.init_db()
+    except MigrationPreflightError as exc:
+        # Refuse to start, having changed no schema. Log the actionable message
+        # itself so the operator does not have to read a traceback for it.
+        logger.error("%s", exc)
+        await db.close()
+        raise
     except BaseException:
         # Close the connection we just opened; it is not yet registered in
         # bot_data, so post_shutdown would not otherwise clean it up.

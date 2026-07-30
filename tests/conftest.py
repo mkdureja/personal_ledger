@@ -25,6 +25,10 @@ os.environ["TZ"] = "Asia/Kolkata"
 os.environ["PHASE1_ENABLED_USER_IDS"] = ""
 os.environ["HOME_KEYBOARD_MODE"] = "off"
 os.environ["HOME_KEYBOARD_PILOT_USER_IDS"] = ""
+# The migration preflight refuses to start when a migration is pending and no
+# destination is set. Pinning it empty keeps a developer's real BACKUP_DEST_DIR
+# from making the suite write backups to a live directory.
+os.environ["BACKUP_DEST_DIR"] = ""
 
 from bot.database import DatabaseManager
 

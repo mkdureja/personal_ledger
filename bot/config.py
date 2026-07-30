@@ -43,6 +43,30 @@ def _resolve_under_root(raw: str) -> str:
 
 DB_PATH: str = _resolve_under_root(os.getenv("DB_PATH", str(_PROJECT_ROOT / "ledger.db")))
 
+# ---------------------------------------------------------------------------
+# Backup destination for the pre-migration preflight
+# ---------------------------------------------------------------------------
+# Directory that receives the verified pre-migration backup. It must resolve
+# *outside* the project root — the same containment rule ``--dest`` enforces,
+# because a rollback copy beside ``ledger.db`` shares the disk and the accidental
+# deletion it exists to survive.
+#
+# Unset is legal while the schema is current: an ordinary start with no pending
+# migration needs no backup. It becomes a hard startup error only when a non-empty
+# migration is pending (see ``bot/migration_preflight.py``), which is exactly the
+# moment the rollback point matters. Validated here so a bad value fails at import
+# rather than halfway through a deployment.
+BACKUP_DEST_DIR: str = os.getenv("BACKUP_DEST_DIR", "").strip()
+if BACKUP_DEST_DIR:
+    _backup_dest = Path(BACKUP_DEST_DIR).expanduser().resolve()
+    if _backup_dest == _PROJECT_ROOT or _PROJECT_ROOT in _backup_dest.parents:
+        raise RuntimeError(
+            f"BACKUP_DEST_DIR must resolve outside the project root; "
+            f"{_backup_dest} is inside it. Choose a directory on another path "
+            "(see docs/backup_runbook.md)."
+        )
+    BACKUP_DEST_DIR = str(_backup_dest)
+
 # Optional routine file (motivational anchors). When absent, the bot falls
 # back to the single legacy reminder configured by REMINDER_HOUR below.
 ROUTINE_PATH: str = _resolve_under_root(

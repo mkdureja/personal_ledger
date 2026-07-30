@@ -62,10 +62,12 @@ crash window in reminder delivery.
 - Migrations run automatically at startup and are atomic; a failed migration rolls
   back and leaves the previous schema version usable, and the process aborts
   startup rather than serving on a half-migrated database.
-- The current build does **not** create an automatic pre-migration backup. Before
-  starting a build whose `LATEST_VERSION` exceeds the live `user_version`,
-  complete the manual checklist in `backup_runbook.md`. The active implementation
-  plan replaces this manual-only gap with a fail-closed production preflight.
+- Startup **refuses to migrate without a freshly verified backup** of the exact
+  source it is about to change. The preflight runs after connecting and before
+  `init_db()`; with a pending migration and no `BACKUP_DEST_DIR` configured, the
+  process exits non-zero and leaves `user_version` unchanged. See
+  `backup_runbook.md` for the per-case table (new database, known version,
+  populated legacy version 0, future version).
 - Startup also **fails closed** if the database's `user_version` is *newer* than
   the running binary understands (`UnsupportedSchemaError`) — e.g. an accidental
   rollback to an older build after a forward migration. Deploy the matching (or

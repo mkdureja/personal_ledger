@@ -323,9 +323,15 @@ startup verifier, and the migration preflight all share.
 
 Schema migrations run automatically at startup and are non-destructive: they never
 delete, merge, or reassign a user's rows, and a normalized-name collision stops the
-migration with a sanitized diagnostic rather than mutating data. The current build
-does not take an automatic pre-migration backup, so complete the runbook checklist
-before starting any build whose schema version is newer than the live database.
+migration with a sanitized diagnostic rather than mutating data. A pending
+migration also **cannot run without a freshly verified backup** of the exact
+source it is about to change — set `BACKUP_DEST_DIR` to a directory outside the
+repository, or startup refuses and leaves the schema untouched. A populated legacy
+(`user_version = 0`) database is additionally rehearsed on a throwaway copy first.
+
+Exactly one polling process may run per database, and startup enforces that with
+an OS-level lock taken before the database is opened; a second process exits
+non-zero without touching data.
 
 ## Testing
 
