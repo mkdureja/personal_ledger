@@ -152,6 +152,7 @@ async def test_recent_command_lists_entries(two_user_db):
     message = SimpleNamespace(reply_text=AsyncMock())
     update = SimpleNamespace(
         message=message,
+        effective_message=message,
         effective_user=SimpleNamespace(id=MANOJ),
     )
     context = SimpleNamespace(bot_data={"db": two_user_db})
@@ -165,7 +166,11 @@ async def test_recent_command_lists_entries(two_user_db):
 
 async def test_recent_command_handles_empty(two_user_db):
     message = SimpleNamespace(reply_text=AsyncMock())
-    update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=RATIKA))
+    update = SimpleNamespace(
+        message=message,
+        effective_message=message,
+        effective_user=SimpleNamespace(id=RATIKA),
+    )
     context = SimpleNamespace(bot_data={"db": two_user_db})
 
     await recent_command(update, context)

@@ -23,6 +23,8 @@ from ..config import (
     today_local,
 )
 from ..keyboards import (
+    MEAL_BUTTON_LABEL,
+    REPEAT_BUTTON_LABEL,
     home_reply_keyboard,
     main_menu_keyboard,
     reply_keyboard_remove,
@@ -44,6 +46,24 @@ logger = logging.getLogger(__name__)
 
 _MENU_GUIDANCE = "ℹ️ Use /menu to open the main menu."
 _ACTIVE_FLOW_HINT = "⏳ Finish this flow or /cancel first."
+_UNSUPPORTED_TEXT = (
+    "🤔 I didn't recognize that. Pick an action below, say <b>hi</b> for today's "
+    "totals, or send /help for everything."
+)
+
+
+async def _unsupported_text_reply(update: Update) -> None:
+    """Answer unrecognized idle text once, carrying the Home actions.
+
+    Silence leaves a user wondering whether the bot is alive; a full Home refresh
+    for a typo is two messages of noise. One bounded reply with the buttons
+    attached is the recovery path.
+    """
+    await reply_html(
+        update.effective_message,
+        _UNSUPPORTED_TEXT,
+        reply_markup=main_menu_keyboard(),
+    )
 
 
 def _keyboard_markup(user_id: int):
@@ -70,10 +90,46 @@ async def _remove_keyboard(update: Update, text: str) -> None:
 # ---------------------------------------------------------------------------
 # Home snapshot
 # ---------------------------------------------------------------------------
-async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Bound the meal description shown on Home. Home is a navigation surface, not a
+# report: a long multi-item meal must still fit on one readable line.
+_LAST_MEAL_SUMMARY_CHARS = 60
+
+
+def _last_meal_line(summary: dict | None) -> str | None:
+    """One bounded line naming the meal Repeat would re-log, or ``None``.
+
+    Kept honest: the caller reads the same row Repeat copies, so this never
+    advertises a meal the button would not log.
+    """
+    if not summary:
+        return None
+    description = str(summary.get("food_items") or "").strip()
+    if not description:
+        return None
+    if len(description) > _LAST_MEAL_SUMMARY_CHARS:
+        description = description[: _LAST_MEAL_SUMMARY_CHARS - 1] + "…"
+    meal_type = str(summary.get("meal_type") or "meal")
+    return (
+        f"🔁 Repeat last meal: <b>{escape_html(description)}</b> "
+        f"({escape_html(meal_type)})"
+    )
+
+
+async def show_home(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    prelude: str | None = None,
+) -> None:
     """Render today's cross-section snapshot plus the quick-action bar.
 
-    Sends two messages: the snapshot with the inline main menu, then a short
+    This is *the* idle surface: ``/start``, ``/home``, ``/menu``, and a supported
+    greeting all land here, so a user never has to remember which entry point
+    shows the buttons. ``prelude`` carries the one-time ``/start`` welcome, which
+    is prepended rather than sent separately so the buttons still arrive
+    immediately.
+
+    Sends two messages: the snapshot with the inline Home actions, then a short
     quick-action line carrying the reply keyboard (or its removal). Inline and
     reply keyboards are never combined on one message (plan §8.3).
     """
@@ -92,13 +148,26 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     first_name = escape_html(user.first_name or "there")
     cal_suffix = " (some incomplete)" if incomplete else ""
-    text = (
-        f"👋 <b>{first_name}</b> — here's today:\n\n"
-        f"🍽️ Diet: {meal_count} meal(s), {calories} cal{cal_suffix}\n"
-        f"📖 Study: {study_min} min\n"
-        f"🏋️ Gym: {gym_count} exercise(s)\n"
-        f"✅ Habits: {checked_count}/{len(active_habits)} done"
-    )
+    lines = [
+        f"👋 <b>{first_name}</b> — here's today:",
+        "",
+        f"🍽️ Diet: {meal_count} meal(s), {calories} cal{cal_suffix}",
+        f"📖 Study: {study_min} min",
+        f"🏋️ Gym: {gym_count} exercise(s)",
+        f"✅ Habits: {checked_count}/{len(active_habits)} done",
+    ]
+
+    # Name the meal Repeat would re-log, but only when Repeat is actually
+    # available to this user — otherwise Home would describe an action they have
+    # no button for.
+    if phase1_enabled_for(uid):
+        last_meal = _last_meal_line(await db.get_last_meal_summary(uid))
+        if last_meal:
+            lines.extend(["", last_meal])
+
+    text = "\n".join(lines)
+    if prelude:
+        text = f"{prelude}\n\n{text}"
     await reply_html(update.effective_message, text, reply_markup=main_menu_keyboard())
 
     # The persistent quick-action bar is a Phase 1 (B) extra, not part of Home
@@ -107,7 +176,8 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # dark Home is just the snapshot + inline menu above, with no keyboard noise.
     if home_keyboard_action_for(uid) == "send":
         await update.effective_message.reply_text(
-            "Tap 🍽️ <b>Meal</b> to log, or 🔁 <b>Repeat</b> your last meal.",
+            f"Tap 🍽️ <b>{MEAL_BUTTON_LABEL}</b> to log, "
+            f"or 🔁 <b>{REPEAT_BUTTON_LABEL}</b>.",
             parse_mode="HTML",
             reply_markup=home_reply_keyboard(),
         )
@@ -116,6 +186,28 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Quick-action bar is off.",
             reply_markup=reply_keyboard_remove(),
         )
+
+
+async def open_home(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    prelude: str | None = None,
+) -> None:
+    """Open Home, or preserve a live guided flow and return its hint.
+
+    Every idle entry point routes through here, so none of them can silently
+    replace or end a draft the user is in the middle of.
+    """
+    if active_conversation_flow(context) is not None:
+        await update.effective_message.reply_text(_ACTIVE_FLOW_HINT)
+        return
+    await show_home(update, context, prelude=prelude)
+
+
+async def home_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """``/home`` — Today and the action buttons."""
+    await open_home(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -199,23 +291,30 @@ async def home_text_router(
         await show_home(update, context)
         return
 
-    # 3. Meal/Repeat/Describe are the Phase 1 (B) fast actions. ("Meal" text is
-    # normally claimed by the Diet entry point before it reaches here.)
+    # 3. Meal/Repeat/Describe are the Phase 1 (B) fast actions, matched through
+    # HOME_ACTIONS so the current and legacy Repeat labels share one branch.
+    # ("Meal" text is normally claimed by the Diet entry point before it reaches
+    # here.)
     uid = update.effective_user.id
+    action = HOME_ACTIONS.get(normalized)
+    if action is None:
+        # 4. Unsupported idle text, in either flag state: one concise recovery
+        # reply carrying the Home actions, rather than silence or a separate
+        # multi-message Home refresh. No snapshot query, no mutation, and no
+        # persistent keyboard — so this stays safe with Phase 1 disabled.
+        await _unsupported_text_reply(update)
+        return
     if not phase1_enabled_for(uid):
-        if normalized in HOME_ACTIONS:
-            await message.reply_text('Not enabled yet — say "hi" for your menu.')
+        await message.reply_text('Not enabled yet — say "hi" for your menu.')
         return
 
-    if normalized == "repeat":
+    if action == "repeat":
         await repeat_last_meal(update, context)
-    elif normalized == "describe":
+    elif action == "describe":
         await _sync_keyboard(update, "📝 Describe isn't enabled yet.", uid)
-    elif normalized == "meal":
-        logger.warning("Home router received 'meal'; expected Diet entry point")
+    else:  # action == "meal"
+        logger.warning("Home router received a Meal label; expected Diet entry point")
         await message.reply_text("Use /diet to log a meal.")
-    else:
-        await show_home(update, context)
 
 
 # ---------------------------------------------------------------------------

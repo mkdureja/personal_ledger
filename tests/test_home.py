@@ -43,7 +43,7 @@ def _context(db=None, user_data=None, args=None):
     )
 
 
-def _snapshot_db():
+def _snapshot_db(last_meal=None):
     return SimpleNamespace(
         get_today_meal_count=AsyncMock(return_value=2),
         get_today_calories=AsyncMock(return_value=(1500, True)),
@@ -51,6 +51,7 @@ def _snapshot_db():
         get_today_gym_count=AsyncMock(return_value=3),
         get_active_habits=AsyncMock(return_value=[{"id": 1}, {"id": 2}]),
         get_checked_habits=AsyncMock(return_value={1}),
+        get_last_meal_summary=AsyncMock(return_value=last_meal),
     )
 
 
@@ -126,10 +127,22 @@ async def test_router_disabled_fast_action_says_not_enabled():
     assert "hi" in reply.call_args.args[0].lower()
 
 
-async def test_router_disabled_arbitrary_text_is_silent():
+async def test_router_disabled_arbitrary_text_gets_one_recovery_reply():
+    """Release 1 §1.3: unrecognized idle text is answered, not ignored.
+
+    Silence left a user unsure the bot was even alive. The reply is still safe
+    with Phase 1 off: one message, no snapshot query, no mutation, no persistent
+    keyboard — just the pre-existing Home actions.
+    """
     update = _update("banana")
-    await home.home_text_router(update, _context())
-    update.effective_message.reply_text.assert_not_awaited()
+    context = _context()
+    await home.home_text_router(update, context)
+
+    reply = update.effective_message.reply_text
+    reply.assert_awaited_once()
+    assert "didn't recognize" in reply.call_args.args[0]
+    assert isinstance(reply.call_args.kwargs.get("reply_markup"), InlineKeyboardMarkup)
+    assert context.bot_data["db"] is None  # no snapshot read was attempted
 
 
 async def test_router_active_flow_gets_hint_and_no_mutation():
@@ -258,6 +271,7 @@ async def test_diet_home_entry_enabled_opens_quick_food_choice(monkeypatch):
         list_recipes=AsyncMock(return_value=[]),
         get_suggestions_enabled=AsyncMock(return_value=True),
         get_user_catalog_history=AsyncMock(return_value=[]),
+        get_food_preferences=AsyncMock(return_value={}),
     )
     context = _context(db)
     result = await diet.diet_home_entry(update, context)

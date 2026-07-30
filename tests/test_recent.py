@@ -30,7 +30,11 @@ def _diet_entry(entry_id: int, summary: str) -> dict:
 def _run(entries):
     db = SimpleNamespace(get_recent_entries=AsyncMock(return_value=entries))
     message = SimpleNamespace(reply_text=AsyncMock())
-    update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=1))
+    update = SimpleNamespace(
+        message=message,
+        effective_message=message,
+        effective_user=SimpleNamespace(id=1),
+    )
     context = SimpleNamespace(bot_data={"db": db})
     return message, recent_command(update, context)
 

@@ -271,7 +271,14 @@ async def habit_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @authorized_callback
 async def habit_noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """No-op callback for label buttons."""
+    """Answer an inert label button without ever writing.
+
+    Current checklists give each habit one full-width toggle, so the only inert
+    labels this build renders are the date row and the Habit Setup labels. A
+    checklist drawn by an older build still has a ``habit_noop_*`` habit *name*
+    beside its action button, and tapping that name looked broken. It now answers
+    with a short "refresh this checklist" hint — still strictly non-mutating.
+    """
     query = update.callback_query
     user_id = update.effective_user.id
     match = _HABIT_NOOP_RE.fullmatch(query.data or "")
@@ -290,6 +297,13 @@ async def habit_noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not await _is_active_habit(db, user_id, int(target)):
             await _reject_callback(query, "This habit is no longer active.")
             return
+        # An old checklist's inert habit label: say what to do instead of
+        # looking dead. Still no write of any kind.
+        await query.answer(
+            "Send /habits to refresh this checklist, then tap the habit name.",
+            show_alert=True,
+        )
+        return
 
     await query.answer()
 

@@ -670,9 +670,16 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <h2 id="first-run" class="page-break">2. First Run &amp; Basic Navigation</h2>
 
-    <p>When you first message the bot, send <code>/start</code> to register and see the welcome message.</p>
+    <p>When you first message the bot, send <code>/start</code>. It registers you (with
+    reminders off — turn them on later with <code>/reminders on</code>) and opens
+    <strong>Home</strong> with a one-time welcome on top.</p>
 
-    <div class="chat no-break">
+    <h3>Home is the only page you need to remember</h3>
+    <p><code>/home</code>, <code>/start</code>, <code>/menu</code>, and simply saying
+    <strong>hi</strong> (or <code>hello</code>, <code>hey</code>, <code>home</code>) all open the
+    <em>same</em> Home surface: today's totals plus the action buttons.</p>
+
+    <div class="chat no-break" style="max-width: 380px;">
         <div class="chat-header">
             <div class="chat-avatar">📒</div>
             <div>
@@ -680,50 +687,46 @@ DB_PATH=ledger.db</code></pre>
                 <div class="chat-status">● online</div>
             </div>
         </div>
-        <div class="msg msg-user"><div class="msg-bubble">/start</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">hi</div></div>
         <div class="msg msg-bot">
             <div class="msg-bubble">
-                👋 Hey! Welcome to <strong>Ledger</strong>.<br><br>
-                I'm your personal logging bot for tracking:<br>
-                📖 <strong>Study</strong> — subjects, duration, notes<br>
-                🏋️ <strong>Gym</strong> — exercises, sets, reps, weight<br>
-                🍽️ <strong>Diet</strong> — meals, calories, and macros<br>
-                ✅ <strong>Habits</strong> — daily check-offs with streaks<br><br>
-                Use /menu for the main menu, or /help for all commands.
-            </div>
-        </div>
-    </div>
-
-    <h3>The Main Menu</h3>
-    <p>Send <code>/menu</code> to open the interactive main menu. Tap any button to get started with that category:</p>
-
-    <div class="chat no-break" style="max-width: 350px;">
-        <div class="chat-header">
-            <div class="chat-avatar">📒</div>
-            <div>
-                <div class="chat-name">Ledger Bot</div>
-                <div class="chat-status">● online</div>
-            </div>
-        </div>
-        <div class="msg msg-bot">
-            <div class="msg-bubble">
-                📋 <strong>Main Menu</strong> — Pick a category:
+                👋 <strong>Manoj</strong> — here's today:<br><br>
+                🍽️ Diet: 2 meal(s), 640 cal<br>
+                📖 Study: 45 min<br>
+                🏋️ Gym: 1 exercise(s)<br>
+                ✅ Habits: 3/5 done<br><br>
+                🔁 Repeat last meal: <strong>Oats and milk</strong> (breakfast)
                 <div class="kb">
                     <div class="kb-row">
-                        <span class="kb-btn">📖 Study</span>
-                        <span class="kb-btn">🏋️ Gym</span>
-                    </div>
-                    <div class="kb-row">
-                        <span class="kb-btn">🍽️ Diet</span>
+                        <span class="kb-btn">🍽️ Log meal</span>
                         <span class="kb-btn">✅ Habits</span>
                     </div>
                     <div class="kb-row">
+                        <span class="kb-btn">📖 Study</span>
+                        <span class="kb-btn">🏋️ Workout</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">🗒️ Recent</span>
                         <span class="kb-btn">📊 Analytics</span>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
+    <p>Telegram's command menu (the ☰ button beside the message box) lists the four
+    everyday commands: <code>/home</code>, <code>/recent</code>, <code>/undo</code>,
+    <code>/help</code>. Every other command still works — see the reference at the end.</p>
+
+    <div class="box box-info no-break">
+        <div class="box-title">📝 Mid-log? Nothing gets lost</div>
+        <p>If you are part-way through a guided log, opening Home does <strong>not</strong>
+        discard your draft. You get a short “finish this flow or /cancel first” note and your
+        entry stays exactly where it was.</p>
+    </div>
+
+    <p>Sent something the bot doesn't recognize? It replies once with the Home buttons
+    attached, so you are never left wondering whether the message arrived.</p>
 
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 3. STUDY                                                -->
@@ -968,7 +971,9 @@ DB_PATH=ledger.db</code></pre>
     </div>
 
     <h3>Daily Check-Off</h3>
-    <p>Send <code>/habits</code> to see today's checklist. Tap <strong>Done ✓</strong> to mark a habit, or <strong>Undo ↩</strong> to un-mark:</p>
+    <p>Send <code>/habits</code> (or tap <strong>✅ Habits</strong> on Home) to see today's
+    checklist. Each habit is one wide button — <strong>tap the habit's name</strong> to check it
+    off, and tap it again to un-check. ⬜ means not done yet, ✅ means done:</p>
 
     <div class="chat no-break" style="max-width: 380px;">
         <div class="chat-header">
@@ -980,16 +985,13 @@ DB_PATH=ledger.db</code></pre>
                 ✅ <strong>Habits</strong> — 1/3 done<br>Tap to check off:
                 <div class="kb">
                     <div class="kb-row">
-                        <span class="kb-btn" style="flex: 3; text-align: left;">✅ Meditate</span>
-                        <span class="kb-btn" style="flex: 1;">Undo ↩</span>
+                        <span class="kb-btn" style="flex: 1; text-align: left;">✅ Meditate</span>
                     </div>
                     <div class="kb-row">
-                        <span class="kb-btn" style="flex: 3; text-align: left;">⬜ Read 30 min</span>
-                        <span class="kb-btn" style="flex: 1;">Done ✓</span>
+                        <span class="kb-btn" style="flex: 1; text-align: left;">⬜ Read 30 min</span>
                     </div>
                     <div class="kb-row">
-                        <span class="kb-btn" style="flex: 3; text-align: left;">⬜ No Sugar</span>
-                        <span class="kb-btn" style="flex: 1;">Done ✓</span>
+                        <span class="kb-btn" style="flex: 1; text-align: left;">⬜ No Sugar</span>
                     </div>
                     <div class="kb-row">
                         <span class="kb-btn">📅 Jul 18 (Today)</span>
@@ -1009,7 +1011,7 @@ DB_PATH=ledger.db</code></pre>
         <div class="box-title">⚠️ Streak Rules</div>
         <p>• A <strong>streak</strong> counts consecutive days with a check, starting from today and going backward.</p>
         <p>• If <strong>today is unchecked</strong>, your streak is <strong>0</strong> — even if you had 100 days before.</p>
-        <p>• <strong>Un-tapping</strong> a habit (Undo ↩) deletes the record for that day.</p>
+        <p>• <strong>Un-tapping</strong> a habit (tapping a ✅ row) deletes the record for that day.</p>
         <p>• Use the yesterday toggle to fix forgotten check-offs and save your streak!</p>
     </div>
 
@@ -1277,6 +1279,72 @@ DB_PATH=ledger.db</code></pre>
     <p>If you start a guided log and don't respond within <strong>15 minutes</strong>, the conversation automatically cancels. You'll see:</p>
     <p>⏰ <em>Timed out. Send the command again to start over.</em></p>
 
+    <h3>Fast logging from the quick-action bar</h3>
+    <p>When fast logging is switched on for you, Home also sends a small persistent bar
+    under the message box:</p>
+
+    <div class="chat no-break" style="max-width: 380px;">
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                Tap 🍽️ <strong>Meal</strong> to log, or 🔁 <strong>Repeat last meal</strong>.
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn">Meal</span>
+                        <span class="kb-btn">Repeat last meal</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <p><strong>🔁 Repeat last meal</strong> re-logs your most recent meal as an exact copy —
+    the same items, the same nutrition as recorded then. Home shows which meal that is, so
+    there is no guessing. Nothing is re-calculated, and the receipt that comes back has
+    ↩️ <strong>Undo</strong> for that one meal (within 24 hours).</p>
+
+    <p><strong>🍽️ Meal</strong> opens the picker. Two kinds of row look different because
+    they <em>behave</em> differently:</p>
+
+    <table>
+        <thead><tr><th>Row</th><th>What one tap does</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><code>⚡ Banana · 1 medium</code></td>
+                <td><strong>Logs it immediately</strong> at the amount shown — that is your saved “usual”. A receipt with ↩️ Undo follows.</td>
+            </tr>
+            <tr>
+                <td><code>⚡ Chicken curry (recipe) · 1 serving</code></td>
+                <td>Same, for a saved recipe.</td>
+            </tr>
+            <tr>
+                <td><code>🥗 Banana</code></td>
+                <td>Asks <em>how much</em> first — no usual is saved for it yet.</td>
+            </tr>
+            <tr>
+                <td><code>🛠 Banana — fix usual</code></td>
+                <td>Its saved usual is incomplete. Opens the ⚙️ menu to repair it; it never logs by surprise.</td>
+            </tr>
+            <tr>
+                <td><code>🔎 Banana, raw</code></td>
+                <td>A shared catalog item. Always asks how much.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p>To create a usual, tap <strong>⚙️</strong> beside a saved item and set the amount. In
+    the guided <code>/diet</code> builder the same items never log on one tap — there, every
+    row asks for an amount, because a builder meal is saved deliberately at the end.</p>
+
+    <div class="box box-info no-break">
+        <div class="box-title">🔎 A search with no matches</div>
+        <p>You get three buttons instead of a dead end: <strong>◀️ Back to my items</strong>,
+        <strong>🔎 Search again</strong>, and <strong>✍️ Type it instead</strong>. Typing another
+        word still works too, and your draft is untouched either way.</p>
+    </div>
+
+    <p><code>/keyboard hide</code> puts the bar away for now; <code>/keyboard show</code>
+    brings it back. Hiding is momentary — the bar returns on your next greeting.</p>
+
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 10. QUICK REFERENCE                                     -->
     <!-- ═══════════════════════════════════════════════════════ -->
@@ -1324,7 +1392,12 @@ DB_PATH=ledger.db</code></pre>
             <tr>
                 <td><code>/recipe &lt;action&gt; ...</code></td>
                 <td>Manage saved recipes and ingredients</td>
-                <td><span class="badge badge-required">add, ingredient, removeitem, list, show, or remove</span></td>
+                <td><span class="badge badge-required">add, ingredient, removeitem, list, show, remove, or duplicate</span></td>
+            </tr>
+            <tr>
+                <td><code>/recipe duplicate &lt;source&gt; &lt;new name&gt;</code></td>
+                <td>Copy a recipe (with its ingredients) under a new name, to tweak a variant. The copy is independent — editing it never changes the original. <code>copy</code> works as an alias.</td>
+                <td><span class="badge badge-required">source name, new name</span></td>
             </tr>
         </tbody>
     </table>
@@ -1356,14 +1429,17 @@ DB_PATH=ledger.db</code></pre>
     <table>
         <thead><tr><th>Command</th><th>Action</th></tr></thead>
         <tbody>
+            <tr><td><code>/home</code></td><td>Today's totals and the action buttons</td></tr>
             <tr><td><code>/recent</code></td><td>List your latest entries (reconcile a save)</td></tr>
             <tr><td><code>/undo</code></td><td>Undo last log — preview, then confirm (within 24h)</td></tr>
             <tr><td><code>/reminders on|off</code></td><td>Turn your scheduled reminders on or off</td></tr>
+            <tr><td><code>/suggestions on|off|reset</code></td><td>Personalized ordering of your saved items</td></tr>
+            <tr><td><code>/keyboard hide|show</code></td><td>Hide or restore the quick-action bar</td></tr>
             <tr><td><code>/settings</code></td><td>View your settings</td></tr>
             <tr><td><code>/cancel</code></td><td>Cancel current conversation</td></tr>
-            <tr><td><code>/menu</code></td><td>Open main menu</td></tr>
+            <tr><td><code>/menu</code></td><td>Same as <code>/home</code></td></tr>
             <tr><td><code>/help</code></td><td>Show all commands</td></tr>
-            <tr><td><code>/start</code></td><td>Welcome &amp; register</td></tr>
+            <tr><td><code>/start</code></td><td>Register, then open Home</td></tr>
         </tbody>
     </table>
 

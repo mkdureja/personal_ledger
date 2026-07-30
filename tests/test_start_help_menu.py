@@ -10,10 +10,14 @@ from telegram.ext import ContextTypes
 from bot.handlers.start import start_command, help_command, menu_command, menu_callback
 
 def create_update(text="", user_id=1, username="", first_name=""):
+    # One shared message object: Home replies through effective_message, while the
+    # older command handlers used update.message. They must be the same mock for
+    # assertions to see either path.
+    message = SimpleNamespace(reply_text=AsyncMock())
     return SimpleNamespace(
-        effective_message=SimpleNamespace(reply_text=AsyncMock()),
+        effective_message=message,
         effective_user=SimpleNamespace(id=user_id, username=username, first_name=first_name),
-        message=SimpleNamespace(reply_text=AsyncMock())
+        message=message,
     )
 
 def create_callback_query(data, user_id=1):
@@ -32,24 +36,61 @@ def create_callback_query(data, user_id=1):
 pytestmark = pytest.mark.asyncio
 
 
-async def test_start_command(db, user_id):
-    """Test /start creates user and sends welcome."""
+async def test_start_command_onboards_then_shows_home(db, user_id):
+    """A first-ever /start onboards, prepends the welcome, and shows the buttons."""
     update = create_update("/start", user_id=user_id, username="testuser", first_name="Test")
-    context = SimpleNamespace(bot_data={"db": db})
-    
+    context = SimpleNamespace(bot_data={"db": db}, user_data={})
+
     await start_command(update, context)
-    
-    update.message.reply_text.assert_called_once()
-    args, kwargs = update.message.reply_text.call_args
-    assert "Hey Test!" in args[0]
+
+    args, kwargs = update.message.reply_text.call_args_list[0]
     assert "Welcome to <b>Ledger</b>" in args[0]
+    # Home itself, on the same message, so the actions arrive immediately.
+    assert "here's today" in args[0]
+    assert kwargs.get("reply_markup") is not None
     assert kwargs.get("parse_mode") == "HTML"
-    
-    # Verify user was created in DB
+
+    # Both onboarding calls are preserved: the user row and an opted-out
+    # settings row.
     cursor = await db.conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     row = await cursor.fetchone()
     assert row is not None
     assert row["first_name"] == "Test"
+    settings = await db.get_user_settings(user_id)
+    assert settings is not None
+    assert not settings["reminders_enabled"]
+
+
+async def test_start_command_returning_user_skips_the_welcome(db, user_id):
+    """The welcome is one-time; a returning /start is plain Home."""
+    update = create_update("/start", user_id=user_id, first_name="Test")
+    context = SimpleNamespace(bot_data={"db": db}, user_data={})
+    await start_command(update, context)
+
+    second = create_update("/start", user_id=user_id, first_name="Test")
+    await start_command(second, SimpleNamespace(bot_data={"db": db}, user_data={}))
+
+    text = second.message.reply_text.call_args_list[0].args[0]
+    assert "Welcome to <b>Ledger</b>" not in text
+    assert "here's today" in text
+
+
+async def test_start_command_preserves_a_live_draft(db, user_id):
+    """/start mid-flow returns the finish-or-cancel hint and writes nothing."""
+    from bot.handlers.common import activate_conversation
+
+    update = create_update("/start", user_id=user_id, first_name="Test")
+    update.effective_chat = SimpleNamespace(id=user_id, type=ChatType.PRIVATE)
+    context = SimpleNamespace(bot_data={"db": db}, user_data={})
+    activate_conversation(update, context, "diet")
+    context.user_data["diet_food_items"] = ["oats"]
+
+    await start_command(update, context)
+
+    assert "Finish this flow" in update.message.reply_text.call_args.args[0]
+    assert context.user_data["diet_food_items"] == ["oats"]
+    cursor = await db.conn.execute("SELECT COUNT(*) FROM users WHERE user_id = ?", (user_id,))
+    assert (await cursor.fetchone())[0] == 0  # no onboarding write happened
 
 
 async def test_help_command(user_id):
@@ -67,18 +108,40 @@ async def test_help_command(user_id):
     assert kwargs.get("parse_mode") == "HTML"
 
 
-async def test_menu_command(user_id):
-    """Test /menu sends keyboard."""
-    update = create_update("/menu", user_id=user_id)
-    context = SimpleNamespace()
-    
+async def test_menu_command_is_home(db, user_id):
+    """/menu and Home are one surface, so both habits lead to the same place."""
+    update = create_update("/menu", user_id=user_id, first_name="Test")
+    context = SimpleNamespace(bot_data={"db": db}, user_data={})
+
     await menu_command(update, context)
-    
-    update.message.reply_text.assert_called_once()
-    args, kwargs = update.message.reply_text.call_args
-    assert "<b>Main Menu</b>" in args[0]
-    assert "reply_markup" in kwargs
+
+    args, kwargs = update.message.reply_text.call_args_list[0]
+    assert "here's today" in args[0]
+    assert kwargs.get("reply_markup") is not None
     assert kwargs.get("parse_mode") == "HTML"
+
+
+async def test_home_command_is_the_same_surface(db, user_id):
+    from bot.handlers.home import home_command
+
+    update = create_update("/home", user_id=user_id, first_name="Test")
+    context = SimpleNamespace(bot_data={"db": db}, user_data={})
+
+    await home_command(update, context)
+
+    assert "here's today" in update.message.reply_text.call_args_list[0].args[0]
+
+
+async def test_menu_callback_recent(db, user_id, monkeypatch):
+    """The Home 🗒️ Recent tap renders recent entries without an update.message."""
+    update = create_callback_query("menu_recent", user_id=user_id)
+    context = SimpleNamespace(bot_data={"db": db}, user_data={})
+
+    await menu_callback(update, context)
+
+    update.callback_query.answer.assert_called_once()
+    text = update.callback_query.message.reply_text.call_args.args[0]
+    assert "No recent entries yet" in text
 
 
 async def test_menu_callback_analytics(db, user_id):

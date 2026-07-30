@@ -145,19 +145,37 @@ Gated per user by `PHASE1_ENABLED_USER_IDS` — see
 [docs/operations_runbook.md](docs/operations_runbook.md) for the rollout flags.
 With it off, everything above behaves exactly as documented.
 
-Say **hi** (or `home`) to open a page with today's totals and the main menu.
-Enabled users also get a persistent `[🍽️ Meal] [🔁 Repeat]` bar
-(`/keyboard hide|show`).
+Enabled users also get a persistent `[🍽️ Meal] [🔁 Repeat last meal]` bar
+(`/keyboard hide|show`), and Home names the meal Repeat would re-log.
 
 | Action | What it does |
 |---|---|
 | 🍽️ **Meal** | Opens a one-item Quick log: tap a food, tap an amount, done |
-| 🔁 **Repeat** | Re-logs your most recent meal as an *exact copy* — same items, same numbers, nothing re-priced |
+| 🔁 **Repeat last meal** | Re-logs your most recent meal as an *exact copy* — same items, same numbers, nothing re-priced |
 | ⚙️ beside a saved item | Set, change, repair, or remove that item's "usual" amount |
 
 Once a food has a **usual** amount, tapping it in Quick mode logs the whole meal
 in one tap. Without one you pick an amount and get
 `Log it` / `Log + set as my usual`.
+
+**A tap that writes looks like it writes.** In Quick mode the picker labels say
+what one tap will do, and only the dynamic name is ever truncated:
+
+| Row | One tap |
+|---|---|
+| `⚡ Banana · 1 medium` | Logs it now, at that exact amount |
+| `⚡ Chicken curry (recipe) · 1 serving` | Same, for a recipe |
+| `🥗 Banana` | Opens amount selection (no usual saved) |
+| `🛠 Banana — fix usual` | Opens the repair menu; never logs by surprise |
+| `🔎 Banana, raw` | Shared catalog item: always asks how much |
+
+The same source in the guided `/diet` builder renders plainly and opens amount
+selection, because there the tap is a step, not a write. Labels are decorated
+from a single batched preference read per render, so the picker issues no
+per-row query and the keyboard layer performs no I/O.
+
+For one compatibility release the bar's old `Repeat` text still routes to the
+same action, so a keyboard already sitting on a client cannot misroute.
 
 Every fast log leaves a **receipt** you can act on later:
 
@@ -178,7 +196,7 @@ each action's outcome is recorded once and replayed.
 ### Habits
 | Command | Description |
 |---|---|
-| `/habits` | Today's habit checklist |
+| `/habits` | Today's habit checklist — each habit is one full-width button; tap its **name** to check or un-check |
 | `/habits setup` | Add/remove habits |
 
 ### Analytics
@@ -192,16 +210,34 @@ each action's outcome is recorded once and replayed.
 | `/chart habits` | 14-day habit heatmap |
 | `/streak` | Current habit streaks |
 
-### Utility
+### Home and utility
 | Command | Description |
 |---|---|
+| `/home` | Today's totals and the action buttons |
+| `/start` | Register (reminders off), then open Home with a one-time welcome |
+| `/menu` | Same surface as `/home` |
 | `/recent` | List your latest study/gym/diet entries (reconcile a save) |
 | `/undo` | Undo last log — preview, then confirm (within 24h) |
 | `/reminders on\|off` | Turn your scheduled reminders on or off |
+| `/suggestions on\|off\|reset` | Personalized ordering of your saved items |
+| `/keyboard hide\|show` | Hide or restore the quick-action bar |
 | `/settings` | View your settings (reminders, routine profile) |
 | `/cancel` | Cancel current conversation |
-| `/menu` | Interactive main menu |
 | `/help` | Command reference |
+
+**One idle Home.** `/home`, `/start`, `/menu`, and a greeting (`hi`, `hello`,
+`hey`, `home`) all render the same surface, so there is nothing to remember:
+
+```text
+[🍽️ Log meal]   [✅ Habits]
+[📖 Study]       [🏋️ Workout]
+[🗒️ Recent]      [📊 Analytics]
+```
+
+During a guided log, every one of those entries preserves the draft and returns
+the finish-or-cancel hint instead of replacing the flow. Unrecognized idle text
+gets one short reply carrying the same buttons, rather than silence. Telegram's
+command picker lists the everyday four: `/home`, `/recent`, `/undo`, `/help`.
 
 Reminders are **opt-in**: a newly authorized user receives no scheduled messages
 until they run `/reminders on`.

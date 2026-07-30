@@ -44,15 +44,28 @@ def paginate_habits(
     )
 
 
+# The persistent quick-action bar's exact button text. It lives here, with the
+# rendering, and `bot.handlers.common` derives its routing filters from these same
+# constants — so a renamed button cannot leave a handler matching the old text.
+MEAL_BUTTON_LABEL = "Meal"
+#: A bare "Repeat" never said what it repeats, and it sits next to a button that
+#: writes immediately. The label now names the consequence.
+REPEAT_BUTTON_LABEL = "Repeat last meal"
+#: A persistent keyboard already on a user's client keeps sending the old text
+#: until they receive a new one. Routing accepts it for one compatibility
+#: release so an old bar cannot misroute or silently do nothing.
+LEGACY_REPEAT_BUTTON_LABEL = "Repeat"
+
+
 def home_reply_keyboard() -> ReplyKeyboardMarkup:
-    """The persistent Home quick-action bar: ``[Meal] [Repeat]``.
+    """The persistent Home quick-action bar: ``[Meal] [Repeat last meal]``.
 
     ``Describe`` is reserved but not rendered in Phase 1. The bar is only sent to
     keyboard-eligible users (plan §8.4); every other Home/compatibility response
     removes it via :func:`reply_keyboard_remove`.
     """
     return ReplyKeyboardMarkup(
-        [["Meal", "Repeat"]],
+        [[MEAL_BUTTON_LABEL, REPEAT_BUTTON_LABEL]],
         resize_keyboard=True,
         is_persistent=True,
         one_time_keyboard=False,
@@ -65,18 +78,27 @@ def reply_keyboard_remove() -> ReplyKeyboardRemove:
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
-    """2×2 category grid + analytics row."""
+    """The Home action grid — the everyday surface for both users.
+
+    Labels lead with the verb a user is looking for ("Log meal", "Workout")
+    rather than the section name, and 🗒️ Recent is promoted onto Home because
+    "did my save land?" is a normal daily question. The ``callback_data`` values
+    are unchanged so a Home message sent by an older build still routes: Study,
+    Gym, and Diet are claimed by their ConversationHandler entry points, and
+    Habits/Recent/Analytics by :func:`bot.handlers.start.menu_callback`.
+    """
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📖 Study", callback_data="menu_study"),
-                InlineKeyboardButton("🏋️ Gym", callback_data="menu_gym"),
-            ],
-            [
-                InlineKeyboardButton("🍽️ Diet", callback_data="menu_diet"),
+                InlineKeyboardButton("🍽️ Log meal", callback_data="menu_diet"),
                 InlineKeyboardButton("✅ Habits", callback_data="menu_habits"),
             ],
             [
+                InlineKeyboardButton("📖 Study", callback_data="menu_study"),
+                InlineKeyboardButton("🏋️ Workout", callback_data="menu_gym"),
+            ],
+            [
+                InlineKeyboardButton("🗒️ Recent", callback_data="menu_recent"),
                 InlineKeyboardButton("📊 Analytics", callback_data="menu_analytics"),
             ],
         ]
@@ -106,13 +128,17 @@ def meal_type_keyboard(user_id: int) -> InlineKeyboardMarkup:
 # for the control rows. A two-user ledger is not expected to approach this.
 MAX_FOOD_CHOICES = 40
 _MAX_BUTTON_LABEL = 40
+# However tight the budget gets, a name must stay identifiable. When the fixed
+# decoration is unusually long the total may exceed the soft cap rather than
+# reduce a food's name to a couple of letters.
+_MIN_NAME_CHARS = 12
 
 
-def _button_label(text: object) -> str:
+def _button_label(text: object, limit: int = _MAX_BUTTON_LABEL) -> str:
     """Bound a dynamic button label so long saved names stay readable."""
     label = str(text)
-    if len(label) > _MAX_BUTTON_LABEL:
-        return label[: _MAX_BUTTON_LABEL - 1] + "…"
+    if len(label) > limit:
+        return label[: limit - 1] + "…"
     return label
 
 
@@ -144,6 +170,50 @@ def paginate_choices(
     return choices[start : start + SUGGESTION_PAGE_SIZE], normalized, page_count
 
 
+# Consequence markers. ⚡ means "this tap writes a meal now"; 🛠 means "this
+# source's usual amount is broken and needs repair". Neither is ever used for a
+# row that merely opens the amount screen.
+INSTANT_PREFIX = "⚡ "
+REPAIR_PREFIX = "🛠 "
+_REPAIR_SUFFIX = " — fix usual"
+
+
+def choice_button_label(choice: dict, *, quick: bool) -> str:
+    """Compose one choice's button label under a source-aware character budget.
+
+    Every fixed component is preserved and only the dynamic name is truncated, so
+    a long food name can never displace the ⚡ consequence prefix, the
+    ``(recipe)`` source marker, or the visible ``· amount unit`` suffix. For
+    example: ``⚡ Chicken curr… (recipe) · 1 serving``.
+
+    ``quick`` is the whole point of the distinction. In Quick Meal a stored usual
+    makes the tap write immediately, so the row is marked ⚡ and shows the exact
+    amount it would log. In the guided Builder the identical source renders
+    normally, because there the tap only opens amount selection. A source with no
+    usual, and any shared catalog row (v8 stores no catalog preference), also
+    renders normally.
+    """
+    kind = choice.get("source_type")
+    if kind == "recipe":
+        prefix, suffix = "🍲 ", " (recipe)"
+    elif kind == "catalog":
+        prefix, suffix = "🔎 ", ""
+    else:
+        prefix, suffix = "🥗 ", ""
+
+    quantity = ""
+    if quick and kind in ("food", "recipe"):
+        default = choice.get("default")
+        if choice.get("needs_repair"):
+            prefix, suffix = REPAIR_PREFIX, suffix + _REPAIR_SUFFIX
+        elif default:
+            prefix = INSTANT_PREFIX
+            quantity = f" · {_fmt_amount(default['amount'])} {default['unit']}"
+
+    budget = max(_MIN_NAME_CHARS, _MAX_BUTTON_LABEL - len(prefix + suffix + quantity))
+    return f"{prefix}{_button_label(choice['name'], budget)}{suffix}{quantity}"
+
+
 def food_choice_keyboard(
     user_id: int,
     choices: list[dict],
@@ -153,6 +223,7 @@ def food_choice_keyboard(
     page: int = 0,
     paginate: bool = False,
     change_meal: bool = False,
+    quick: bool = False,
 ) -> InlineKeyboardMarkup:
     """Ranked saved foods/recipes as one-tap buttons, plus type/cancel escapes.
 
@@ -165,6 +236,11 @@ def food_choice_keyboard(
     that source's default-quantity menu. Shared catalog rows never get one —
     defaults are a private preference. With ``paginate`` on, only one page of
     suggestions is shown at a time so a long list stays thumb-sized.
+
+    With ``quick`` on, rows whose tap would write immediately are marked ⚡ with
+    the amount they would log (see :func:`choice_button_label`). This function
+    performs **no I/O**: ``choices`` arrive already decorated by
+    :func:`bot.suggestions.annotate_defaults` from one batched preference read.
     """
     owner = to_base36(user_id)
     rev = to_base36(revision)
@@ -175,14 +251,12 @@ def food_choice_keyboard(
     for choice in choices[:MAX_FOOD_CHOICES]:
         kind = choice["source_type"]
         if kind == "recipe":
-            label = f"🍲 {_button_label(choice['name'])} (recipe)"
             data = f"drecipe_{user_id}_{choice['id']}"
         elif kind == "catalog":
-            label = f"🔎 {_button_label(choice['name'])}"
             data = f"dcatalog_{user_id}_{choice['id']}"
         else:
-            label = f"🥗 {_button_label(choice['name'])}"
             data = f"dfood_{user_id}_{choice['id']}"
+        label = choice_button_label(choice, quick=quick)
         row = [InlineKeyboardButton(label, callback_data=data)]
         if manage and kind in ("food", "recipe"):
             row.append(
@@ -236,6 +310,32 @@ def food_choice_keyboard(
         ]
     )
     return InlineKeyboardMarkup(rows)
+
+
+def search_empty_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """The three real exits from a zero-result catalog search.
+
+    A dead end with no buttons left the only ways out invisible: remember an exact
+    command, or abandon the draft. Every action here reuses an existing callback
+    family, so nothing new has to be retired later.
+    """
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "◀️ Back to my items", callback_data=f"dback_{user_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔎 Search again", callback_data=f"dsearch_{user_id}"
+                ),
+                InlineKeyboardButton(
+                    "✍️ Type it instead", callback_data=f"dtype_{user_id}"
+                ),
+            ],
+        ]
+    )
 
 
 def quick_confirm_keyboard(
@@ -643,6 +743,13 @@ def habit_checklist_keyboard(
 ) -> InlineKeyboardMarkup:
     """Dynamic habit checklist with ✅/⬜ and yesterday toggle.
 
+    Each habit is **one full-width button** carrying the real toggle action. The
+    older two-button row put an inert ``habit_noop_*`` label next to a working
+    ``Done ✓`` / ``Undo ↩``, so the obvious target — the habit's own name — did
+    nothing. Tapping the name now toggles it, and the ✅/⬜ prefix says which way.
+    ``habit_noop_*`` remains a live, non-mutating pattern so labels on checklists
+    already sitting in a chat stay harmless.
+
     Args:
         habits: List of dicts with 'id' and 'habit_name'.
         checked_ids: Set of habit_ids that are checked for this date.
@@ -659,37 +766,16 @@ def habit_checklist_keyboard(
         hid = habit["id"]
         name = habit["habit_name"]
         date_str = showing_date.isoformat()
-
-        if hid in checked_ids:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        f"✅ {name}",
-                        callback_data=f"habit_noop_{user_id}_{hid}",
-                    ),
-                    InlineKeyboardButton(
-                        "Undo ↩",
-                        callback_data=(
-                            f"habit_u_{user_id}_{hid}_{date_str}{page_suffix}"
-                        ),
-                    ),
-                ]
-            )
-        else:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        f"⬜ {name}",
-                        callback_data=f"habit_noop_{user_id}_{hid}",
-                    ),
-                    InlineKeyboardButton(
-                        "Done ✓",
-                        callback_data=(
-                            f"habit_c_{user_id}_{hid}_{date_str}{page_suffix}"
-                        ),
-                    ),
-                ]
-            )
+        done = hid in checked_ids
+        action = "habit_u" if done else "habit_c"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{'✅' if done else '⬜'} {name}",
+                    callback_data=f"{action}_{user_id}_{hid}_{date_str}{page_suffix}",
+                )
+            ]
+        )
 
     # Date label
     date_label = showing_date.strftime("%b %d")

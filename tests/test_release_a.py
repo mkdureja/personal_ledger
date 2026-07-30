@@ -49,6 +49,7 @@ def _snapshot_db():
         get_today_gym_count=AsyncMock(return_value=0),
         get_active_habits=AsyncMock(return_value=[]),
         get_checked_habits=AsyncMock(return_value=set()),
+        get_last_meal_summary=AsyncMock(return_value=None),
     )
 
 

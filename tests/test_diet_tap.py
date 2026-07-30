@@ -1,5 +1,5 @@
-"""Tap-first diet flow (P1): saved-food/recipe selection, quantity, preview,
-save, and the keep-logging loop — plus owner/stale callback safety.
+﻿"""Tap-first diet flow (P1): saved-food/recipe selection, quantity, preview,
+save, and the keep-logging loop â€” plus owner/stale callback safety.
 """
 
 from __future__ import annotations
@@ -123,6 +123,7 @@ async def test_meal_selection_offers_saved_items_when_present():
         list_foods=AsyncMock(return_value=[{"id": 5, "name": "Apple"}]),
         list_recipes=AsyncMock(return_value=[]),
         get_suggestions_enabled=AsyncMock(return_value=False),
+        get_food_preferences=AsyncMock(return_value={}),
     )
     query = _query(f"meal_{USER}_breakfast", message_id=100)
     context = _context(db, {"diet_meal_message_id": 100})
@@ -136,12 +137,13 @@ async def test_meal_selection_offers_saved_items_when_present():
 
 
 async def test_meal_selection_still_offers_search_when_no_saved_items():
-    """Even with no personal foods, the choice keyboard (with 🔎 Search / ✍️ Type)
+    """Even with no personal foods, the choice keyboard (with ðŸ”Ž Search / âœï¸ Type)
     is shown so the shared catalog is reachable by tapping."""
     db = SimpleNamespace(
         list_foods=AsyncMock(return_value=[]),
         list_recipes=AsyncMock(return_value=[]),
         get_suggestions_enabled=AsyncMock(return_value=False),
+        get_food_preferences=AsyncMock(return_value={}),
     )
     query = _query(f"meal_{USER}_lunch", message_id=100)
     context = _context(db, {"diet_meal_message_id": 100})
@@ -372,6 +374,7 @@ async def test_add_another_item_keeps_draft_and_returns_to_list():
         list_foods=AsyncMock(return_value=[{"id": 5, "name": "Apple"}]),
         list_recipes=AsyncMock(return_value=[]),
         get_suggestions_enabled=AsyncMock(return_value=False),
+        get_food_preferences=AsyncMock(return_value={}),
     )
     existing = [{"display_name": "1 medium apple", "calories": 95}]
     query = _query(f"dadd_{USER}", message_id=100)

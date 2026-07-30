@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Any
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -87,20 +88,29 @@ def _format_entry(entry: dict) -> str:
     return f"{body}\n   <i>{when}</i>"
 
 
-async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the acting user's most recent entries across study, gym, and diet."""
+async def show_recent(
+    message: Any, context: ContextTypes.DEFAULT_TYPE, user_id: int
+) -> None:
+    """Render one user's recent entries as replies to ``message``.
+
+    Takes the target message rather than the update, so the Home 🗒️ Recent button
+    can reuse it: a callback query has no ``update.message``.
+    """
     db = context.bot_data["db"]
-    user = update.effective_user
-    entries = await db.get_recent_entries(user.id, _RECENT_LIMIT)
+    entries = await db.get_recent_entries(user_id, _RECENT_LIMIT)
 
     if not entries:
         await reply_html(
-            update.message,
+            message,
             "🗒️ No recent entries yet. Log something with /study, /gym, or /diet.",
         )
         return
 
     blocks = [_format_entry(entry) for entry in entries]
-    messages = _pack_messages("🗒️ <b>Recent entries</b>\n", blocks, _MESSAGE_LIMIT)
-    for message in messages:
-        await reply_html(update.message, message)
+    for chunk in _pack_messages("🗒️ <b>Recent entries</b>\n", blocks, _MESSAGE_LIMIT):
+        await reply_html(message, chunk)
+
+
+async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the acting user's most recent entries across study, gym, and diet."""
+    await show_recent(update.effective_message, context, update.effective_user.id)

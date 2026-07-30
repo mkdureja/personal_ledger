@@ -72,3 +72,42 @@ def rank(candidates: list[Candidate], now: datetime) -> list[Candidate]:
         visible,
         key=lambda c: (-score(c, now), c.name_key, c.source_type, c.source_id),
     )
+
+
+def annotate_defaults(
+    choices: list[dict], preferences: dict[tuple[str, int], dict]
+) -> list[dict]:
+    """Attach each choice's stored "usual" amount from one batched preference map.
+
+    Pure, no I/O: the caller reads ``get_food_preferences`` **once** per render and
+    passes the map here, so a picker never issues a query per displayed row and the
+    keyboard layer performs no I/O at all.
+
+    Each returned choice gains:
+
+    * ``default`` — ``{"amount", "unit"}`` when a *complete* pair is stored, else
+      ``None``. This is what makes a tap write immediately, so it is also what a
+      label must disclose.
+    * ``needs_repair`` — ``True`` when exactly one half of the pair is stored. A
+      half-stored default is neither usable nor absent; it must surface as
+      needing repair rather than silently doing nothing.
+
+    Schema v8 has no catalog preferences, so a shared catalog row is never
+    annotated — it cannot be an instant row in this release.
+    """
+    annotated: list[dict] = []
+    for choice in choices:
+        enriched = dict(choice)
+        enriched["default"] = None
+        enriched["needs_repair"] = False
+        source_type = choice.get("source_type")
+        if source_type in ("food", "recipe"):
+            row = preferences.get((source_type, choice.get("id"))) or {}
+            amount = row.get("default_amount")
+            unit = row.get("default_unit")
+            if amount is not None and unit is not None:
+                enriched["default"] = {"amount": float(amount), "unit": str(unit)}
+            elif (amount is None) != (unit is None):
+                enriched["needs_repair"] = True
+        annotated.append(enriched)
+    return annotated

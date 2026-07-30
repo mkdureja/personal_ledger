@@ -508,6 +508,34 @@ keeps the flow fast.
   button remains follow-up work.
 - Retire stale inline keyboards using the existing ownership/revision rules.
 
+### Release 1 status — implemented 2026-07-30
+
+All three slices are implemented; no schema change. **1028 tests pass.**
+
+- §1.1 `/start`, `/home`, `/menu`, and supported greetings render one Home
+  through `home.open_home`. `/start` prepends a one-time welcome (detected by an
+  absent settings row) and preserves both onboarding calls. Every entry returns
+  the finish-or-cancel hint during any guided flow. The action grid is
+  `[🍽️ Log meal][✅ Habits] / [📖 Study][🏋️ Workout] / [🗒️ Recent][📊 Analytics]`,
+  reusing the existing `menu_*` callbacks plus a new `menu_recent`. The command
+  picker (`/home`, `/recent`, `/undo`, `/help`) is published only on a real run.
+- §1.2 `suggestions.annotate_defaults` decorates choices from the one batched
+  `get_food_preferences` read the ranking already needs — no per-row query, no
+  keyboard I/O. `keyboards.choice_button_label` spends a source-aware budget on
+  the name alone, so `⚡`, ` (recipe)`, and ` · amount unit` are never displaced.
+  Quick-only; the Builder and catalog rows render plainly; a half-stored default
+  renders `🛠 … — fix usual`. The bar is now `Repeat last meal`, with the legacy
+  `Repeat` label accepted for one release, and Home names the meal Repeat would
+  copy (read with the same `ORDER BY` as `repeat_last_meal`).
+- §1.3 Each habit is one full-width toggle carrying the date-bearing action;
+  `habit_noop_*` stays inert and an old checklist's habit label now answers with
+  a refresh hint. Zero-result search offers Back / Search again / Type it
+  instead, handled inside the `SEARCH` state and draft-preserving.
+
+**Still open, and not implementable from here:** the Release 1 live gate below
+requires both real Telegram clients, including its setup pre-step (each user
+creates one food and one complete usual so an `⚡` row can render at all).
+
 ### Release 1 tests
 
 - Real-dispatcher tests for `/start`, `/home`, `/menu`, greetings, unknown text,

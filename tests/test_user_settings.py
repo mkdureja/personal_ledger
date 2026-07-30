@@ -192,9 +192,10 @@ async def test_start_defaults_new_user_to_opt_out(two_user_db):
     new_user_id = 333
     update = SimpleNamespace(
         message=message,
+        effective_message=message,
         effective_user=SimpleNamespace(id=new_user_id, username="new", first_name="New"),
     )
-    context = SimpleNamespace(bot_data={"db": two_user_db})
+    context = SimpleNamespace(bot_data={"db": two_user_db}, user_data={})
 
     await start_command(update, context)
 

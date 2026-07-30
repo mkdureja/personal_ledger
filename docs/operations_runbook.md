@@ -157,15 +157,29 @@ HOME_KEYBOARD_MODE=off
 HOME_KEYBOARD_PILOT_USER_IDS=
 ```
 
-With these, greetings and `Home` still render the read-only Today snapshot plus
-the inline main menu; the persistent quick-action keyboard is never sent. The
-disabled `Meal` label returns `/diet` guidance and removes a stale keyboard,
-while `Repeat`/`Describe` return disabled guidance. Arbitrary text gets no Phase
-1 surface and no fast mutation runs. `off` does not force keyboard removal on
-every ordinary Home response; use the `remove` rollback mode below when every
-user must clear a previously sent bar. `test_release_a.py` proves the relevant
-paths, and `.github/workflows/tests.yml` runs the whole suite on both
-`windows-latest` and `ubuntu-latest` for every push and pull request.
+With these, greetings, `/home`, `/menu`, `/start`, and `Home` still render the
+read-only Today snapshot plus the inline Home actions; the persistent
+quick-action keyboard is never sent, and Home omits the last-meal line because
+Repeat is not available. The disabled `Meal` label returns `/diet` guidance and
+removes a stale keyboard, while `Repeat last meal` (and the legacy `Repeat`) and
+`Describe` return disabled guidance. No fast mutation runs and no picker row is
+marked `⚡`.
+
+Unrecognized idle text is answered with one short recovery reply carrying the
+inline Home actions. That is deliberate as of Release 1 and safe with Phase 1
+off: one message, no snapshot query, no mutation, and no persistent keyboard.
+
+`off` does not force keyboard removal on every ordinary Home response; use the
+`remove` rollback mode below when every user must clear a previously sent bar.
+`test_release_a.py` and `test_release_1.py` prove these paths, and
+`.github/workflows/tests.yml` runs the whole suite on both `windows-latest` and
+`ubuntu-latest` for every push and pull request.
+
+**Label compatibility window.** The bar now renders `Repeat last meal`; the old
+`Repeat` text keeps routing to the same action for one release, because a
+persistent keyboard already on a client sends the old label until it receives a
+new one. Both are intercepted during an active guided flow. Do not remove the
+legacy label until both users have received a Home response from this build.
 
 ### Rollback (disable Phase 1 without a DB restore)
 

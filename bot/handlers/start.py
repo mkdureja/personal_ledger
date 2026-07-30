@@ -21,25 +21,40 @@ from ..keyboards import main_menu_keyboard, analytics_keyboard
 # ---------------------------------------------------------------------------
 # /start
 # ---------------------------------------------------------------------------
+_WELCOME = (
+    "👋 Welcome to <b>Ledger</b> — your private log for study, workouts, meals, "
+    "and habits.\nTap a button below any time, or send /help for everything."
+)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Welcome message with overview."""
+    """``/start`` — onboard if needed, then show the one idle Home surface.
+
+    ``/start`` used to hand back a wall of text with no buttons. It now prepends a
+    one-time welcome to Home so the actions arrive immediately, and only for a
+    genuinely first-ever start; a returning user gets plain Home.
+
+    Both onboarding calls are preserved. A missing settings row already reads as
+    reminder opt-out, but keeping explicit initialization avoids changing
+    onboarding or future settings behavior.
+    """
+    from .home import open_home
+
+    if active_conversation_flow(context) is not None:
+        # Never replace or end a live draft: preserve it and return the hint.
+        await update.effective_message.reply_text(
+            "⏳ Finish this flow or /cancel first."
+        )
+        return
+
     db = context.bot_data["db"]
     user = update.effective_user
+    first_ever = await db.get_user_settings(user.id) is None
     await db.ensure_user(user.id, user.username, user.first_name)
     # New users default to reminder opt-out; they enable via /reminders on.
     await db.ensure_user_settings(user.id, default_enabled=False)
 
-    first_name = escape_html(user.first_name or "there")
-    text = (
-        f"👋 Hey {first_name}! Welcome to <b>Ledger</b>.\n\n"
-        "I'm your personal logging bot for tracking:\n"
-        "📖 <b>Study</b> — subjects, duration, notes\n"
-        "🏋️ <b>Gym</b> — exercises, sets, reps, weight\n"
-        "🍽️ <b>Diet</b> — meals, calories, and macros\n"
-        "✅ <b>Habits</b> — daily check-offs with streaks\n\n"
-        "Use /menu for the main menu, or type /help for all commands."
-    )
-    await reply_html(update.message, text)
+    await open_home(update, context, prelude=_WELCOME if first_ever else None)
 
 
 # ---------------------------------------------------------------------------
@@ -56,10 +71,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if phase1_enabled_for(update.effective_user.id):
         fast_block = (
             "<b>Fast logging</b>\n"
-            "Say <b>hi</b> (or <code>home</code>) — today's totals and the menu\n"
             "🍽️ <b>Meal</b> — tap a food, tap an amount, done\n"
-            "🔁 <b>Repeat</b> — re-log your last meal exactly as it was\n"
+            "🔁 <b>Repeat last meal</b> — re-log your last meal exactly as it was\n"
             "⚙️ beside a saved item — set the “usual” amount, then it is one tap\n"
+            "⚡ on a row means <b>one tap logs it now</b>, at the amount shown; a "
+            "row without ⚡ asks how much first, and 🛠 means that item's usual "
+            "needs fixing\n"
             "On any receipt: ↩️ <b>Undo</b> (that exact meal, within 24h), "
             "🍽️ <b>Log another</b>, 🔄 <b>Log again at today's values</b>\n"
             "<code>/keyboard hide|show</code> — the quick-action bar. Hiding is "
@@ -67,6 +84,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
     text = (
         "📋 <b>All Commands</b>\n\n"
+        "<b>Start here</b>\n"
+        "<code>/home</code> — today's totals and the action buttons. "
+        "<code>/start</code>, <code>/menu</code>, and saying <b>hi</b> all open the "
+        "same page.\n\n"
         f"{fast_block}"
         "<b>Logging</b>\n"
         "<code>/study</code> — Log a study session\n"
@@ -96,7 +117,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/suggestions on|off|reset</code> — Personalized food ordering\n"
         "<code>/settings</code> — View your settings\n"
         "<code>/cancel</code> — Cancel current conversation\n"
-        "<code>/menu</code> — Main menu\n"
+        "<code>/home</code> — Today and actions\n"
         "<code>/help</code> — This message"
     )
     await reply_html(update.message, text)
@@ -106,12 +127,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # /menu
 # ---------------------------------------------------------------------------
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the main menu keyboard."""
-    await reply_html(
-        update.message,
-        "📋 <b>Main Menu</b> — Pick a category:",
-        reply_markup=main_menu_keyboard(),
-    )
+    """``/menu`` — an alias for Home, so both habits lead to the same place."""
+    from .home import open_home
+
+    await open_home(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +147,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """
     query = update.callback_query
     data = query.data or ""
-    valid_actions = {"menu_habits", "menu_analytics"}
+    valid_actions = {"menu_habits", "menu_analytics", "menu_recent"}
     if data not in valid_actions:
         await query.answer("This menu is no longer valid.", show_alert=True)
         try:
@@ -150,6 +169,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Import here to avoid circular imports
         from .habits import show_habits_checklist
         await show_habits_checklist(query.message, context, update.effective_user.id)
+    elif data == "menu_recent":
+        from .recent import show_recent
+
+        await show_recent(query.message, context, update.effective_user.id)
     elif data == "menu_analytics":
         await reply_html(
             query.message,

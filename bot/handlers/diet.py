@@ -62,6 +62,7 @@ from ..keyboards import (
     default_menu_keyboard,
     diet_save_keyboard,
     food_choice_keyboard,
+    search_empty_keyboard,
     food_portion_keyboard,
     log_another_keyboard,
     meal_type_keyboard,
@@ -150,24 +151,31 @@ def _parse_ts(value: object) -> datetime | None:
 async def _ranked_choices(
     context: ContextTypes.DEFAULT_TYPE, uid: int, meal_type: str
 ) -> list[dict]:
-    """Saved foods/recipes/known catalog items as ranked choice dicts.
+    """Saved foods/recipes/known catalog items as ranked, decorated choice dicts.
 
     With personalization off, returns the plain alphabetical union of the user's
     *own* foods and recipes — no learned catalog history, no frequency, no
     recency, because that is what "off" means. With it on, ranks everything the
     user has actually used by meal-type frequency, recency, and overall use,
     applies pins, and drops hidden sources.
+
+    Either way the result is decorated with each source's stored "usual" from
+    **one** batched ``get_food_preferences`` read — the same map the ranking
+    already needs — so the picker never queries per displayed row and the keyboard
+    layer performs no I/O.
     """
     db = context.bot_data["db"]
     foods = await db.list_foods(uid)
     recipes = await db.list_recipes(uid)
+    prefs = await db.get_food_preferences(uid)
     if not await db.get_suggestions_enabled(uid):
-        return [
+        plain = [
             {"source_type": "food", "id": f["id"], "name": f["name"]} for f in foods
         ] + [
             {"source_type": "recipe", "id": r["id"], "name": r["name"]}
             for r in recipes
         ]
+        return suggestions.annotate_defaults(plain, prefs)
 
     # A catalog food only becomes a suggestion once it appears in this user's
     # own history; the shared catalog itself stays behind Search.
@@ -176,7 +184,6 @@ async def _ranked_choices(
         return []
 
     stats = await db.get_diet_item_stats(uid, meal_type)
-    prefs = await db.get_food_preferences(uid)
     now = _utc_now()
     names: dict[tuple[str, int], str] = {}
     candidates: list[suggestions.Candidate] = []
@@ -203,14 +210,17 @@ async def _ranked_choices(
                     hidden=bool(pref.get("hidden")),
                 )
             )
-    return [
-        {
-            "source_type": c.source_type,
-            "id": c.source_id,
-            "name": names[(c.source_type, c.source_id)],
-        }
-        for c in suggestions.rank(candidates, now)
-    ]
+    return suggestions.annotate_defaults(
+        [
+            {
+                "source_type": c.source_type,
+                "id": c.source_id,
+                "name": names[(c.source_type, c.source_id)],
+            }
+            for c in suggestions.rank(candidates, now)
+        ],
+        prefs,
+    )
 
 
 def _is_catalog_reference(token: str) -> bool:
@@ -592,6 +602,7 @@ async def _prompt_food_choice(
             page=int(context.user_data.get("diet_choice_page", 0) or 0),
             paginate=phase1_enabled_for(uid),
             change_meal=phase1_enabled_for(uid),
+            quick=_quick_mode(context, uid),
         ),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
@@ -1073,17 +1084,30 @@ async def receive_search_query(
         pass
 
     if not results:
-        await update.message.reply_text(
-            f"🔎 No matches for “{text[:_MAX_SEARCH_QUERY]}”. "
-            "Try another word, or /cancel."
+        # A dead end with no buttons used to leave the only ways out invisible:
+        # remember an exact command or abandon the draft. Offer the three real
+        # exits instead, and stay in SEARCH so typing another word still works.
+        prompt = await _send_tap_keyboard(
+            update,
+            context,
+            update.effective_message,
+            f"🔎 No matches for “{escape_html(text[:_MAX_SEARCH_QUERY])}”. "
+            "Type another word, or pick one of these:",
+            search_empty_keyboard(uid),
         )
-        return SEARCH
+        return SEARCH if prompt is not None else ConversationHandler.END
+
+    # One batched preference read decorates the results, so a search row shows the
+    # same honest ⚡/amount as the picker; the tap behaves identically either way.
+    decorated = suggestions.annotate_defaults(
+        results, await db.get_food_preferences(uid)
+    )
     prompt = await _send_tap_keyboard(
         update,
         context,
         update.effective_message,
         f"🔎 Results for “{escape_html(text)}” — pick one:",
-        food_choice_keyboard(uid, results),
+        food_choice_keyboard(uid, decorated, quick=_quick_mode(context, uid)),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
 
@@ -1154,6 +1178,23 @@ async def type_food_instead(
 
 
 @authorized_callback
+async def search_back_to_choices(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Leave a zero-result search and return to the saved-item picker.
+
+    Separate from :func:`back_to_food_choice` only so a stale tap resolves to
+    ``SEARCH`` — the state the user is actually in — instead of the quantity
+    screen's state.
+    """
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return SEARCH
+    await _remove_callback_markup(query)
+    return await _reprompt_food_choice(update, context, query.message)
+
+
+@authorized_callback
 async def back_to_food_choice(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
@@ -1190,6 +1231,7 @@ async def _reprompt_food_choice(
             page=int(context.user_data.get("diet_choice_page", 0) or 0),
             paginate=phase1_enabled_for(uid),
             change_meal=phase1_enabled_for(uid),
+            quick=_quick_mode(context, uid),
         ),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
@@ -3498,6 +3540,11 @@ diet_conv_handler = ConversationHandler(
             _diet_voice_guard,
             _diet_meal_guard(SEARCH),
             _diet_control_guard,
+            # The zero-result escape hatches. Same callback families as the
+            # picker, so they inherit its ownership/revision retirement rules.
+            CallbackQueryHandler(search_back_to_choices, pattern=r"^dback_\d+$"),
+            CallbackQueryHandler(start_search, pattern=r"^dsearch_\d+$"),
+            CallbackQueryHandler(type_food_instead, pattern=r"^dtype_\d+$"),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_search_query),
         ],
         PORTION_CHOICE: [

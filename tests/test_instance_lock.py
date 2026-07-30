@@ -231,7 +231,7 @@ def test_main_exits_non_zero_without_touching_the_database(tmp_path, monkeypatch
     db_path = tmp_path / "ledger.db"
     monkeypatch.setattr(main_module, "DB_PATH", str(db_path))
 
-    def _must_not_run():  # pragma: no cover - asserts it is never called
+    def _must_not_run(**_kwargs):  # pragma: no cover - never called
         raise AssertionError("build_application ran despite a held instance lock")
 
     monkeypatch.setattr(main_module, "build_application", _must_not_run)
@@ -254,7 +254,7 @@ def test_main_releases_the_lock_when_polling_ends(tmp_path, monkeypatch):
             with pytest.raises(AlreadyRunningError):
                 SingleInstanceLock(lock_path_for(db_path)).acquire()
 
-    monkeypatch.setattr(main_module, "build_application", lambda: _App())
+    monkeypatch.setattr(main_module, "build_application", lambda **_kwargs: _App())
     main_module.main()
 
     # Released on the way out, so a restart can take it immediately.
@@ -270,7 +270,7 @@ def test_main_releases_the_lock_when_polling_raises(tmp_path, monkeypatch):
         def run_polling(self, **_kwargs):
             raise RuntimeError("network gone")
 
-    monkeypatch.setattr(main_module, "build_application", lambda: _App())
+    monkeypatch.setattr(main_module, "build_application", lambda **_kwargs: _App())
     with pytest.raises(RuntimeError):
         main_module.main()
 
@@ -293,7 +293,7 @@ def test_startup_lock_precedes_database_work(tmp_path, monkeypatch):
         def run_polling(self, **_kwargs):
             order.append("poll")
 
-    def _build():
+    def _build(**_kwargs):
         order.append("build")
         assert lock_path_for(db_path).exists()
         with pytest.raises(AlreadyRunningError):

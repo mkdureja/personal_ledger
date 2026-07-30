@@ -914,6 +914,21 @@ class DatabaseManager:
             created = await self._get_meal_receipt_locked(user_id, new_meal_id)
             return RepeatResult(status=RepeatStatus.CREATED, receipt=created)
 
+    async def get_last_meal_summary(self, user_id: int) -> dict[str, Any] | None:
+        """Read the meal ``repeat_last_meal`` would copy, without copying it.
+
+        Home shows this so "Repeat last meal" names something concrete instead of
+        asking the user to remember. The ``ORDER BY`` is deliberately identical to
+        the one inside :meth:`repeat_last_meal`, so the label can never describe a
+        different meal than the button would log. Read-only and owner-scoped.
+        """
+        row = await self._query_one(
+            "SELECT id, meal_type, food_items, calories, logged_at FROM diet_logs "
+            "WHERE user_id = ? ORDER BY logged_at DESC, id DESC LIMIT 1",
+            (user_id,),
+        )
+        return dict(row) if row is not None else None
+
     # -------------------------------------------------------------------
     # "Use current values" — re-resolve a past meal against today's sources
     # -------------------------------------------------------------------

@@ -23,6 +23,11 @@ from telegram.ext import (
 
 from ..config import ALLOWED_USER_IDS
 from ..database import MutationSource
+from ..keyboards import (
+    LEGACY_REPEAT_BUTTON_LABEL,
+    MEAL_BUTTON_LABEL,
+    REPEAT_BUTTON_LABEL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +50,24 @@ def normalize_control_text(text: str) -> str:
     return text.strip().casefold()
 
 
+# Normalized control text -> the action it performs. Built from the keyboard's own
+# label constants, so renaming a button cannot leave a handler matching only the
+# old text. Both the current and legacy Repeat labels map to one action for the
+# compatibility window: a persistent keyboard already on a user's client keeps
+# sending the old text until they receive a new one.
 HOME_ACTIONS = {
-    "meal": "meal",
-    "repeat": "repeat",
+    normalize_control_text(MEAL_BUTTON_LABEL): "meal",
+    normalize_control_text(REPEAT_BUTTON_LABEL): "repeat",
+    normalize_control_text(LEGACY_REPEAT_BUTTON_LABEL): "repeat",
     "describe": "describe",
 }
 HOME_WORDS = {"home"}
 GREETINGS = {"hi", "hello", "hey"}
+#: Normalized labels that are a real Diet entry point (kept unchanged in this
+#: slice, but derived rather than duplicated).
+MEAL_LABELS = frozenset(
+    key for key, action in HOME_ACTIONS.items() if action == "meal"
+)
 
 
 class _NormalizedControlFilter(filters.MessageFilter):
@@ -68,9 +84,9 @@ class _NormalizedControlFilter(filters.MessageFilter):
         return normalize_control_text(text) in self._allowed
 
 
-# Exactly "meal" — the reply-keyboard label that is a real Diet entry point.
-MEAL_LABEL_FILTER = _NormalizedControlFilter({"meal"}, name="MealLabel")
-# Any Home action (meal/repeat/describe).
+# The reply-keyboard label(s) that are a real Diet entry point.
+MEAL_LABEL_FILTER = _NormalizedControlFilter(set(MEAL_LABELS), name="MealLabel")
+# Any Home action (meal/repeat/describe), including the legacy Repeat label.
 HOME_ACTION_FILTER = _NormalizedControlFilter(set(HOME_ACTIONS), name="HomeAction")
 # Greetings or the word "home".
 GREETING_HOME_FILTER = _NormalizedControlFilter(
@@ -80,10 +96,10 @@ GREETING_HOME_FILTER = _NormalizedControlFilter(
 ACTIVE_CONTROL_FILTER = _NormalizedControlFilter(
     set(HOME_ACTIONS) | set(GREETINGS) | set(HOME_WORDS), name="ActiveControl"
 )
-# Diet states re-render on "meal" but nudge on every other control word, so a
-# non-meal control interceptor excludes it.
+# Diet states re-render on a Meal label but nudge on every other control word, so
+# a non-meal control interceptor excludes them.
 DIET_NONMEAL_CONTROL_FILTER = _NormalizedControlFilter(
-    (set(HOME_ACTIONS) - {"meal"}) | set(GREETINGS) | set(HOME_WORDS),
+    (set(HOME_ACTIONS) - set(MEAL_LABELS)) | set(GREETINGS) | set(HOME_WORDS),
     name="DietNonMealControl",
 )
 

@@ -11,7 +11,9 @@ Usage:
 from __future__ import annotations
 
 import logging
+from functools import partial
 
+from telegram import BotCommand
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -47,6 +49,7 @@ from .handlers.common import (
 )
 from .handlers.start import start_command, help_command, menu_command, menu_callback
 from .handlers.home import (
+    home_command,
     home_text_router,
     home_voice_router,
     keyboard_command,
@@ -151,8 +154,37 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Post-init: connect DB, schedule reminders
 # ---------------------------------------------------------------------------
-async def post_init(application) -> None:
-    """Called after Application.initialize() — set up DB and jobs."""
+#: The short everyday set shown in Telegram's command picker. Every other command
+#: keeps working; this is the discoverable subset, not the whole reference.
+COMMAND_MENU: tuple[tuple[str, str], ...] = (
+    ("home", "Today and actions"),
+    ("recent", "Recent entries"),
+    ("undo", "Recover the latest supported entry"),
+    ("help", "Full reference"),
+)
+
+async def register_command_menu(application) -> None:
+    """Publish :data:`COMMAND_MENU` to Telegram's command picker.
+
+    Best-effort: a failed registration degrades discoverability, never startup.
+    """
+    try:
+        await application.bot.set_my_commands(
+            [BotCommand(command, description) for command, description in COMMAND_MENU]
+        )
+        logger.info("Registered %d everyday command(s)", len(COMMAND_MENU))
+    except Exception:
+        logger.warning("Could not register the command menu", exc_info=True)
+
+
+async def post_init(application, *, register_commands: bool = False) -> None:
+    """Called after Application.initialize() — set up DB and jobs.
+
+    ``register_commands`` publishes the Telegram command picker, which is a Bot
+    API call and therefore a real deployment side effect. Only ``main()`` turns it
+    on (via :func:`build_application`), so a test driving this function directly
+    never reaches the network.
+    """
     if "db" in application.bot_data:
         logger.warning("post_init called again — skipping (already initialised)")
         return
@@ -186,6 +218,9 @@ async def post_init(application) -> None:
     # can close instead of leaking one.
     application.bot_data["db"] = db
     logger.info("Database ready")
+
+    if register_commands:
+        await register_command_menu(application)
 
     # Seed the shared curated catalog (idempotent upsert by provider id).
     try:
@@ -238,12 +273,14 @@ async def post_shutdown(application) -> None:
 # ---------------------------------------------------------------------------
 # Build and run
 # ---------------------------------------------------------------------------
-def build_application() -> Application:
+def build_application(*, register_commands: bool = False) -> Application:
     """Construct the Application with all handlers registered, without polling.
 
     Separated from :func:`main` so tests can register the real handlers and drive
     ``Application.process_update(...)`` through genuine handler order, filters,
-    and error routing without starting the network loop.
+    and error routing without starting the network loop. ``register_commands``
+    defaults to off for the same reason: only a real run should publish the
+    Telegram command picker.
     """
     application = (
         ApplicationBuilder()
@@ -252,7 +289,7 @@ def build_application() -> Application:
         # per-user draft state consistent; make PTB's requirement explicit
         # rather than depending on the default (plan §8.7).
         .concurrent_updates(False)
-        .post_init(post_init)
+        .post_init(partial(post_init, register_commands=register_commands))
         .post_shutdown(post_shutdown)
         .build()
     )
@@ -267,6 +304,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("start", start_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("help", help_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("menu", menu_command, filters=AUTH_FILTER))
+    application.add_handler(CommandHandler("home", home_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("food", food_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("recipe", recipe_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("summary", summary_command, filters=AUTH_FILTER))
@@ -386,7 +424,7 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     try:
-        application = build_application()
+        application = build_application(register_commands=True)
 
         # Preserve updates accumulated during downtime so a study/gym/meal command
         # sent while the process was restarting is not silently dropped.
