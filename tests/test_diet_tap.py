@@ -1,4 +1,4 @@
-﻿"""Tap-first diet flow (P1): saved-food/recipe selection, quantity, preview,
+"""Tap-first diet flow (P1): saved-food/recipe selection, quantity, preview,
 save, and the keep-logging loop â€” plus owner/stale callback safety.
 """
 

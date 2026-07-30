@@ -1,5 +1,9 @@
 """
-/start, /help, /menu handlers.
+/start, /help, /menu handlers, and the Home action callbacks.
+
+``/start`` and ``/menu`` both delegate to :func:`bot.handlers.home.open_home`, so
+there is exactly one idle surface and only one place that decides how to behave
+during a live guided flow.
 """
 
 from __future__ import annotations
@@ -11,11 +15,10 @@ from telegram.ext import ContextTypes
 from .common import (
     active_conversation_flow,
     authorized_callback,
-    escape_html,
     reply_html,
 )
 from ..config import phase1_enabled_for
-from ..keyboards import main_menu_keyboard, analytics_keyboard
+from ..keyboards import analytics_keyboard
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,6 @@ from telegram import (
     User,
 )
 from telegram.constants import ChatType
-from telegram.ext import ConversationHandler
 
 from bot import keyboards, main as main_module, suggestions
 from bot.handlers import diet, habits, home, start
