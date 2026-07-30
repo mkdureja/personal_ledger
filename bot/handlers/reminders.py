@@ -38,6 +38,12 @@ async def _send_with_retry_classified(
     — never a token or raw exception/URL: ``None`` on success, ``"permanent"`` for
     a non-retryable error, ``"rate_limited"`` when Telegram asks to wait longer
     than we will block, and ``"retry_exhausted"`` when transient retries run out.
+
+    Diagnostics here never name the recipient. A Telegram chat ID *is* the user's
+    identity, and these lines land in ordinary service logs. The per-user answer
+    is not lost: ``reminder_deliveries`` records the same sanitized category
+    against the owner row, so "who failed" is a private database query rather than
+    a log-file artifact.
     """
     for attempt in range(1, _MAX_SEND_ATTEMPTS + 1):
         try:
@@ -50,26 +56,26 @@ async def _send_with_retry_classified(
                 # retry is rate-limited too. Stop and let the next scheduled run
                 # resume, recording an honest, sanitized category.
                 logger.warning(
-                    "Telegram asked to retry chat %s after %.0fs (over the %.0fs "
-                    "cap); deferring to the next run",
-                    chat_id, requested, _MAX_RETRY_AFTER_SECONDS,
+                    "Telegram asked to retry a reminder send after %.0fs (over the "
+                    "%.0fs cap); deferring to the next run",
+                    requested, _MAX_RETRY_AFTER_SECONDS,
                 )
                 return False, "rate_limited"
             delay = requested + 0.5
         except (BadRequest, Forbidden):
             # Permanent (bad chat, blocked bot, malformed message) — do not retry.
             # Note: in PTB these subclass NetworkError, so catch them first.
-            logger.exception("Permanent send failure to chat %s", chat_id)
+            logger.exception("Permanent reminder send failure")
             return False, "permanent"
         except NetworkError:
             delay = min(2.0**attempt, 5.0)
         except TelegramError:
-            logger.exception("Permanent send failure to chat %s", chat_id)
+            logger.exception("Permanent reminder send failure")
             return False, "permanent"
         if attempt < _MAX_SEND_ATTEMPTS:
             await asyncio.sleep(delay)
     logger.warning(
-        "Gave up sending to chat %s after %d attempts", chat_id, _MAX_SEND_ATTEMPTS
+        "Gave up sending a reminder after %d attempts", _MAX_SEND_ATTEMPTS
     )
     return False, "retry_exhausted"
 
@@ -377,7 +383,7 @@ async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 anchor, db, user_id, today, targets, quotes
             )
         except Exception:
-            logger.exception("Failed to build '%s' anchor for user %d", anchor.id, user_id)
+            logger.exception("Failed to build the '%s' anchor for one user", anchor.id)
             continue  # one user's build failure never blocks the others
 
         # Chunk 0 is the status message; the (possibly long) unchecked-habit list,

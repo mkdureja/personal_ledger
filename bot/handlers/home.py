@@ -144,8 +144,10 @@ async def repeat_last_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         result = await db.repeat_last_meal(user.id, mutation_source(update))
     except Exception:
         # A failed tap must read as a failed tap. Report it in bounded terms and
-        # let the error handler log the detail; nothing was committed.
-        logger.exception("Repeat failed for user %s", user.id)
+        # let the error handler log the detail; nothing was committed. The log
+        # line carries no Telegram ID — the traceback identifies the fault, and
+        # naming the user would publish their identity into service logs.
+        logger.exception("Repeat failed; nothing was written")
         await message.reply_text("⚠️ Couldn't repeat that meal. Try again.")
         return
 

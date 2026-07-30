@@ -153,17 +153,24 @@ async def post_init(application) -> None:
         # bot_data, so post_shutdown would not otherwise clean it up.
         await db.close()
         raise
+    # Register the connection before any optional startup step, so a step that
+    # aborts (including via cancellation) still leaves a connection post_shutdown
+    # can close instead of leaking one.
+    application.bot_data["db"] = db
+    logger.info("Database ready")
+
     # Seed the shared curated catalog (idempotent upsert by provider id).
     try:
         from .catalog_seed import CATALOG_FOODS
 
         await db.seed_catalog(CATALOG_FOODS)
         logger.info("Seeded %d curated catalog food(s)", len(CATALOG_FOODS))
-    except BaseException:
+    except Exception:
+        # Optional-feature degradation only. Catching ``BaseException`` here also
+        # swallowed ``CancelledError`` and ``KeyboardInterrupt``, so a Ctrl-C or a
+        # cancelled startup task would have been logged as "catalog seeding
+        # failed" and then continued into polling. Those must propagate.
         logger.warning("Catalog seeding failed; search may be empty", exc_info=True)
-
-    application.bot_data["db"] = db
-    logger.info("Database ready")
 
     # Schedule routine anchors when a routine file is present; otherwise fall
     # back to the single legacy habit reminder (backward compatible).

@@ -1,4 +1,10 @@
-"""Send one plain-text Telegram message using the Ledger bot token."""
+"""Send one plain-text Telegram message using the Ledger bot token.
+
+The recipient must already be in ``ALLOWED_USER_IDS``; this is a manual helper
+for onboarding a household member (User A / User B), not a broadcast tool. Error
+output is redacted, because a Telegram error can carry the Bot API request URL
+and that URL embeds the token.
+"""
 
 from __future__ import annotations
 
@@ -47,6 +53,24 @@ async def _send(token: str, chat_id: int, text: str) -> int:
         return sent.message_id
 
 
+def _redact(text: str, token: str) -> str:
+    """Remove the bot token from text destined for a terminal or a log.
+
+    A Telegram error can carry the full Bot API request URL, and that URL embeds
+    the token. Printing it verbatim would leak the credential into shell history,
+    a CI log, or a pasted bug report — so redact before printing, not after.
+    """
+    if not token:
+        return text
+    redacted = text.replace(token, "***")
+    # The token is "<bot id>:<secret>"; the secret alone is the sensitive half and
+    # can appear without its prefix in some error renderings.
+    _, _, secret = token.partition(":")
+    if secret:
+        redacted = redacted.replace(secret, "***")
+    return redacted
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Send one plain-text message from the Ledger bot."
@@ -55,7 +79,7 @@ def main() -> int:
         "--chat-id",
         required=True,
         type=_positive_chat_id,
-        help="Ratika's numeric Telegram user ID",
+        help="Recipient's numeric Telegram user ID (must be in ALLOWED_USER_IDS)",
     )
     parser.add_argument(
         "--message",
@@ -104,9 +128,10 @@ def main() -> int:
     try:
         message_id = asyncio.run(_send(token, args.chat_id, text))
     except TelegramError as exc:
-        print(f"Telegram rejected the send: {type(exc).__name__}: {exc}", file=sys.stderr)
+        detail = _redact(f"{type(exc).__name__}: {exc}", token)
+        print(f"Telegram rejected the send: {detail}", file=sys.stderr)
         print(
-            "Ratika may need to open the bot and send /start first.",
+            "The recipient may need to open the bot and send /start first.",
             file=sys.stderr,
         )
         return 1

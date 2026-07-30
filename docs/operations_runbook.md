@@ -100,9 +100,18 @@ prior reviews. Upgrade only to compatible versions with the full suite still gre
   cases, including the WAL sidecars).
 - The bot silences HTTPX request logging (which embeds the token) and redacts the
   token from any remaining log output; a regression test guards this.
-- Migration diagnostics are sanitized. Some reminder/Repeat failure logs still
-  include a raw Telegram ID; Release 0 removes those remaining identifiers.
-  Until then, keep production logs private and short-lived.
+- Migration, reminder, and Repeat diagnostics contain only sanitized
+  counts/categories — never a token, username, first name, or raw Telegram ID. A
+  chat ID is the user's identity, so delivery failures are logged by category and
+  attributed per user only in the private `reminder_deliveries` table:
+
+  ```sql
+  SELECT job_key, local_date, chunk_index, delivered, error_category
+  FROM reminder_deliveries WHERE user_id = ? ORDER BY id DESC LIMIT 20;
+  ```
+
+- The manual send helper (`scripts/send_bot_message.py`) redacts the token from
+  Telegram error output, which can otherwise carry the Bot API request URL.
 
 ## Phase 1 rollout flags (Home / fast logging)
 
