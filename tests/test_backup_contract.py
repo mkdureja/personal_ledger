@@ -203,6 +203,21 @@ def test_verify_only_rejects_legacy_version_zero_distinctly(tmp_path):
         verify_backup_file(legacy)
 
 
+def test_verify_only_rejects_a_negative_version_as_unknown(tmp_path):
+    """Generic verification accepts only known versions, even without an assertion."""
+    path = tmp_path / "negative.db"
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE bogus (id INTEGER PRIMARY KEY)")
+        conn.execute("PRAGMA user_version = -1")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(VerificationFailed, match="not a known schema version"):
+        verify_backup_file(path)
+
+
 def test_verify_only_rejects_a_future_version_distinctly(tmp_path):
     future = tmp_path / "future.db"
     _make_versioned_db(future, LATEST_SCHEMA_VERSION)
@@ -226,6 +241,8 @@ def test_resolve_expect_version_accepts_latest_and_integers():
         resolve_expect_version("v8")
     with pytest.raises(BackupError):
         resolve_expect_version(-1)
+    with pytest.raises(BackupError, match="startup migration preflight"):
+        resolve_expect_version(0)
 
 
 def test_an_undescribable_version_cannot_be_asserted_or_certified(
@@ -340,18 +357,22 @@ def test_integrity_failure_is_reported(tmp_path):
         verify_created_backup(facts, source_version=LATEST_SCHEMA_VERSION)
 
 
-def test_legacy_source_can_be_backed_up_but_not_certified(tmp_path, outside_repo):
-    """A populated v0 database gets a source-matching copy with no table contract.
-
-    This is the §0.5 rehearsal path: the copy is sound and matches its source, yet
-    generic verification still refuses to certify version 0.
-    """
+def test_public_backup_apis_cannot_certify_a_legacy_source(tmp_path, outside_repo):
+    """The sole v0 exception belongs to preflight, never ordinary creation."""
     source = _make_legacy_db(tmp_path / "ledger.db")
-    facts = create_backup(source, tmp_path / "legacy-copy.db", expect_version=0)
-    assert facts.user_version == 0
-    assert facts.sound
-    with pytest.raises(VerificationFailed, match="legacy version 0"):
-        verify_backup_file(facts.path)
+    explicit = tmp_path / "legacy-copy.db"
+    auto_dir = tmp_path / "out"
+
+    with pytest.raises(BackupError, match="startup migration preflight"):
+        create_backup(source, explicit, expect_version=0)
+    with pytest.raises(BackupError, match="startup migration preflight"):
+        create_backup_in(source, auto_dir, expect_version=0)
+    assert not explicit.exists()
+    assert not auto_dir.exists()
+
+    # Defence in depth if a caller bypasses the ordinary create entry point.
+    with pytest.raises(VerificationFailed, match="not publicly certifiable"):
+        verify_created_backup(inspect_database(source), source_version=0)
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +448,26 @@ def test_cli_create_requires_expect_version(tmp_path, capsys):
         backup_db.main(["--source", "ledger.db", "--dest", str(tmp_path / "out")])
     assert excinfo.value.code == 2
     assert "--expect-version is required" in capsys.readouterr().err
+
+
+def test_cli_create_rejects_legacy_zero_without_rehearsal(
+    tmp_path, outside_repo, capsys
+):
+    source = _make_legacy_db(tmp_path / "legacy.db")
+    out = tmp_path / "legacy-copy.db"
+
+    assert backup_db.main(
+        [
+            "--source",
+            str(source),
+            "--dest",
+            str(out),
+            "--expect-version",
+            "0",
+        ]
+    ) == 2
+    assert "startup migration preflight" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_cli_creates_and_then_verifies(tmp_path, outside_repo, capsys):

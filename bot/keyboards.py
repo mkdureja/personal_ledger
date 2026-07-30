@@ -14,6 +14,7 @@ from telegram import (
 )
 
 from .callback_data import to_base36
+from .nutrition import NutritionError, format_decimal
 
 
 # A checklist uses two buttons per habit plus a date row and a day-toggle row.
@@ -133,10 +134,6 @@ _MAX_BUTTON_LABEL = 40
 # reduce a food's name to a couple of letters — a slightly wide button is better
 # than an unreadable one.
 _MIN_NAME_CHARS = 12
-# The unit in a stored "usual" is user-supplied text, so it is bounded too.
-# Without this the "fixed" part of a label is not actually fixed, and one odd
-# unit could push a row far past any budget.
-_MAX_UNIT_CHARS = 12
 
 
 def _button_label(text: object, limit: int = _MAX_BUTTON_LABEL) -> str:
@@ -148,12 +145,17 @@ def _button_label(text: object, limit: int = _MAX_BUTTON_LABEL) -> str:
 
 
 def _fmt_amount(value: object) -> str:
-    """Render an entered amount without a needless decimal (220.0 -> '220')."""
+    """Render the stored amount losslessly, without a needless decimal.
+
+    ``format_decimal`` starts from the float's shortest round-trippable text, so
+    the label can feed the same decimal back to the resolver that the write path
+    uses. A malformed legacy preference must not make the whole picker fail to
+    render; the commit path will still reject it and open repair.
+    """
     try:
-        number = float(value)
-    except (TypeError, ValueError):
+        return format_decimal(value)
+    except NutritionError:
         return str(value)
-    return f"{number:g}"
 
 
 SUGGESTION_PAGE_SIZE = 8
@@ -213,8 +215,9 @@ def choice_button_label(choice: dict, *, quick: bool) -> str:
             prefix, suffix = REPAIR_PREFIX, suffix + _REPAIR_SUFFIX
         elif default:
             prefix = INSTANT_PREFIX
-            unit = _button_label(default["unit"], _MAX_UNIT_CHARS)
-            quantity = f" · {_fmt_amount(default['amount'])} {unit}"
+            # The amount and unit describe the consequence of this tap. They are
+            # semantic data, not decoration, so never abbreviate either one.
+            quantity = f" · {_fmt_amount(default['amount'])} {default['unit']}"
 
     budget = max(_MIN_NAME_CHARS, _MAX_BUTTON_LABEL - len(prefix + suffix + quantity))
     return f"{prefix}{_button_label(choice['name'], budget)}{suffix}{quantity}"

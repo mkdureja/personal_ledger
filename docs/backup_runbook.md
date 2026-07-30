@@ -8,57 +8,70 @@ checkpoint. Always back up with one of the consistent methods below; never copy
 > Store every backup **outside the repository**. The repo's `.gitignore` blocks
 > `*.db`, `*.db-wal`, `*.db-shm`, and `*.db-journal`, but a backup placed inside
 > the working tree is still an accident waiting to happen — and the tool now
-> refuses an in-repository destination outright. Backups and reports must never
-> contain the bot token or real Telegram IDs.
+> refuses an in-repository destination outright. A backup is a full copy of the
+> household database and necessarily contains both ledgers, including Telegram
+> user IDs and user-supplied names. Treat the file as sensitive. The backup
+> tool's report/log output is sanitized and must not print those identifiers.
+> The bot token is not stored in the database and must never enter a backup or
+> report.
 
-## Destination and security decision (settled)
+## Destination and security status (open)
 
-| Decision | Value |
-|---|---|
 | Decision | Value | Status |
 |---|---|---|
 | Destination | `E:\ledger-backups` | ✅ in place, verified |
 | Scope | **Local-only**, on a different physical disk than the repository (`D:`) | ✅ |
 | Cloud sync | **Excluded.** Never place a plaintext database backup in cloud storage | ✅ |
-| At-rest encryption | Intended: device/disk encryption of the host volume | ❌ **not satisfied** — see below |
-| Filesystem permissions | Intended: restricted to the operating account | ❌ not reviewed |
+| At-rest encryption | Intended: device/disk encryption of the host volume | ❌ `E:` is fully decrypted |
+| Filesystem permissions | Intended: restricted to the operating account | ❌ reviewed 2026-07-30; ACL is broad |
 | Retention | Rolling: the newest 10 routine backups per schema version | ✅ enforced by the tool |
 | Scheduling | Daily task on the host that runs the bot | ❌ not registered |
+| Security acceptance | Encrypt/restrict the destination, or explicitly accept and record the local risk | ❌ open |
 
 > **Open gap, checked 2026-07-30.** `Get-BitLockerVolume` reports every volume on
 > this host — including `E:` — as `FullyDecrypted`, `ProtectionStatus: Off`. The
 > recorded policy allows a plaintext local backup **only** on a
 > device/disk-encrypted volume, so the backups now sitting on `E:` do not yet meet
-> it. They are a complete, unencrypted copy of both users' ledgers on a drive with
-> inherited default permissions. Close this by either:
+> it. The folder ACL was also reviewed: `Authenticated Users` has
+> `Modify/Synchronize`, built-in `Users` has `ReadAndExecute/Synchronize`, and
+> `Administrators` plus `SYSTEM` have full control. It is not restricted to the
+> bot's operating account. These files are complete, unencrypted copies of both
+> users' ledgers and identifiers. Close this by either:
 >
 > 1. enabling BitLocker on `E:` (`Enable-BitLocker -MountPoint E: …`) and
 >    tightening the folder ACL to the operating account; or
-> 2. deciding the household accepts unencrypted local backups, and editing the
->    policy above to say so — an accepted risk is fine, an undocumented one is not.
+> 2. explicitly recording that the household accepts unencrypted local backups
+>    and the reviewed broad local access. An accepted risk can be a household
+>    decision; an undocumented one is not a settled policy.
 >
 > No scheduled task exists yet either (`Get-ScheduledTask` matches nothing named
 > Ledger), so backups are currently manual. The command to register one is in
 > **Scheduling** below; it is not run automatically because it changes the host's
 > configuration.
 
-The two acceptable policies are: a plaintext local backup on a verified
-device/disk-encrypted volume that is excluded from cloud sync (the choice
-recorded above); or, for anything synced or moved off-host, file/archive-layer
-encryption applied *before* transfer with its recovery key stored separately. If
-the destination ever changes to a synced or off-host target, choose an archive
-tool and key-recovery method first and record them here — the second policy is
-not satisfied by the current setup.
+The intended local policy is a plaintext backup on a verified
+device/disk-encrypted volume, restricted to the operating account and excluded
+from cloud sync. For anything synced or moved off-host, apply file/archive-layer
+encryption *before* transfer and store its recovery key separately. The current
+local setup satisfies neither the intended protection nor a recorded risk
+acceptance.
 
 Separate disk, same host: this survives a repository mistake, a bad migration, or
 a `D:` failure. It does **not** survive loss of the machine. That is an accepted
-limit of a two-user household ledger, not an oversight.
+design limit of this destination; formal security acceptance is still open above.
 
 The one historical rollback point that used to sit in the working tree
-(`ledger.db.bak-*`, created by a manual file copy) was verified and relocated to
-this destination as `ledger-legacy-manual-v8-*.db`. Its `ledger-legacy-` prefix
-keeps it outside rolling retention. No database or backup file remains inside the
-repository.
+(`ledger.db.bak-*`) was relocated to this destination as
+`ledger-legacy-manual-v8-*.db`. Its exact capture method and WAL state are
+unknown; the filename and retained label suggest a manual copy but do not prove
+one. Later verification established schema v8, integrity, foreign keys, required
+tables, and row counts matching the live database at that time. It cannot prove
+that the original capture was WAL-consistent or complete, so retain it only as a
+historical fallback outside rolling retention. Prefer a fresh online backup for
+restore or migration.
+
+No backup remains inside the repository. The live, gitignored `ledger.db`
+correctly remains at the configured `DB_PATH` in the project root.
 
 **Side effect worth knowing:** creating or verifying a backup opens the file
 read-write, so closing it checkpoints the WAL into the main file and removes the
@@ -110,7 +123,7 @@ the exit code before treating a backup as your pre-migration safety net.
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.backup_db `
-    --verify-only E:\ledger-backups\ledger-v8-20260730-101500Z.db
+    --verify-only E:\ledger-backups\ledger-v8-20260730-100733Z.db
 ```
 
 `--verify-only` accepts any known stamped version from 1 to the current one, so an
@@ -168,7 +181,7 @@ automatically.
    so a bad rollback point is discovered before it becomes the live database.
 
    ```powershell
-   Copy-Item E:\ledger-backups\ledger-v8-20260730-101500Z.db $env:TEMP\ledger-restore-test.db
+   Copy-Item E:\ledger-backups\ledger-v8-20260730-100733Z.db $env:TEMP\ledger-restore-test.db
    .\.venv\Scripts\python.exe -m scripts.backup_db --verify-only $env:TEMP\ledger-restore-test.db
    Remove-Item $env:TEMP\ledger-restore-test.db
    ```

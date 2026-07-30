@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import sqlite3
 from functools import partial
 
 from telegram import BotCommand
@@ -190,7 +191,21 @@ async def post_init(application, *, register_commands: bool = False) -> None:
         return
 
     db = DatabaseManager(DB_PATH)
-    await db.connect()
+    try:
+        await db.connect()
+    except sqlite3.Error as exc:
+        # A connection handle can be created before the first PRAGMA discovers
+        # that the configured file is corrupt or not SQLite. DatabaseManager
+        # closes that partial handle; turn the driver traceback into the same
+        # controlled, actionable startup refusal used by migration preflight.
+        error = MigrationPreflightError(
+            f"Refusing to start: the configured database at {DB_PATH} could not "
+            "be opened and validated as SQLite. Check DB_PATH or restore a "
+            "verified backup before retrying. No migration or schema change was "
+            "attempted."
+        )
+        logger.error("%s", error)
+        raise error from exc
     try:
         # No production migration runs without a freshly verified backup of the
         # exact source it is about to change. This is the only approved

@@ -293,6 +293,16 @@ async def habit_noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     target = match.group(2)
     if target != "date":
+        if _is_current_setup_callback(update, context):
+            # Habit Setup deliberately renders the name as a label beside its
+            # destructive action. It shares the legacy noop callback family, but
+            # telling the user to refresh the checklist is wrong on this live
+            # screen. Keep it non-mutating and explain the controls in context.
+            await query.answer(
+                "Habit Setup: use ❌ Remove, or type a new habit name.",
+                show_alert=True,
+            )
+            return
         db = context.bot_data["db"]
         if not await _is_active_habit(db, user_id, int(target)):
             await _reject_callback(query, "This habit is no longer active.")

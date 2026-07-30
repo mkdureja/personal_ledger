@@ -283,6 +283,41 @@ async def test_rehearsal_short_of_target_refuses(tmp_path, outside_repo, monkeyp
 # ---------------------------------------------------------------------------
 # Startup wiring
 # ---------------------------------------------------------------------------
+async def test_connect_closes_a_partial_handle_when_the_live_file_is_corrupt(tmp_path):
+    """The first PRAGMA may discover corruption after connect() returned a handle."""
+    broken = tmp_path / "ledger.db"
+    broken.write_bytes(b"not a SQLite database")
+    manager = DatabaseManager(str(broken))
+
+    with pytest.raises(sqlite3.DatabaseError):
+        await manager.connect()
+
+    assert manager._conn is None
+    # On Windows this also proves no SQLite handle still pins the file.
+    broken.unlink()
+
+
+async def test_post_init_refuses_a_corrupt_live_database_cleanly(
+    tmp_path, monkeypatch, caplog
+):
+    """Corruption is reported before preflight, without a raw driver exception."""
+    broken = tmp_path / "ledger.db"
+    broken.write_bytes(b"not a SQLite database")
+    monkeypatch.setattr(main_module, "DB_PATH", str(broken))
+    monkeypatch.setattr(main_module, "BACKUP_DEST_DIR", "")
+    monkeypatch.setattr(main_module, "ROUTINE_PATH", str(tmp_path / "none.yaml"))
+    application = _build_application()
+
+    with caplog.at_level(logging.ERROR, logger=main_module.__name__):
+        with pytest.raises(MigrationPreflightError, match="could not be opened"):
+            await main_module.post_init(application)
+
+    assert "restore a verified backup" in caplog.text
+    assert "db" not in application.bot_data
+    # The failed connection was closed rather than retained until process exit.
+    broken.unlink()
+
+
 async def test_post_init_migrates_only_after_a_verified_backup(
     tmp_path, outside_repo, monkeypatch
 ):

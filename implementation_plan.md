@@ -1,8 +1,8 @@
 # Ledger implementation plan
 
-**Status:** proposed active plan
+**Status:** Releases 0 and 1 implemented; operational acceptance and merge remain open
 **Prepared:** 2026-07-30
-**Baseline:** `hardening/review-fixes` at `16d1f3a`
+**Original planning baseline:** `hardening/review-fixes` at `16d1f3a`
 **Product boundary:** one private Telegram bot for the owner and spouse
 **Canonical roadmap:** `implementation_plan.md`
 
@@ -29,12 +29,16 @@ Updated 2026-07-30 after implementing Releases 0 and 1 and a follow-up Codex
 review. The planning-time baseline (clean at `16d1f3a`, 892 tests) is history; see
 the per-release status sections below for what each slice delivered.
 
-- Releases 0 and 1 are implemented on `hardening/review-fixes`. **1036 tests
+- Releases 0 and 1 are implemented on `hardening/review-fixes`. **1065 tests
   pass**; compilation and installed dependency checks pass; GitHub CI is green on
   `windows-latest` and `ubuntu-latest`.
 - The database is schema v8 with a clean integrity and foreign-key check. An
-  external verified backup exists at `E:\ledger-backups`, and no database or
-  backup file remains inside the repository.
+  external verified backup exists at `E:\ledger-backups`. No backup remains
+  inside the repository; the live, gitignored `ledger.db` correctly remains at
+  the configured `DB_PATH` in the project root.
+- A database backup necessarily contains the complete household data for both
+  ledgers, including Telegram user IDs. Only the backup tool's console report is
+  sanitized; the backup file itself is sensitive.
 - Two users are authorized and both are in the current keyboard `pilot` mode.
 - Home, Quick Meal, exact Repeat, targeted Undo, current-value replay, editable
   meal drafts, suggestions, a curated catalog, atomic recipe duplication, the
@@ -44,10 +48,12 @@ the per-release status sections below for what each slice delivered.
 - Neither ledger has a private food, recipe, or food preference yet. This blocks
   the Release 1 live gate's `⚡` case until the setup pre-step is done; it does not
   justify promoting a speculative feature or migration.
-- **Open, and owner-owned:** the branch is 35+ commits ahead of `main` with no
-  pull request, `main` has no branch protection, and the backup destination does
-  not yet meet its own at-rest encryption policy (see
-  [docs/backup_runbook.md](docs/backup_runbook.md)).
+- **Open, and owner-owned:** the branch was 36 commits ahead of `main` at the
+  2026-07-30 audit, with no pull request and no branch protection on `main`.
+  `E:` is unencrypted, the reviewed backup-folder ACL is broader than the
+  operating account, and no daily backup task is registered. Secure that
+  destination or explicitly accept and record the local risk before operational
+  acceptance (see [docs/backup_runbook.md](docs/backup_runbook.md)).
 
 ## Product rules for every slice
 
@@ -149,16 +155,20 @@ Do not copy a live `ledger.db` by itself. Correct that instruction in
 `docs/user_guide.html`. The exact creation method for the existing
 `ledger.db.bak-20260729-095957` is unknown. Its name does not match the current
 implicit default, although an explicit `--dest` could have produced any name.
-It has since been verified read-only and is sound: schema v8,
-`integrity_check=ok`, zero foreign-key violations, all nineteen v8 tables
-present, and row counts identical to the live database. Treat it as a usable but
-misplaced and soon-stale rollback point: create and verify the external
-replacement first, then relocate or retire this file once a destination is
-chosen.
+Subsequent inspection found schema v8, `integrity_check=ok`, zero foreign-key
+violations, all nineteen v8 tables, and row counts matching the live database at
+the time checked. Those checks cannot prove that an unknown manual copy captured
+a WAL-consistent, complete snapshot at the moment it was made. It is retained
+outside the repository as a historical fallback, not the preferred certified
+rollback point; use a fresh online backup for recovery and migrations.
 
-One owner input blocks Release 0.1: choose the real destination and state whether
-it is local-only or will be synced/moved off-host. Record one corresponding
-security policy:
+The owner has chosen `E:\ledger-backups` as a local-only destination excluded
+from cloud sync. The security decision is still open: the 2026-07-30 audit found
+`E:` fully decrypted and the folder ACL broad (`Authenticated Users` can modify
+it and built-in `Users` can read it). Before operational acceptance, either
+enable disk encryption and restrict the ACL to the operating account, or
+explicitly document acceptance of the unencrypted/broad-access local risk.
+The governing policies remain:
 
 - a plaintext local backup may remain only on a verified device/disk-encrypted
   volume that is excluded from cloud sync; or
@@ -166,36 +176,24 @@ security policy:
   before transfer, with its recovery key stored separately.
 
 Never put a plaintext database backup in cloud storage. Do not prescribe 7-Zip,
-`age`, or another archive dependency until the destination and key-recovery
-method are chosen. The implementer must not infer this decision; the owner makes
-it before the Release 0 gate.
+`age`, or another archive dependency until an off-host destination and
+key-recovery method are chosen.
 
 ### 0.2 Make the documentation tell one current story
 
-- This planning pass has already corrected the safety-critical/current-fact
-  mismatches: the 15-minute timeout, WAL-safe backup guidance, Telegram's role
-  in message transport, `HOME_KEYBOARD_MODE=off` versus `remove`, and the current
-  single-instance/pre-migration-backup limitations. README’s architecture tree
-  now includes the current Home, receipts, suggestion, service, and helper-script
-  surfaces.
-- During implementation, refresh the HTML guide for Home, Meal/Repeat, receipts,
-  usual amounts, suggestions, keyboard controls, and recipe duplication, and
-  revise the README tree again only for modules that actually land. Describe only
-  behavior present in the implemented build; do not pre-advertise planned flags
-  or UI.
+- Documentation now distinguishes household use from engineering/release status.
+  The HTML guide covers Home, Meal/Repeat, receipts, usual amounts, suggestions,
+  keyboard controls, recipe duplication, reminders, and recovery behavior
+  without presenting internal gates as spouse-facing features.
+- Safety-critical facts are aligned across the guide and runbooks: the
+  15-minute timeout, WAL-safe backup guidance, Telegram's role in message
+  transport, `HOME_KEYBOARD_MODE=off` versus `remove`, the single-instance lock,
+  and the pre-migration backup gate.
 - Keep `implementation_plan.md` as the canonical active roadmap.
-- The worktree currently proposes deleting `claude_response.md`,
-  `docs/tap_first_nutrition_upgrade_proposal.md`, and `impl_plan_codex.md`.
-  Those deletions are **not staged and not treated as approved in this planning
-  pass**, because the last explicit cleanup instruction was not to delete yet.
-  Before the documentation commit, the owner either confirms the removals or
-  restores the files with visible superseded banners. In either case, only
-  `implementation_plan.md` is active, and Git at `16d1f3a` preserves the old
-  contents.
-- **Commit `review_codex.md`.** It is currently untracked, which leaves the
-  evidence record for this entire roadmap outside version control.
-- After Releases 0 and 1 are implemented, update the same documents again for
-  the newly shipped commands, configuration, and UI.
+- The superseded `claude_response.md`,
+  `docs/tap_first_nutrition_upgrade_proposal.md`, and `impl_plan_codex.md` have
+  been removed after the cleanup decision; Git preserves their history.
+- `review_codex.md` is tracked as the evidence record for this roadmap.
 
 ### 0.3 Align privacy claims with diagnostic output
 
@@ -305,10 +303,10 @@ This is Release 0 groundwork and is **mandatory before Candidate A / v9**.
 
 ### 0.6 Add continuous integration
 
-There is no `.github/` directory. 892 tests, 26 commits, and every verification
-to date has been local. `tests/conftest.py` already pins every current validated
-setting; §0.5 adds the corresponding empty pin for `BACKUP_DEST_DIR`, after which
-the suite is CI-ready without deployment `.env` leakage.
+At the original planning baseline there was no `.github/` directory: 892 tests
+and every verification to that point had been local. The implemented workflow is
+now green on branch pushes. `tests/conftest.py` pins validated settings,
+including `BACKUP_DEST_DIR`, so deployment `.env` values do not leak into CI.
 
 - One workflow running `python -m pytest -q` on push and pull request.
 - Use a two-runner matrix: `windows-latest` for the deployed lock branch and
@@ -320,24 +318,29 @@ the suite is CI-ready without deployment `.env` leakage.
 
 ### Release 0 status — implemented 2026-07-30
 
-All six slices are implemented on `hardening/review-fixes`. **960 tests pass.**
-The owner settled the blocking input: destination `E:\ledger-backups`, local-only
-on a separate physical disk, excluded from cloud sync, plaintext under host disk
-encryption, rolling retention of 10; the three superseded documents were confirmed
-for deletion.
+All six slices are implemented on `hardening/review-fixes`. **When they first
+landed, 960 tests passed; the current baseline is 1065.** The owner selected
+`E:\ledger-backups`, local-only on a separate physical disk, excluded from cloud
+sync, with rolling retention of 10. A later host audit found that the intended
+disk-encryption and operating-account-only ACL policy is not satisfied, so
+backup security remains an owner decision rather than a closed Release 0 item.
+The three superseded documents were confirmed for deletion.
 
-The gate below was executed against the **real** database (every migration case on
-an online-backup copy in a temporary directory; the live file only read):
-**20/20 checks passed.** Recorded results:
+The gate below was executed against the **real** database. Every migration case
+ran on an online-backup copy in a temporary directory; no live rows or schema
+changed, although opening the live SQLite file may checkpoint already-committed
+WAL data as documented in the runbook. **20/20 checks passed.** Recorded results:
 
 - A new external backup at `E:\ledger-backups` verified at v8: `integrity_check =
   ok`, zero foreign-key violations, all v8 tables, sanitized row counts.
 - That backup, copied to a temporary path, passed `--verify-only` — restore
   rehearsed, not assumed.
 - The historical in-tree rollback point was verified, relocated to
-  `E:\ledger-backups\ledger-legacy-manual-v8-*.db`, and confirmed. No database or
-  backup file remains inside the repository. Because it is itself v8, the
-  "rejected as non-current" half of this check is proven by a v7 source in
+  `E:\ledger-backups\ledger-legacy-manual-v8-*.db`, and structurally confirmed.
+  Its capture provenance and WAL consistency are unknown, so it is historical
+  only. No backup remains inside the repository; the live gitignored
+  `ledger.db` remains at the configured project-root path. Because the legacy
+  file is itself v8, version rejection is proven by a v7 source in
   `tests/test_backup_contract.py` and by the live v7 rehearsal below.
 - An in-repository destination is refused (exit 2), including a path beside
   `ledger.db`.
@@ -352,59 +355,69 @@ an online-backup copy in a temporary directory; the live file only read):
   destination; a v9-stamped copy aborted with `UnsupportedSchemaError` creating no
   backup.
 
-**Owner actions still open:** enable branch protection on `main` requiring both CI
-jobs (an external GitHub setting), and confirm both matrix runners are green on the
-pushed branch.
+The **20/20 result covers the technical backup/migration/lock checks only**. It
+does not settle at-rest protection, folder access, backup scheduling, live
+two-client acceptance, or GitHub merge controls.
+
+**Owner actions still open:** secure the backup volume and folder—or explicitly
+record acceptance of the local risk—register the daily backup task, open the pull
+request, and enable branch protection on `main` requiring both CI jobs. Both
+matrix runners are already green on branch pushes.
 
 ### Release 0 gate
 
-- A new off-repository backup passes full v8 schema/integrity verification.
-- A known historical rollback point passes version-aware `--verify-only`, while
-  `--expect-version latest` rejects it as non-current.
-- The new v8 backup restores successfully to a temporary database and that
+- [x] A new off-repository backup passes full v8 schema/integrity verification.
+- [x] The historical file passes v8 structural verification; its unknown capture
+  provenance keeps it historical rather than certified. Version rejection is
+  covered by the v7 fixture and live-copy rehearsal.
+- [x] The new v8 backup restores successfully to a temporary database and that
   restored file passes `--verify-only`.
-- The backup command rejects an in-repository destination, and the chosen
-  backup-security policy is documented and exercised.
-- A second `python -m bot` on the same host exits non-zero without touching the
+- [x] The backup command rejects an in-repository destination.
+- [ ] The backup-security policy is either satisfied or explicitly accepted.
+  `E:` is unencrypted and the reviewed folder ACL is broad.
+- [x] A second `python -m bot` on the same host exits non-zero without touching the
   database; normal shutdown and forced process death both release the lock.
-- With a pending migration and no configured backup destination, startup refuses
+- [x] With a pending migration and no configured backup destination, startup refuses
   and leaves `user_version` unchanged; with a destination configured, it creates
   and verifies the backup before migrating.
-- A populated v0 legacy database is backed up and successfully rehearsed on a
+- [x] A populated v0 legacy database is backed up and successfully rehearsed on a
   temporary copy before the live migration; a genuinely empty v0 database starts
   without creating a meaningless backup.
-- A database newer than this checkout still fails with `UnsupportedSchemaError`
+- [x] A database newer than this checkout still fails with `UnsupportedSchemaError`
   without creating a backup or changing the schema.
-- The full suite passes unchanged with the migration gate in place — no test
+- [x] The full suite passes unchanged with the migration gate in place — no test
   needed an exemption flag.
-- CI runs green on both matrix runners for a push and a pull request.
-- User-facing docs contain no raw live-database copy instruction and describe
+- [x] CI runs green on both matrix runners for branch pushes.
+- [ ] Open a pull request, confirm its matrix run, and require both checks before
+  merge.
+- [x] User-facing docs contain no raw live-database copy instruction and describe
   current behavior.
-- Logs used by these paths contain no raw Telegram ID or bot token.
-- Targeted backup/logging/startup-cancellation/instance-lock tests and the full
+- [x] Logs used by these paths contain no raw Telegram ID or bot token.
+- [x] Targeted backup/logging/startup-cancellation/instance-lock tests and the full
   suite pass.
+
+The code-level Release 0 gate is complete. Operational acceptance remains open
+until the unchecked security, scheduling, and repository controls are resolved.
 
 ## Merge and branch hygiene
 
-`hardening/review-fixes` is 26 commits ahead of `main`, `main` has no unique
-commits, and the branch tip matches `origin/hardening/review-fixes`. The branch
-now contains the entire product — Phases 2a through 6, tap-first, Home,
-Release B — so its name no longer describes its contents, and an indefinitely
-long-lived feature branch is the wrong home for the mainline.
+At the 2026-07-30 audit, `hardening/review-fixes` was 36 commits ahead of
+`main`, `main` had no unique commits, and the branch tip matched
+`origin/hardening/review-fixes`. CI, the instance lock, and the migration backup
+gate are already implemented. The branch now contains the entire product, so an
+indefinitely long-lived feature branch is the wrong home for the mainline.
 
 Execute in this order:
 
-1. Finalize and commit the documentation cleanup (§0.2). Include
-   `review_codex.md`; include or restore the three currently unstaged deletions
-   according to the owner's explicit cleanup decision.
-2. Add and push CI (§0.6), then confirm both matrix jobs run successfully.
+1. Finalize and commit the current documentation cleanup and follow-up fixes.
+2. Run the full suite and a startup smoke test against a copy of the real
+   database, then push and confirm both CI matrix jobs remain green.
 3. Open a pull request from `hardening/review-fixes` to `main`.
 4. The repository owner enables branch protection on `main` and requires both CI
    jobs before merge.
-5. Implement the instance lock (§0.4) and migration backup gate (§0.5) on that
-   pull-request branch.
-6. Run the full suite plus a startup smoke test on a copy of the real database;
-   merge only after the pull request and both required checks are green.
+5. Complete the two-client household acceptance pass and resolve or explicitly
+   accept the documented backup-security risk.
+6. Merge only after the pull request and both required checks are green.
 7. Delete the merged `hardening/review-fixes` branch and start future work from
    short-lived branches. `origin/feature/routine-anchors`, which still points at
    the old `main`, can be retired separately with the owner's approval.
@@ -514,7 +527,8 @@ keeps the flow fast.
 
 ### Release 1 status — implemented 2026-07-30
 
-All three slices are implemented; no schema change. **1028 tests pass.**
+All three slices are implemented; no schema change. **At the point Release 1
+landed, 1028 tests passed; the current baseline is 1065.**
 
 - §1.1 `/start`, `/home`, `/menu`, and supported greetings render one Home
   through `home.open_home`. `/start` prepends a one-time welcome (detected by an

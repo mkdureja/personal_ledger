@@ -15,12 +15,13 @@ import pytest
 from telegram.constants import ChatType
 from telegram.ext import ConversationHandler
 
+from bot import keyboards
 from bot.callback_data import to_base36
 from bot.config import ALLOWED_USER_IDS
 from bot.database import MutationSource
 from bot.handlers import diet
 from bot.meal_models import DefaultQuantity, DietEntryMode, QuickMealStatus
-from bot.nutrition import NutritionError
+from bot.nutrition import NutritionError, format_decimal
 
 UID = next(iter(ALLOWED_USER_IDS))
 OTHER_UID = UID + 1
@@ -170,6 +171,38 @@ async def test_quick_meal_uses_the_stored_default(db_with_user, food):
     assert item.entered_amount == 2.0 and item.entered_unit == "bowl"
     assert item.resolved_base_amount == 300.0  # 2 x 150 g
     assert result.receipt.header.meal_type == "lunch"
+
+
+async def test_precise_default_label_matches_the_amount_quick_log_writes(
+    db_with_user, food
+):
+    """The instant label and repository feed the resolver the same decimal."""
+    precise = 0.123456789012345
+    stored = await db_with_user.set_default_quantity(
+        UID, "food", food, DefaultQuantity(amount=precise, unit="bowl")
+    )
+    assert stored.amount == precise
+
+    label = keyboards.choice_button_label(
+        {
+            "source_type": "food",
+            "id": food,
+            "name": "Dal",
+            "default": {"amount": stored.amount, "unit": stored.unit},
+            "needs_repair": False,
+        },
+        quick=True,
+    )
+    result = await db_with_user.create_quick_meal(
+        UID, "lunch", "food", food
+    )
+
+    assert result.status is QuickMealStatus.CREATED
+    logged = result.receipt.items[0]
+    assert logged.entered_amount == precise
+    assert label.endswith(
+        f" · {format_decimal(logged.entered_amount)} {logged.entered_unit}"
+    )
 
 
 async def test_quick_meal_without_a_default_asks_for_a_quantity(db_with_user, food):

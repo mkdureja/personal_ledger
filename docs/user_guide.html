@@ -5,8 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ledger Bot — User Guide</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
         :root {
             --bg-primary: #0f0f1a;
             --bg-secondary: #1a1a2e;
@@ -554,6 +552,26 @@
             border-top: 1px solid var(--border-color);
             margin-top: 50px;
         }
+
+        /* ─── Small Screens ─── */
+        @media screen and (max-width: 600px) {
+            body { font-size: 10.5pt; }
+            .cover { padding: 24px 18px; }
+            .cover-icon { font-size: 56pt; margin-bottom: 14px; }
+            .cover h1 { font-size: 34pt; }
+            .cover .subtitle { font-size: 13pt; margin-bottom: 28px; }
+            .cover-features { width: 100%; gap: 10px; margin-bottom: 32px; }
+            .cover-feature { padding: 12px; }
+            .content { padding: 0 18px; }
+            h2 { font-size: 20pt; line-height: 1.25; }
+            .toc { padding: 20px; }
+            .toc-list li { align-items: flex-start; }
+            .box { padding: 16px; }
+            .feature-grid { grid-template-columns: 1fr; }
+            .chat { padding: 14px; }
+            .msg-bubble { max-width: 90%; }
+
+        }
     </style>
 </head>
 <body>
@@ -563,7 +581,7 @@
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="cover">
     <div class="cover-icon">📒</div>
-    <div class="cover-version">v1.1</div>
+    <div class="cover-version">Household guide</div>
     <h1>Ledger</h1>
     <p class="subtitle">Personal Logging Telegram Bot — User Guide</p>
 
@@ -586,7 +604,7 @@
         </div>
     </div>
 
-    <p class="cover-meta">Built with Python · python-telegram-bot · SQLite<br>July 2026</p>
+    <p class="cover-meta">For the owner and spouse<br>Updated July 2026</p>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
@@ -596,7 +614,8 @@
     <div class="toc">
         <h2>📋 Table of Contents</h2>
         <ul class="toc-list">
-            <li><a href="#getting-started">Getting Started</a></li>
+            <li><a href="#start-here">Start Here</a></li>
+            <li><a href="#getting-started">Owner Setup</a></li>
             <li><a href="#first-run">First Run &amp; Basic Navigation</a></li>
             <li><a href="#study">Logging Study Sessions</a></li>
             <li><a href="#gym">Logging Workouts</a></li>
@@ -613,15 +632,65 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- START HERE                                              -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="start-here">Start here</h2>
+
+    <div class="box box-success no-break">
+        <div class="box-title">✅ What you can use</div>
+        <p>Home, Study, Workout, Meals, Habits, Recent, Analytics, charts,
+        suggestions, <code>/cancel</code>, and <code>/undo</code> are ready for
+        everyday use. Scheduled reminders work after each person opts in with
+        <code>/reminders on</code> and while the household bot is running.</p>
+        <p>The small <strong>Meal / Repeat last meal</strong> bar is enabled per
+        account. If you do not see it, use <strong>🍽️ Log meal</strong> on Home;
+        the ordinary meal builder remains available. Voice logging, online
+        nutrition lookup, and shared couple dashboards are not available.</p>
+    </div>
+
+    <h3>Use Ledger in 60 seconds</h3>
+    <div class="steps no-break">
+        <div class="step">
+            <div class="step-title">Open Home</div>
+            <p>Send <code>/start</code>, <code>/home</code>, or <code>/menu</code>,
+            or simply say <strong>hi</strong>. They all open today’s totals and
+            the same six action buttons.</p>
+        </div>
+        <div class="step">
+            <div class="step-title">Tap what you want to log</div>
+            <p>Use <strong>Log meal</strong>, <strong>Habits</strong>,
+            <strong>Study</strong>, or <strong>Workout</strong>. The bot guides
+            you; commands remain available as faster shortcuts.</p>
+        </div>
+        <div class="step">
+            <div class="step-title">Recover without guessing</div>
+            <p>Use <code>/cancel</code> to leave a draft,
+            <code>/recent</code> to check whether something saved, and
+            <code>/undo</code> to preview a recent deletion before confirming it.</p>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 1. GETTING STARTED                                      -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="getting-started">1. Getting Started</h2>
+    <h2 id="getting-started">1. Owner Setup (One Time)</h2>
 
-    <p>Ledger is a personal Telegram bot that helps you track four areas of daily life: <strong>study sessions</strong>, <strong>gym workouts</strong>, <strong>diet &amp; nutrition</strong>, and <strong>daily habits</strong>. It runs on your machine and stores everything locally in a SQLite database.</p>
+    <p>Ledger is a personal Telegram bot that helps you track four areas of daily
+    life: <strong>study sessions</strong>, <strong>gym workouts</strong>,
+    <strong>diet &amp; nutrition</strong>, and <strong>daily habits</strong>. Its
+    records live in a local SQLite database on your machine; messages still pass
+    through Telegram during normal bot use.</p>
+
+    <div class="box box-info no-break">
+        <div class="box-title">For the household operator</div>
+        <p>Only the person who runs the bot needs this section. If your spouse
+        has already added you, skip to <a href="#first-run">First Run &amp;
+        Basic Navigation</a> and message the bot directly.</p>
+    </div>
 
     <h3>Prerequisites</h3>
     <ul>
-        <li><strong>Python 3.11+</strong> installed on your system</li>
+        <li><strong>Python 3.14</strong> — the tested deployment version</li>
         <li>A <strong>Telegram account</strong></li>
         <li>A <strong>Telegram Bot Token</strong> (free, from @BotFather)</li>
         <li>Your <strong>Telegram User ID</strong> (from @userinfobot)</li>
@@ -646,12 +715,17 @@ pip install -r requirements.txt</code></pre>
         </div>
         <div class="step">
             <div class="step-title">Configure .env</div>
-            <p>Copy <code>.env.example</code> to <code>.env</code> and fill in your values:</p>
+            <p>Copy <code>.env.example</code> to <code>.env</code>. The operator
+            adds both household users; everyday users should never need to edit
+            this file:</p>
             <pre><code>BOT_TOKEN=<span class="cmd-arg">your-token-from-botfather</span>
-ALLOWED_USER_IDS=<span class="cmd-arg">your-numeric-user-id</span>
+ALLOWED_USER_IDS=<span class="cmd-arg">&lt;user-a-id&gt;,&lt;user-b-id&gt;</span>
 TZ=Asia/Kolkata
 REMINDER_HOUR=20
 DB_PATH=ledger.db</code></pre>
+            <p>Fast-action rollout and the external backup destination are
+            operator settings documented in <code>.env.example</code> and the
+            operations runbooks.</p>
         </div>
         <div class="step">
             <div class="step-title">Start the Bot</div>
@@ -662,7 +736,13 @@ DB_PATH=ledger.db</code></pre>
 
     <div class="box box-info no-break">
         <div class="box-title">💡 Security &amp; Privacy</div>
-        <p>Only user IDs listed in <code>ALLOWED_USER_IDS</code> can interact with your bot, and only in a <strong>private (direct) chat</strong> — commands sent in a group are ignored, so your personal data never surfaces to other members. Everyone else is silently ignored.</p>
+        <p>Only user IDs listed in <code>ALLOWED_USER_IDS</code> can interact with
+        the bot, and only in a <strong>private (direct) chat</strong>; group and
+        unauthorized messages are ignored. Each user’s logs, analytics,
+        reminder opt-in, and food preferences are isolated; the routine,
+        catalog, bot process, and host settings are shared. Messages still travel
+        through Telegram, and the person operating the machine/database can
+        inspect both ledgers and their backups.</p>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════ -->
@@ -690,7 +770,7 @@ DB_PATH=ledger.db</code></pre>
         <div class="msg msg-user"><div class="msg-bubble">hi</div></div>
         <div class="msg msg-bot">
             <div class="msg-bubble">
-                👋 <strong>Manoj</strong> — here's today:<br><br>
+                👋 <strong>Your name</strong> — here's today:<br><br>
                 🍽️ Diet: 2 meal(s), 640 cal<br>
                 📖 Study: 45 min<br>
                 🏋️ Gym: 1 exercise(s)<br>
@@ -714,9 +794,11 @@ DB_PATH=ledger.db</code></pre>
         </div>
     </div>
 
-    <p>Telegram's command menu (the ☰ button beside the message box) lists the four
-    everyday commands: <code>/home</code>, <code>/recent</code>, <code>/undo</code>,
-    <code>/help</code>. Every other command still works — see the reference at the end.</p>
+    <p>On a normal live start, Telegram's command menu (the ☰ button beside the
+    message box) lists four everyday commands: <code>/home</code>,
+    <code>/recent</code>, <code>/undo</code>, and <code>/help</code>. Registration
+    is best-effort; if the picker is absent, type those commands directly. Every
+    other command still works — see the reference at the end.</p>
 
     <div class="box box-info no-break">
         <div class="box-title">📝 Mid-log? Nothing gets lost</div>
@@ -868,8 +950,15 @@ DB_PATH=ledger.db</code></pre>
         </tbody>
     </table>
 
-    <h3>Guided Log</h3>
-    <p>Send bare <code>/diet</code> and the bot presents a meal-type picker, then asks for food, calories, and macros. At the macro prompt, send three decimal values in <strong>protein, carbs, fat</strong> order (for example, <code>25 80 15</code>) or send <code>/skip</code>.</p>
+    <h3>Guided Meal Builder</h3>
+    <p>Tap <strong>🍽️ Log meal</strong> on Home or send bare
+    <code>/diet</code>. Choose the meal type, then pick a saved item, search the
+    bundled local catalog, or choose <strong>✍️ Type it instead</strong>. A
+    structured item goes through quantity and nutrition preview before joining
+    an editable multi-item draft; you can add, change, remove, and finally
+    <strong>✅ Save meal</strong>. Calories and macros are asked only for a
+    free-text item. At the macro prompt, send protein, carbs, and fat in that
+    order (for example, <code>25 80 15</code>) or send <code>/skip</code>.</p>
 
     <div class="chat no-break">
         <div class="chat-header">
@@ -1116,10 +1205,17 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <h2 id="reminders">8. Reminders &amp; Routine</h2>
 
-    <p>Ledger can nudge you, not just record you. Out of the box it sends one evening habit reminder; add an optional <code>routine.yaml</code> and it becomes a lightweight daily coach that reacts to what you have — and haven't — logged.</p>
+    <p>Ledger can nudge you, not just record you. Reminders are opt-in for each
+    person; once enabled, Ledger can send one evening habit reminder. Add an
+    optional <code>routine.yaml</code> and it becomes a lightweight daily coach
+    that reacts to what you have — and haven't — logged.</p>
 
     <h3>The Evening Habit Reminder</h3>
-    <p>By default, every evening (<strong>8:00 PM</strong> in your configured timezone) the bot lists any unchecked habits:</p>
+    <p>Reminders are <strong>off for a new user</strong> until that person sends
+    <code>/reminders on</code>. When enabled, and when no routine file replaces
+    the schedule, the bot currently checks every evening at
+    <strong>8:00 PM</strong> in the configured timezone and lists unchecked
+    habits:</p>
 
     <div class="chat no-break">
         <div class="chat-header">
@@ -1207,8 +1303,8 @@ DB_PATH=ledger.db</code></pre>
 
     <div class="box box-info no-break">
         <div class="box-title">💡 Good to Know</div>
-        <p>• A routine <strong>replaces</strong> the single 8 PM reminder — include <code>habits</code> in your evening anchor to keep the habit nudge (it arrives as a second, tappable message, shown above).</p>
-        <p>• No <code>routine.yaml</code>? The default evening reminder is used instead.</p>
+        <p>• A routine <strong>replaces</strong> the configured evening reminder — include <code>habits</code> in your evening anchor to keep the habit nudge (it arrives as a second, tappable message, shown above).</p>
+        <p>• No <code>routine.yaml</code>? Opted-in users receive the configured evening reminder instead.</p>
         <p>• If the file has a mistake, the bot refuses to start and names the line to fix.</p>
     </div>
 
@@ -1253,7 +1349,7 @@ DB_PATH=ledger.db</code></pre>
         <div class="box-title">⚠️ How Undo Works</div>
         <p>• Preview first — <code>/undo</code> deletes only after you tap <strong>Yes, undo</strong>; tap <strong>Keep</strong> to dismiss.</p>
         <p>• It removes that <strong>exact</strong> previewed entry, so tapping again (or after a network hiccup) is safe — it will never delete a newer entry by mistake.</p>
-        <p>• Works on study, gym, and diet logs only — not habits (use the Undo ↩ button on the habit checklist instead).</p>
+        <p>• Works on study, gym, and diet logs only — not habits. To undo a habit check, tap its checked ✅ row again.</p>
         <p>• Entries older than 24 hours cannot be undone.</p>
         <p>• Finish or cancel a guided log before using <code>/undo</code>.</p>
     </div>
@@ -1265,19 +1361,30 @@ DB_PATH=ledger.db</code></pre>
         <p>If Telegram re-delivers the same message after a reconnect, the bot recognizes it and does <strong>not</strong> create a duplicate. Genuinely repeating an activity (sending the command again yourself) still logs a new entry by design — use <code>/recent</code> to confirm before re-sending.</p>
     </div>
 
-    <h3>/reminders and /settings — Control Your Reminders</h3>
+    <h3>/settings, /reminders, and /suggestions</h3>
     <p>Reminders are <strong>opt-in per person</strong>. A newly added user receives no scheduled messages until they turn them on:</p>
     <p>• <code>/reminders on</code> — start receiving daily nudges and routine anchors.<br>
        • <code>/reminders off</code> — stop all scheduled messages.<br>
-       • <code>/settings</code> — see your current reminder state and routine profile.</p>
-    <p>Your choice only affects you; each user's ledger, analytics, and reminders are completely independent.</p>
+       • <code>/settings</code> — see reminder and suggestion state, routine
+       profile, and—when fast logging is enabled—quick-bar/usual status.<br>
+       • <code>/suggestions on</code> — rank your own choices from your private
+       history, recency, and pins.<br>
+       • <code>/suggestions off</code> — list private foods/recipes alphabetically.<br>
+       • <code>/suggestions reset</code> — clear pin/hide ordering preferences
+       without deleting usual amounts or logged history.</p>
+    <p>Your ledger, analytics, reminder opt-in, and food preferences stay
+    separate from your spouse’s. The routine schedule, shared food catalog, bot
+    process, and host configuration are household-wide.</p>
 
     <h3>/cancel — Abort Current Conversation</h3>
     <p>If you're in the middle of a guided log and want to stop, send <code>/cancel</code>. This works in every conversation flow (study, gym, diet, habit setup).</p>
 
     <h3>Conversation Timeout</h3>
-    <p>If you start a guided log and don't respond within <strong>15 minutes</strong>, the conversation automatically cancels. You'll see:</p>
-    <p>⏰ <em>Timed out. Send the command again to start over.</em></p>
+    <p>If you start a guided log and don't respond within
+    <strong>15 minutes</strong>, its unfinished part is cancelled. Study and an
+    incomplete gym exercise show a restart prompt; a Diet timeout names the
+    discarded draft and confirms that it was not logged. Gym exercises already
+    completed earlier in the same workout remain saved.</p>
 
     <h3>Fast logging from the quick-action bar</h3>
     <p>When fast logging is switched on for you, Home also sends a small persistent bar
@@ -1331,9 +1438,62 @@ DB_PATH=ledger.db</code></pre>
         </tbody>
     </table>
 
+    <div class="box box-info no-break">
+        <div class="box-title">🕒 What Meal assumes</div>
+        <p>The fast <strong>Meal</strong> button starts with a meal type based on
+        local time: breakfast from 04:00–10:59, lunch from 11:00–15:59, dinner
+        from 16:00–21:59, and snack at other times. Tap
+        <strong>🕒 Change meal type</strong> in Quick Meal to change it. Home’s
+        <strong>Log meal</strong> builder asks for the type before you add food.</p>
+    </div>
+
     <p>To create a usual, tap <strong>⚙️</strong> beside a saved item and set the amount. In
     the guided <code>/diet</code> builder the same items never log on one tap — there, every
     row asks for an amount, because a builder meal is saved deliberately at the end.</p>
+
+    <p>After selecting one of your own saved foods or recipes, its quantity
+    screen also offers <strong>📌 Pin</strong> and <strong>🙈 Hide</strong>.
+    Pinning promotes it in suggestions; hiding removes it from suggestion lists.
+    These controls do not alter past logs or the saved usual, and shared catalog
+    foods do not expose them. <code>/suggestions reset</code> clears all such
+    pin/hide choices.</p>
+
+    <h3>Meal receipts: repeat or correct the exact meal</h3>
+    <p>Fast meals and exact Repeat return a durable receipt. Its buttons refer to
+    the meal shown on that receipt, not whichever meal happens to be newest
+    later:</p>
+
+    <table class="no-break">
+        <thead><tr><th>Receipt action</th><th>What it does</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><strong>↩️ Undo</strong></td>
+                <td>Removes that exact meal within 24 hours. Pressing it twice is
+                harmless, and it remains targeted even if you logged another
+                meal afterward.</td>
+            </tr>
+            <tr>
+                <td><strong>🍽️ Log another</strong></td>
+                <td>Starts a fresh Quick Meal without changing the completed
+                receipt.</td>
+            </tr>
+            <tr>
+                <td><strong>🔄 Log again at today’s values</strong></td>
+                <td>For structured foods/recipes, recalculates from their current
+                definitions and previews every difference before saving. If an
+                item can no longer be resolved, you must explicitly keep its
+                original snapshot or remove it.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="box box-info no-break">
+        <div class="box-title">🔁 Repeat and “today’s values” are intentionally different</div>
+        <p><strong>Repeat last meal</strong> copies the old recorded snapshot
+        exactly. <strong>Log again at today’s values</strong> recalculates and
+        asks you to review the result. Neither silently rewrites the original
+        meal.</p>
+    </div>
 
     <div class="box box-info no-break">
         <div class="box-title">🔎 A search with no matches</div>
@@ -1342,8 +1502,9 @@ DB_PATH=ledger.db</code></pre>
         word still works too, and your draft is untouched either way.</p>
     </div>
 
-    <p><code>/keyboard hide</code> puts the bar away for now; <code>/keyboard show</code>
-    brings it back. Hiding is momentary — the bar returns on your next greeting.</p>
+    <p><code>/keyboard hide</code> puts the bar away for now;
+    <code>/keyboard show</code> restores it only if your account is eligible.
+    Hiding is momentary — the bar may return on the next eligible Home response.</p>
 
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 10. QUICK REFERENCE                                     -->
@@ -1457,7 +1618,7 @@ DB_PATH=ledger.db</code></pre>
         <div class="feature-card no-break">
             <span class="icon">🌙</span>
             <div class="title">Check Habits Before Bed</div>
-            <div class="desc">The 8 PM reminder is your cue. If you miss it, use the <strong>← Yesterday</strong> toggle before tomorrow's midnight.</div>
+            <div class="desc">If you opted in, use the configured evening reminder as your cue. If you miss it, use the <strong>← Yesterday</strong> toggle before the following midnight.</div>
         </div>
         <div class="feature-card no-break">
             <span class="icon">📊</span>
@@ -1477,7 +1638,7 @@ DB_PATH=ledger.db</code></pre>
         <div class="feature-card no-break">
             <span class="icon">💾</span>
             <div class="title">Backup Your Database</div>
-            <div class="desc">The live database uses SQLite WAL mode, so never copy <code>ledger.db</code> by itself. Use <code>scripts/backup_db.py</code> and store the verified result outside the repository. Never sync a plaintext backup to cloud storage; follow <code>docs/backup_runbook.md</code>.</div>
+            <div class="desc">The live database uses SQLite WAL mode, so never copy <code>ledger.db</code> by itself. The operator uses <code>python -m scripts.backup_db</code> with an explicit external destination and follows <code>docs/backup_runbook.md</code>. Never sync a plaintext backup to cloud storage.</div>
         </div>
     </div>
 
@@ -1502,11 +1663,15 @@ DB_PATH=ledger.db</code></pre>
         <tbody>
             <tr>
                 <td><strong>Bot doesn't respond</strong></td>
-                <td>Check that the bot process is running (<code>python -m bot</code>). Check the terminal for errors. Verify your user ID is in <code>ALLOWED_USER_IDS</code>.</td>
+                <td>Check that the one supervised bot process is running. Check
+                its terminal/service log and verify your user ID is in
+                <code>ALLOWED_USER_IDS</code>. Do not start a second copy beside
+                an already-running service.</td>
             </tr>
             <tr>
                 <td><strong>Bot ignores me in a group</strong></td>
-                <td>By design — Ledger only responds in a <strong>private (direct) chat</strong>, so personal data can't leak into a group. Message the bot directly instead.</td>
+                <td>By design — Ledger does not respond in group chats. Message
+                the bot directly instead.</td>
             </tr>
             <tr>
                 <td><strong>"Something went wrong" error</strong></td>
@@ -1522,11 +1687,18 @@ DB_PATH=ledger.db</code></pre>
             </tr>
             <tr>
                 <td><strong>Reminder not arriving</strong></td>
-                <td>Verify <code>REMINDER_HOUR</code> is correct (0–23, local time). The bot must be running at that time — it won't send if offline. A transient network blip is retried automatically.</td>
+                <td>Send <code>/settings</code> first and use
+                <code>/reminders on</code> if needed. The bot must be running.
+                If <code>routine.yaml</code> exists, its anchors replace
+                <code>REMINDER_HOUR</code>; otherwise verify that hour and the
+                configured timezone. A transient network failure is retried.</td>
             </tr>
             <tr>
                 <td><strong>Routine not firing / bot won't start</strong></td>
-                <td>If <code>routine.yaml</code> exists it replaces the single reminder. On a mistake the bot refuses to start and names the bad line — fix it and restart. Delete the file to fall back to the 8 PM reminder.</td>
+                <td>If <code>routine.yaml</code> exists it replaces the single
+                reminder. On a mistake the bot refuses to start and names the
+                bad line — fix it and restart. Remove the file to fall back to
+                the <code>REMINDER_HOUR</code> evening reminder.</td>
             </tr>
             <tr>
                 <td><strong>Charts look empty</strong></td>
@@ -1534,11 +1706,31 @@ DB_PATH=ledger.db</code></pre>
             </tr>
             <tr>
                 <td><strong>Bot dies when machine sleeps</strong></td>
-                <td>Expected behavior with polling mode on a desktop. Restart with <code>python -m bot</code> after waking. For 24/7 uptime, deploy to a server.</td>
+                <td>Polling pauses while the chosen host sleeps. Use the
+                documented NSSM/Scheduled Task or systemd supervision on that
+                host so one process restarts cleanly; a separate server is not
+                required for this two-person app.</td>
             </tr>
             <tr>
-                <td><strong>Adding multiple users</strong></td>
-                <td>Add comma-separated user IDs to <code>ALLOWED_USER_IDS</code>. Each user's data is fully isolated.</td>
+                <td><strong>Quick-action bar is missing</strong></td>
+                <td>The bar is rollout-controlled. <code>/keyboard show</code>
+                works only for an eligible user; otherwise continue from Home’s
+                inline buttons and ask the operator to check the quick-action
+                rollout settings.</td>
+            </tr>
+            <tr>
+                <td><strong>No ⚡ instant rows appear</strong></td>
+                <td>An instant row requires a private food or recipe with a
+                complete saved usual. Create the food with <code>/food add</code>,
+                open Quick Meal, tap its ⚙️ control, and save an amount. Shared
+                catalog items do not support usuals in this build.</td>
+            </tr>
+            <tr>
+                <td><strong>Adding your spouse</strong></td>
+                <td>The operator adds both Telegram IDs as a comma-separated
+                <code>ALLOWED_USER_IDS</code> list, then restarts the bot. Logs,
+                analytics, reminder opt-in, and food preferences stay separate;
+                the bot’s routine, catalog, and host settings are shared.</td>
             </tr>
         </tbody>
     </table>
@@ -1551,9 +1743,9 @@ DB_PATH=ledger.db</code></pre>
     <hr>
 
     <div class="footer">
-        <p><strong>Ledger Bot</strong> v1.1 — User Guide</p>
+        <p><strong>Ledger Bot</strong> — Household user guide</p>
         <p>Built with Python · python-telegram-bot · SQLite · matplotlib</p>
-        <p>July 2026</p>
+        <p>Updated July 2026</p>
     </div>
 </div>
 

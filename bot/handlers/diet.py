@@ -80,7 +80,12 @@ from ..meal_models import (
     QuickMealStatus,
 )
 from ..services.meal_logging import infer_meal_type
-from ..nutrition import MAX_LOG_CALORIES, MAX_LOG_MACRO_GRAMS, NutritionError
+from ..nutrition import (
+    MAX_LOG_CALORIES,
+    MAX_LOG_MACRO_GRAMS,
+    NutritionError,
+    format_decimal,
+)
 from .. import suggestions
 
 logger = logging.getLogger(__name__)
@@ -1961,7 +1966,7 @@ async def _open_default_menu(
                 uid,
                 kind,
                 source_id,
-                [f"{default.amount:g}", default.unit],
+                [format_decimal(default.amount), default.unit],
             )
         except (NutritionError, LookupError):
             needs_repair = True

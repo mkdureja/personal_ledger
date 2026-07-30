@@ -27,15 +27,20 @@ from telegram import (
     InlineKeyboardMarkup,
     Message,
     MessageEntity,
+    ReplyKeyboardRemove,
     Update,
     User,
 )
 from telegram.constants import ChatType
+from telegram.ext import ExtBot
 
 from bot import keyboards, main as main_module, suggestions
 from bot.handlers import diet, habits, home, start
 from bot.handlers.common import activate_conversation, active_conversation_flow
 from bot.handlers.diet import diet_conv_handler
+from bot.handlers.gym import EXERCISE, gym_conv_handler
+from bot.handlers.habits import ADDING_HABIT, habits_setup_conv_handler
+from bot.handlers.study import SUBJECT, study_conv_handler
 from bot.meal_models import RepeatStatus
 
 UID = 123456789  # matches conftest ALLOWED_USER_IDS
@@ -43,6 +48,13 @@ OTHER = 987654321
 
 _BOT = MagicMock()
 _BOT.username = "LedgerTestBot"
+
+_FLOW_STATES = {
+    "study": (study_conv_handler, SUBJECT),
+    "gym": (gym_conv_handler, EXERCISE),
+    "diet": (diet_conv_handler, diet.FOOD_CHOICE),
+    "habits": (habits_setup_conv_handler, ADDING_HABIT),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +112,93 @@ def _first_kwargs(mock) -> dict:
     return mock.call_args_list[0].kwargs
 
 
+@pytest.fixture
+def real_dispatch_app():
+    """A real handler table usable through ``Application.process_update``.
+
+    ``initialize()`` would call Telegram's ``getMe`` endpoint. The routing tests
+    instead mark the locally constructed application initialized and replace only
+    the Bot API methods that the selected handlers call. ConversationHandler,
+    CallbackContext, handler ordering, filters, and state transitions all remain
+    production objects.
+    """
+    for handler, _state in _FLOW_STATES.values():
+        handler._conversations.clear()
+    app = main_module.build_application()
+    # CommandHandler needs the cached getMe result to parse /command@bot. Seed
+    # only that immutable identity instead of performing a network initialize.
+    app.bot._bot_user = User(
+        id=999,
+        is_bot=True,
+        first_name="Ledger",
+        username="LedgerTestBot",
+    )
+    app._initialized = True
+    try:
+        yield app
+    finally:
+        app._initialized = False
+        app._user_data.clear()
+        for handler, _state in _FLOW_STATES.values():
+            handler._conversations.clear()
+
+
+def _real_text_update(app, text: str) -> Update:
+    chat = Chat(id=UID, type="private")
+    user = User(id=UID, is_bot=False, first_name="Test", username="t")
+    entities = None
+    if text.startswith("/"):
+        command = text.split()[0]
+        entities = [
+            MessageEntity(
+                type=MessageEntity.BOT_COMMAND, offset=0, length=len(command)
+            )
+        ]
+    message = Message(
+        message_id=100,
+        date=datetime.now(timezone.utc),
+        chat=chat,
+        from_user=user,
+        text=text,
+        entities=entities,
+    )
+    message.set_bot(app.bot)
+    return Update(update_id=1, message=message)
+
+
+def _real_callback_update(app, data: str) -> Update:
+    chat = Chat(id=UID, type="private")
+    user = User(id=UID, is_bot=False, first_name="Test", username="t")
+    message = Message(
+        message_id=100,
+        date=datetime.now(timezone.utc),
+        chat=chat,
+        from_user=user,
+    )
+    message.set_bot(app.bot)
+    query = CallbackQuery(
+        id="release-1-query",
+        from_user=user,
+        chat_instance="release-1-chat",
+        data=data,
+        message=message,
+    )
+    query.set_bot(app.bot)
+    return Update(update_id=1, callback_query=query)
+
+
+def _seed_real_flow(app, flow: str) -> tuple[object, int]:
+    handler, state = _FLOW_STATES[flow]
+    handler._conversations[(UID, UID)] = state
+    app._user_data[UID].update(
+        {
+            "_ledger_active_conversation": (flow, UID),
+            "release_1_draft_probe": "keep me",
+        }
+    )
+    return handler, state
+
+
 # ---------------------------------------------------------------------------
 # §1.1 One idle Home
 # ---------------------------------------------------------------------------
@@ -150,6 +249,44 @@ async def test_no_idle_entry_disturbs_a_live_draft(db, flow, entry):
     assert "Finish this flow" in reply.call_args.args[0]
     assert active_conversation_flow(context) == flow
     assert context.user_data["study_subject"] == "Poetry"
+
+
+@pytest.mark.parametrize("flow", ["study", "gym", "diet", "habits"])
+@pytest.mark.parametrize(
+    "text", ["/start", "/home", "/menu", "hi"], ids=["start", "home", "menu", "greeting"]
+)
+async def test_real_dispatcher_preserves_every_active_flow_entry(
+    real_dispatch_app, monkeypatch, flow, text
+):
+    """Drive the actual application and ConversationHandler state matrix."""
+    app = real_dispatch_app
+    owner, state = _seed_real_flow(app, flow)
+    send_message = AsyncMock()
+    monkeypatch.setattr(ExtBot, "send_message", send_message)
+
+    await app.process_update(_real_text_update(app, text))
+
+    assert send_message.await_count == 1
+    assert "Finish" in send_message.call_args.kwargs["text"]
+    assert owner._conversations[(UID, UID)] == state
+    assert app._user_data[UID]["release_1_draft_probe"] == "keep me"
+    assert app._user_data[UID]["_ledger_active_conversation"] == (flow, UID)
+
+
+async def test_real_dispatcher_handles_unknown_idle_text_once(
+    real_dispatch_app, monkeypatch
+):
+    app = real_dispatch_app
+    send_message = AsyncMock()
+    monkeypatch.setattr(ExtBot, "send_message", send_message)
+
+    await app.process_update(_real_text_update(app, "what did i eat"))
+
+    assert send_message.await_count == 1
+    assert "didn't recognize" in send_message.call_args.kwargs["text"]
+    assert isinstance(
+        send_message.call_args.kwargs["reply_markup"], InlineKeyboardMarkup
+    )
 
 
 async def test_first_ever_start_onboards_opted_out_and_still_shows_home(db):
@@ -366,16 +503,33 @@ def test_a_long_food_name_keeps_its_amount_visible():
     assert label.startswith("⚡ ") and label.endswith(" · 45 g")
 
 
-def test_a_pathological_unit_cannot_blow_out_the_label():
-    """The unit is user-supplied, so the "fixed" part of a label is bounded too."""
+def test_a_pathological_unit_stays_semantically_intact():
+    """Only the source name may be shortened; the consequence is never rewritten."""
+    unit = "family breakfast bowl with the blue patterned rim"
+    long_food = {
+        "source_type": "food",
+        "id": 5,
+        "name": "Organic rolled oats from the big tin",
+    }
     decorated = suggestions.annotate_defaults(
-        [_FOOD],
-        _prefs(food={"default_amount": 1.0, "default_unit": "h" * 60}),
+        [long_food],
+        _prefs(food={"default_amount": 1.0, "default_unit": unit}),
     )
     label = keyboards.choice_button_label(decorated[0], quick=True)
-    assert label.startswith("⚡ Banana · 1 ")
-    assert len(label) < 40
-    assert label.endswith("…")
+    assert label.startswith("⚡ Organic rol…")
+    assert label.endswith(f" · 1 {unit}")
+    assert len(label) > 40  # the cap is intentionally soft when truth needs room
+
+
+def test_a_precise_amount_is_not_rounded_in_the_instant_label():
+    amount = 0.123456789012345
+    decorated = suggestions.annotate_defaults(
+        [_FOOD],
+        _prefs(food={"default_amount": amount, "default_unit": "medium"}),
+    )
+    assert keyboards.choice_button_label(decorated[0], quick=True).endswith(
+        f"· {amount} medium"
+    )
 
 
 def test_amounts_render_without_a_needless_decimal():
@@ -512,6 +666,17 @@ def test_both_repeat_labels_are_intercepted_during_an_active_flow(label):
     assert DIET_NONMEAL_CONTROL_FILTER.filter(message)
 
 
+@pytest.mark.parametrize("label", ["Repeat last meal", "Repeat"])
+async def test_a_disabled_repeat_label_retires_its_stale_keyboard(label):
+    update = _update(label)
+
+    await home.home_text_router(update, _context())
+
+    markup = update.effective_message.reply_text.call_args.kwargs["reply_markup"]
+    assert isinstance(markup, ReplyKeyboardRemove)
+    assert "Not enabled yet" in update.effective_message.reply_text.call_args.args[0]
+
+
 def test_the_persistent_bar_renders_the_new_label():
     rows = keyboards.home_reply_keyboard().keyboard
     assert [button.text for button in rows[0]] == ["Meal", "Repeat last meal"]
@@ -621,6 +786,41 @@ async def test_a_stale_noop_label_never_mutates(db, target):
     if target == "habit":
         # An old checklist's habit label explains itself instead of looking dead.
         assert "refresh" in query.answer.call_args.args[0]
+
+
+async def test_a_current_habit_setup_label_explains_setup_without_mutating(db):
+    await db.ensure_user(UID, "t", "Test")
+    habit_id, _ = await db.add_habit(UID, "Read")
+    message = SimpleNamespace(
+        chat_id=UID,
+        message_id=44,
+        reply_text=AsyncMock(),
+    )
+    query = SimpleNamespace(
+        data=f"habit_noop_{UID}_{habit_id}",
+        answer=AsyncMock(),
+        message=message,
+        edit_message_reply_markup=AsyncMock(),
+    )
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_user=SimpleNamespace(id=UID),
+        effective_chat=SimpleNamespace(id=UID, type=ChatType.PRIVATE),
+    )
+    context = _context(
+        db,
+        {
+            "_ledger_active_conversation": ("habits", UID),
+            "habit_setup_prompt": (UID, 44),
+        },
+    )
+
+    await habits.habit_noop_callback(update, context)
+
+    assert "Habit Setup" in query.answer.call_args.args[0]
+    assert "Remove" in query.answer.call_args.args[0]
+    assert await db.get_checked_habits(UID, date(2026, 7, 30)) == set()
+    query.edit_message_reply_markup.assert_not_awaited()
 
 
 async def test_zero_result_search_offers_the_three_real_exits(monkeypatch):
@@ -794,6 +994,29 @@ async def test_a_section_tap_during_its_own_flow_is_not_called_expired(db, flow,
     query.edit_message_reply_markup.assert_not_awaited()
     assert context.user_data["study_subject"] == "Poetry"
     assert active_conversation_flow(context) == flow
+
+
+@pytest.mark.parametrize(
+    "flow,data",
+    [("study", "menu_study"), ("gym", "menu_gym"), ("diet", "menu_diet")],
+)
+async def test_real_dispatcher_keeps_same_section_taps_in_the_active_flow(
+    real_dispatch_app, monkeypatch, flow, data
+):
+    app = real_dispatch_app
+    owner, state = _seed_real_flow(app, flow)
+    answer_callback = AsyncMock()
+    edit_markup = AsyncMock()
+    monkeypatch.setattr(ExtBot, "answer_callback_query", answer_callback)
+    monkeypatch.setattr(ExtBot, "edit_message_reply_markup", edit_markup)
+
+    await app.process_update(_real_callback_update(app, data))
+
+    assert answer_callback.await_count == 1
+    assert "Finish this flow" in answer_callback.call_args.kwargs["text"]
+    edit_markup.assert_not_awaited()
+    assert owner._conversations[(UID, UID)] == state
+    assert app._user_data[UID]["release_1_draft_probe"] == "keep me"
 
 
 def test_menu_recent_is_a_served_action_not_an_expired_button():

@@ -305,7 +305,13 @@ async def home_text_router(
         await _unsupported_text_reply(update)
         return
     if not phase1_enabled_for(uid):
-        await message.reply_text('Not enabled yet — say "hi" for your menu.')
+        # The text may have come from a persistent keyboard sent by an older
+        # build. Disabled actions must retire that stale control as well as refuse
+        # the mutation, otherwise the user is left with a button that can only
+        # fail repeatedly.
+        await _remove_keyboard(
+            update, 'Not enabled yet — say "hi" for your menu.'
+        )
         return
 
     if action == "repeat":

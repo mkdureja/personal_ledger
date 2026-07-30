@@ -219,6 +219,12 @@ def resolve_expect_version(raw: str | int | None) -> int | None:
     value = int(raw)
     if value < LEGACY_UNVERSIONED:
         raise BackupError(f"--expect-version cannot be negative; got {value}.")
+    if value == LEGACY_UNVERSIONED:
+        raise BackupError(
+            "--expect-version 0 is a legacy, unversioned database with no schema "
+            "contract. It can only be backed up by the startup migration preflight, "
+            "which necessarily rehearses the migration on a throwaway copy."
+        )
     if value > LATEST_SCHEMA_VERSION:
         # Without this, a caller could assert a version this checkout cannot
         # describe and get a "verified" copy that was never checked against any
@@ -277,6 +283,16 @@ def verify_backup_file(
             "matching (or newer) build; this one does not know that schema's "
             "required objects."
         )
+    if not is_known_schema_version(version):
+        # Version 0 and future versions have their own actionable messages above.
+        # This catches every other impossible/undescribable stamp, notably negative
+        # PRAGMA user_version values, rather than silently verifying against no
+        # table contract.
+        raise VerificationFailed(
+            f"{facts.path}: stamped version {version}, which is not a known schema "
+            f"version in this checkout (1 through {LATEST_SCHEMA_VERSION}). Do NOT "
+            "use this file as a rollback point."
+        )
 
     problems = _shape_problems(facts)
     if expected is not None and version != expected:
@@ -296,21 +312,36 @@ def verify_created_backup(
 
     The copy must carry the *source's* version, not this checkout's: a
     pre-migration backup of a v7 database is correct precisely because it
-    contains v7. Legacy version 0 keeps the soundness checks but has no defined
-    table list to require.
+    contains v7. Public certification requires a known schema contract; legacy
+    version 0 is handled only by the private migration-rehearsal path.
     """
+    return _verify_created_backup(
+        facts, source_version=source_version, allow_legacy_unversioned=False
+    )
+
+
+def _verify_created_backup(
+    facts: DatabaseFacts,
+    *,
+    source_version: int,
+    allow_legacy_unversioned: bool,
+) -> DatabaseFacts:
+    """Shared create-path verifier, with one private v0 rehearsal exception."""
     problems: list[str] = []
     if facts.user_version != source_version:
         problems.append(
             f"copy is stamped version {facts.user_version} but its source is "
             f"version {source_version}"
         )
-    if facts.user_version != LEGACY_UNVERSIONED and not is_known_schema_version(
-        facts.user_version
-    ):
+    if facts.user_version == LEGACY_UNVERSIONED:
+        if not allow_legacy_unversioned:
+            problems.append(
+                "legacy version 0 has no schema contract and is not publicly "
+                "certifiable; it must go through migration preflight rehearsal"
+            )
+    elif not is_known_schema_version(facts.user_version):
         # Defence in depth behind resolve_expect_version: never certify a version
-        # with no table contract. Legacy 0 is the one documented exception, and it
-        # is only reachable through the migration preflight's rehearsal path.
+        # with no table contract.
         problems.append(
             f"version {facts.user_version} has no known table contract in this "
             f"checkout (1 through {LATEST_SCHEMA_VERSION})"
@@ -433,7 +464,24 @@ def create_backup(
     expected = resolve_expect_version(expect_version)
     if expected is None:  # pragma: no cover - signature requires a value
         raise BackupError("creating a backup requires an explicit expect_version.")
+    return _create_backup_at_version(
+        source,
+        dest,
+        expected=expected,
+        project_root=project_root,
+        allow_legacy_unversioned=False,
+    )
 
+
+def _create_backup_at_version(
+    source: Path | str,
+    dest: Path | str,
+    *,
+    expected: int,
+    project_root: Path | None,
+    allow_legacy_unversioned: bool,
+) -> DatabaseFacts:
+    """Create one copy after its caller has selected a certification contract."""
     source_facts = inspect_database(source)
     if source_facts.user_version != expected:
         raise BackupError(
@@ -451,7 +499,11 @@ def create_backup(
     clone_database(source, resolved_dest)
     facts = inspect_database(resolved_dest)
     try:
-        verify_created_backup(facts, source_version=source_facts.user_version)
+        _verify_created_backup(
+            facts,
+            source_version=source_facts.user_version,
+            allow_legacy_unversioned=allow_legacy_unversioned,
+        )
     except VerificationFailed:
         invalid = resolved_dest.with_name(resolved_dest.name + ".INVALID")
         try:
@@ -460,6 +512,31 @@ def create_backup(
             pass
         raise
     return facts
+
+
+def _create_legacy_backup_in_for_migration_rehearsal(
+    source: Path | str,
+    directory: Path | str,
+    *,
+    project_root: Path | None = None,
+) -> DatabaseFacts:
+    """Create the v0 rollback input used only by startup's rehearsal path.
+
+    This intentionally private capability does not certify a v0 schema—there is
+    no such contract. It proves only that the online copy matches a v0 source and
+    is internally sound. ``bot.migration_preflight`` immediately migrates a
+    throwaway copy of this file and refuses to touch the live database unless that
+    rehearsal reaches and verifies the current schema.
+    """
+    directory = resolve_destination(directory, project_root=project_root)
+    directory.mkdir(parents=True, exist_ok=True)
+    return _create_backup_at_version(
+        source,
+        directory / backup_filename(LEGACY_UNVERSIONED, pre_migration=True),
+        expected=LEGACY_UNVERSIONED,
+        project_root=project_root,
+        allow_legacy_unversioned=True,
+    )
 
 
 def create_backup_in(

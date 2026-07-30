@@ -97,20 +97,22 @@ async def prepare_database_for_startup(
         logger.info("New database detected; creating schema without a backup")
         return PreflightOutcome("new-database", source, target)
 
-    destination = _require_destination(backup_dest_dir, source, target)
-    backup = _create_pre_migration_backup(db_path, destination, source)
-
     if source == LEGACY_UNVERSIONED:
         # A populated pre-versioning database. Its shape is unknown, so the copy
         # cannot be certified against a table contract; rehearse the whole
         # migration on a throwaway copy and touch the live file only if that
         # rehearsal reaches and verifies the target.
-        await _rehearse_migration(backup.path, target)
+        destination = _require_destination(backup_dest_dir, source, target)
+        backup = await _backup_and_rehearse_legacy(
+            db_path, destination, target
+        )
         logger.info(
             "Legacy version-0 migration rehearsed successfully on a temporary copy"
         )
         return PreflightOutcome("legacy-rehearsed", source, target, backup.path)
 
+    destination = _require_destination(backup_dest_dir, source, target)
+    backup = _create_pre_migration_backup(db_path, destination, source)
     logger.info(
         "Verified pre-migration backup at schema version %d; migrating to %d",
         source,
@@ -167,6 +169,31 @@ def _create_pre_migration_backup(
             f"Refusing to migrate: the pre-migration backup could not be created "
             f"or verified ({exc}). The database has not been changed."
         ) from exc
+
+
+async def _backup_and_rehearse_legacy(
+    db_path: str, destination: Path, target: int
+) -> ledger_backup.DatabaseFacts:
+    """Create a sound v0 rollback copy and necessarily rehearse its migration.
+
+    Ordinary/public backup creation rejects version 0 because no schema contract
+    exists for it. This is the sole internal exception: it creates an online copy
+    as rehearsal input, then returns only after a throwaway copy reaches and
+    verifies the target schema. The original rollback copy remains at v0.
+    """
+    try:
+        backup = ledger_backup._create_legacy_backup_in_for_migration_rehearsal(
+            db_path, destination
+        )
+    except ledger_backup.BackupError as exc:
+        raise MigrationPreflightError(
+            "Refusing to migrate: the legacy pre-migration backup could not be "
+            f"created or checked for internal soundness ({exc}). The database has "
+            "not been changed."
+        ) from exc
+
+    await _rehearse_migration(backup.path, target)
+    return backup
 
 
 async def _rehearse_migration(backup_path: Path, target: int) -> None:

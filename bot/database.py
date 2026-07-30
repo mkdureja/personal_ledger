@@ -54,6 +54,7 @@ from .nutrition import (
     RECIPE_YIELD_UNITS,
     canonical_unit_alias,
     finalize_log_nutrients,
+    format_decimal,
     normalize_catalog_name,
 )
 
@@ -261,11 +262,24 @@ class DatabaseManager:
 
     async def connect(self) -> None:
         """Open the connection and set pragmas."""
-        self._conn = await aiosqlite.connect(self.db_path)
-        await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.execute("PRAGMA foreign_keys=ON")
-        await self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.row_factory = aiosqlite.Row
+        conn = await aiosqlite.connect(self.db_path)
+        self._conn = conn
+        try:
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.execute("PRAGMA busy_timeout=5000")
+            conn.row_factory = aiosqlite.Row
+        except BaseException:
+            # aiosqlite.connect() can succeed before the first PRAGMA discovers
+            # that the file is corrupt or not SQLite. Do not retain that partially
+            # initialized handle: post_init has not registered this manager yet,
+            # so no later shutdown hook can be relied on to close it.
+            try:
+                await conn.close()
+            except Exception:
+                pass
+            self._conn = None
+            raise
         logger.info("Database connected: %s", self.db_path)
 
     async def init_db(self) -> None:
@@ -1727,7 +1741,7 @@ class DatabaseManager:
         """
         if source_type not in ("food", "recipe"):
             raise ValueError(f"Unknown source_type {source_type!r}")
-        tokens = [f"{float(quantity.amount):g}", str(quantity.unit)]
+        tokens = [format_decimal(quantity.amount), str(quantity.unit)]
         async with self._write_operation(begin_immediate=True):
             try:
                 entry = await self._resolve_quantity_locked(
@@ -1852,7 +1866,7 @@ class DatabaseManager:
                         status=QuickMealStatus.QUANTITY_REQUIRED, receipt=None
                     )
 
-            tokens = [f"{float(quantity.amount):g}", str(quantity.unit)]
+            tokens = [format_decimal(quantity.amount), str(quantity.unit)]
             try:
                 entry = await self._resolve_quantity_locked(
                     user_id, source_type, source_id, tokens
