@@ -32,10 +32,25 @@ WantedBy=multi-user.target
 On Windows, run the same `python -m bot` command under NSSM or a Scheduled Task
 set to restart on failure.
 
-> **Current Release 0 gap:** startup does not yet take an OS-level instance lock.
-> Until that guard is implemented, stop the supervisor before running
-> `python -m bot` manually and verify that only one polling process exists. Two
-> processes can split an in-memory guided flow and send the same reminder.
+### Single-instance enforcement
+
+Exactly one polling process may run per database, and startup now **enforces**
+it. `main()` takes an exclusive OS lock on `<DB_PATH>.instance.lock`
+(`msvcrt.locking` on Windows, `fcntl.flock` on POSIX) *before* anything opens or
+migrates the database. A second process logs a message naming the lock file and
+exits non-zero without touching a byte of data.
+
+So: stop the supervised service before running `python -m bot` by hand — the
+manual run will refuse to start otherwise. Two processes would split guided
+drafts held in per-process `user_data` and could each send the same reminder
+chunk, because delivery state is read once before the send.
+
+The lock is held by the running process's open handle, so the operating system
+releases it automatically if that process is killed. The leftover lock *file* is
+not a stale marker and must not be deleted to "fix" a refusal — if a start is
+refused, another process really is running. Scope: same-host only. It does not
+address a multi-host deployment, and it does not close the send-then-record
+crash window in reminder delivery.
 
 ### Restart behavior
 

@@ -23,6 +23,7 @@ from telegram.ext import (
 
 from .config import BOT_TOKEN, DB_PATH, REMINDER_TIME, ROUTINE_PATH, LOCAL_TZ, LOG_FORMAT
 from .database import DatabaseManager
+from .instance_lock import AlreadyRunningError, SingleInstanceLock, lock_path_for
 from .routine import load_routine
 from .handlers.common import (
     AUTH_FILTER,
@@ -342,13 +343,30 @@ def build_application() -> Application:
 
 
 def main() -> None:
-    """Build the application and start polling."""
-    application = build_application()
+    """Take the single-instance lock, then build the application and poll.
 
-    # Preserve updates accumulated during downtime so a study/gym/meal command
-    # sent while the process was restarting is not silently dropped.
-    logger.info("Starting Ledger bot in polling mode...")
-    application.run_polling(drop_pending_updates=False)
+    The lock is acquired *before* anything opens or migrates the database — and
+    therefore before the migration preflight — so a second process on this host
+    exits without touching a byte of data. This process owns the open handle for
+    the whole ``run_polling()`` lifetime and releases it in ``finally``; the OS
+    releases it anyway if the process dies.
+    """
+    lock = SingleInstanceLock(lock_path_for(DB_PATH))
+    try:
+        lock.acquire()
+    except AlreadyRunningError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from exc
+
+    try:
+        application = build_application()
+
+        # Preserve updates accumulated during downtime so a study/gym/meal command
+        # sent while the process was restarting is not silently dropped.
+        logger.info("Starting Ledger bot in polling mode...")
+        application.run_polling(drop_pending_updates=False)
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

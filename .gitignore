@@ -10,6 +10,9 @@ codex_review.md
 # Database backups (real user data) — never commit.
 *.db.bak*
 *.bak-*
+# Single-instance lock file (see bot/instance_lock.py). Ownership is the OS lock
+# on an open handle, not the file's existence, so a leftover file is harmless.
+*.instance.lock
 __pycache__/
 *.pyc
 *.pyo
