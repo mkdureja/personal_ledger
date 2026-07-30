@@ -499,13 +499,16 @@ def diet_save_keyboard(
             )
         row.append(
             InlineKeyboardButton(
-                f"#{index + 1} 🔁 replace" if structured else f"#{index + 1} 🔁",
+                f"#{index + 1} 🔁 replace",
                 callback_data=f"dedit_{owner}_{rev}_{position}",
             )
         )
+        # Numbered too: with several items, three unlabelled bins in a column
+        # give no way to tell which row you are about to delete from.
         row.append(
             InlineKeyboardButton(
-                "🗑", callback_data=f"dremove_{owner}_{rev}_{position}"
+                f"#{index + 1} 🗑",
+                callback_data=f"dremove_{owner}_{rev}_{position}",
             )
         )
         rows.append(row)

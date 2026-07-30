@@ -12,6 +12,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from ..config import home_keyboard_action_for, phase1_enabled_for
 from .common import reply_html
 
 logger = logging.getLogger(__name__)
@@ -31,15 +32,35 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     status = "🔔 on" if reminders_on else "🔕 off"
     suggestions_on = await db.get_suggestions_enabled(user.id)
     suggestions_status = "✨ on" if suggestions_on else "off"
+
+    # Fast logging and how many "usual" amounts are saved — the two Phase 1
+    # facts a user cannot otherwise see without hunting through the picker.
+    fast_line = ""
+    if phase1_enabled_for(user.id):
+        usual_count = await db.count_default_quantities(user.id)
+        bar = "shown" if home_keyboard_action_for(user.id) == "send" else "hidden"
+        fast_line = (
+            "Fast logging: <b>⚡ on</b>\n"
+            f"Quick-action bar: <b>{bar}</b> "
+            "(<code>/keyboard hide|show</code>)\n"
+            f"Saved “usual” amounts: <b>{usual_count}</b>\n"
+        )
+
     await reply_html(
         update.message,
         "⚙️ <b>Your settings</b>\n"
         f"Reminders: <b>{status}</b>\n"
         f"Food suggestions: <b>{suggestions_status}</b>\n"
+        f"{fast_line}"
         f"Routine profile: <b>{profile}</b>\n\n"
         "Change reminders with <code>/reminders on</code> or "
         "<code>/reminders off</code>.\n"
-        "Personalized food ordering: <code>/suggestions on|off|reset</code>.",
+        "Personalized food ordering: <code>/suggestions on|off|reset</code>."
+        + (
+            "\nManage a “usual” amount with ⚙️ beside an item while logging."
+            if fast_line
+            else ""
+        ),
     )
 
 

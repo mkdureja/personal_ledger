@@ -108,7 +108,13 @@ were not recorded.
 | `/recipe add <key> yield=<qtyunit>` | Save or update a recipe and its yield |
 | `/recipe ingredient <recipe> food:<food> <qtyunit>` | Add or update an ingredient (attached or spaced unit) |
 | `/recipe removeitem <recipe> food:<food>` | Remove an ingredient |
+| `/recipe duplicate <recipe> <new-key>` | Clone a recipe and its ingredients to make a variant |
 | `/recipe list` / `/recipe show <key>` / `/recipe remove <key>` | Browse or archive recipes |
+
+`duplicate` is how you keep variants: clone `chicken-curry` to
+`chicken-curry-light`, then edit the copy. The two are fully independent
+afterwards, and a duplicate can itself be duplicated. The copy is created with
+all its ingredients in one transaction, so a failure leaves no half-built recipe.
 
 Keys use one token of ASCII letters/numbers; kebab-case names such as
 `greek-yogurt` are recommended.

@@ -14,6 +14,7 @@ from .common import (
     escape_html,
     reply_html,
 )
+from ..config import phase1_enabled_for
 from ..keyboards import main_menu_keyboard, analytics_keyboard
 
 
@@ -45,9 +46,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # /help
 # ---------------------------------------------------------------------------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Full command reference."""
+    """Full command reference.
+
+    The fast-logging block is shown only to users the Phase 1 flag covers, so
+    help never advertises an action that would answer "not enabled". Describe,
+    voice, and online lookup stay unmentioned until they exist.
+    """
+    fast_block = ""
+    if phase1_enabled_for(update.effective_user.id):
+        fast_block = (
+            "<b>Fast logging</b>\n"
+            "Say <b>hi</b> (or <code>home</code>) — today's totals and the menu\n"
+            "🍽️ <b>Meal</b> — tap a food, tap an amount, done\n"
+            "🔁 <b>Repeat</b> — re-log your last meal exactly as it was\n"
+            "⚙️ beside a saved item — set the “usual” amount, then it is one tap\n"
+            "On any receipt: ↩️ <b>Undo</b> (that exact meal, within 24h), "
+            "🍽️ <b>Log another</b>, 🔄 <b>Log again at today's values</b>\n"
+            "<code>/keyboard hide|show</code> — the quick-action bar. Hiding is "
+            "momentary; it returns on your next greeting.\n\n"
+        )
     text = (
         "📋 <b>All Commands</b>\n\n"
+        f"{fast_block}"
         "<b>Logging</b>\n"
         "<code>/study</code> — Log a study session\n"
         "<code>/study &lt;subject&gt; &lt;minutes&gt; [notes]</code> — Quick log\n"

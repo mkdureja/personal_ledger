@@ -43,6 +43,8 @@ _RECIPE_USAGE = (
     "<code>/recipe ingredient &lt;recipe&gt; food:&lt;food&gt; "
     "&lt;qtyunit&gt;</code> (attached or spaced)\n"
     "<code>/recipe removeitem &lt;recipe&gt; food:&lt;food&gt;</code>\n"
+    "<code>/recipe duplicate &lt;recipe&gt; &lt;new-key&gt;</code> — clone it to "
+    "make a variant\n"
     "<code>/recipe list</code> · <code>/recipe show &lt;key&gt;</code> · "
     "<code>/recipe remove &lt;key&gt;</code>"
 )
@@ -496,6 +498,8 @@ async def recipe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await _recipe_ingredient(update.message, db, user_id, args)
         elif action == "removeitem":
             await _recipe_removeitem(update.message, db, user_id, args)
+        elif action in ("duplicate", "copy"):
+            await _recipe_duplicate(update.message, db, user_id, args)
         elif action == "list":
             await _recipe_list(update.message, db, user_id, args)
         elif action == "show":
@@ -533,6 +537,45 @@ async def _recipe_add(message: Any, db: Any, user_id: int, args: list[str]) -> N
         "Add ingredients with <code>/recipe ingredient "
         f"{_bounded_html(recipe['name_key'])} food:&lt;food&gt; &lt;qty&gt; "
         "&lt;unit-or-portion&gt;</code>.",
+    )
+
+
+async def _recipe_duplicate(
+    message: Any, db: Any, user_id: int, args: list[str]
+) -> None:
+    """``/recipe duplicate <source> <new>`` — clone a recipe to tweak as a variant."""
+    if len(args) != 3:
+        raise nutrition.NutritionError(
+            "Usage: /recipe duplicate <recipe> <new-key>."
+        )
+    source_key = _catalog_key(args[1], "Recipe key")
+    new_key = _catalog_key(args[2], "New recipe key")
+    result = await db.duplicate_recipe(user_id, source_key, new_key)
+    status = result.get("status")
+    if status == "not_found":
+        raise nutrition.NutritionError(
+            f"Saved recipe '{source_key}' was not found."
+        )
+    if status == "duplicate_name":
+        raise nutrition.NutritionError(
+            f"'{new_key}' is already a saved recipe — pick a different name."
+        )
+    recipe = result.get("recipe")
+    if recipe is None:
+        await reply_html(message, _status_error(result, "recipe"))
+        return
+    count = result.get("ingredient_count", 0)
+    await reply_html(
+        message,
+        f"✅ <b>Duplicated recipe:</b> "
+        f"<code>{_bounded_html(source_key)}</code> → "
+        f"<code>{_bounded_html(recipe['name_key'])}</code>\n"
+        f"Copied {count} ingredient(s); yield "
+        f"{_bounded_html(_format_decimal(recipe['yield_amount']))} "
+        f"{_bounded_html(recipe['yield_unit'])}.\n"
+        "The copy is independent — edit it with <code>/recipe ingredient "
+        f"{_bounded_html(recipe['name_key'])} …</code> without affecting the "
+        "original.",
     )
 
 

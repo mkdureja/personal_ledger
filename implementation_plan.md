@@ -25,7 +25,7 @@ it is recorded below.
 | 3 - deterministic Describe | Not started | — |
 | 4 - optional external parser (Gemini) | Not started | first phase with an external dependency |
 | 5 - local voice | Not started | — |
-| 6 - recipe variants | Not started | independent track |
+| 6 - recipe variants | **Done** | `tests/test_polish_and_variants.py` (`/recipe duplicate`) |
 | 7 - Supplements | Not started | independent track, needs v13 |
 
 Suite: 866 tests green. Phase 1 ships dark (`PHASE1_ENABLED_USER_IDS=` empty); see
@@ -81,15 +81,15 @@ worth doing before Phase 2 adds a second resolution source (USDA lookup) on top 
 
 Documentation surfaces the unit contract §15 asked for that are not yet updated:
 
-- **`/help`** does not mention Home, Repeat, or `/keyboard hide|show`.
-- **`/settings`** does not show Phase 1 / default-quantity status for the acting user.
 - **`docs/user_guide.html`** predates Phase 1 and documents no Home/Repeat/receipt/usual
   behavior. Nothing in it is wrong (Phase 1 is additive and dark by default), but it is
   incomplete.
 - **`docs/backup_runbook.md`** lacks the "Phase 1 adds no migration; Release A is the
   rollback target; accepted rows are never discarded" note.
 
-README and the operations runbook are current. Other carry-overs:
+`README.md`, the operations runbook, `/help`, and `/settings` are current — the latter two
+show the fast-logging block and the saved-"usual" count only to Phase 1-enabled users, so
+neither advertises an action that would answer "not enabled". Other carry-overs:
 
 - The §13.8 isolated-venv `pip-audit` run was not performed. `pytest`, `compileall`, and
   `pip check` all pass in place, and no runtime dependency was added.
@@ -1078,7 +1078,10 @@ back locally.
 **Gate:** stalled/hung transcription does not block the other user, reminders, Undo, or
 shutdown; every temp-file path cleans up; audio is never sent externally.
 
-### Phase 6 - recipe variants
+### Phase 6 - recipe variants — DONE
+
+Shipped as `/recipe duplicate <recipe> <new-key>` (alias `copy`), out of sequence because
+it is an independent track needing no migration.
 
 - Implement atomic Duplicate Recipe: reject normalized-name collisions, copy recipe and
   all ingredients in one transaction, then allow normal edits.

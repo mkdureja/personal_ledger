@@ -1113,7 +1113,10 @@ async def choose_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             update,
             context,
             query.message,
-            f"🔎 <b>{escape_html(catalog_food['name'])}</b> — how much?",
+            # 🥫 (a food from the shared catalog), not 🔎 — the magnifier reads
+            # as "you are searching", and by this point the pick is made. Matches
+            # the re-render path.
+            f"🥫 <b>{escape_html(catalog_food['name'])}</b> — how much?",
             food_portion_keyboard(uid, portions, recent, show_prefs=False),
         )
         return PORTION_CHOICE if prompt is not None else ConversationHandler.END
@@ -3111,6 +3114,54 @@ async def diet_receipt_more_entry(
     return await _start_quick_meal(update, context)
 
 
+async def diet_timeout_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Report a timed-out Diet flow, naming anything that was discarded.
+
+    The generic handler said only "send the command again", which left a user
+    guessing whether an assembled draft had been saved. Nothing here was ever
+    written to the ledger — the Builder's Save is the only write — so the honest
+    message is to list what is being thrown away.
+    """
+    items = context.user_data.get("diet_items")
+    pending = context.user_data.get("diet_quick_pending_item")
+    lost: list[str] = []
+    if isinstance(items, list):
+        lost.extend(str(item.get("display_name", "?")) for item in items)
+    elif isinstance(pending, dict):
+        lost.append(str(pending.get("display_name", "?")))
+
+    finish_conversation(update, context, "diet")
+    # finish_conversation only clears keys when the active-flow marker is intact.
+    # This message promises the draft is gone, so make that unconditionally true
+    # rather than leaving a stale draft behind for the next entry to inherit.
+    _clear_diet_entry_data(context)
+    message = getattr(update, "effective_message", None)
+    if message is None:
+        return ConversationHandler.END
+
+    if lost:
+        shown = ", ".join(lost[:5])
+        if len(lost) > 5:
+            shown += f", and {len(lost) - 5} more"
+        text = (
+            "⏰ <b>Meal draft discarded</b> after 15 min idle — nothing was "
+            f"logged.\nYou had: {escape_html(shown)}\n"
+            "Tap 🍽️ <b>Meal</b> or /diet to start again."
+        )
+    else:
+        text = (
+            "⏰ Timed out — nothing was logged. Tap 🍽️ <b>Meal</b> or /diet "
+            "to start again."
+        )
+    try:
+        await reply_html(message, text)
+    except TelegramError:
+        logger.warning("Could not deliver diet timeout notice", exc_info=True)
+    return ConversationHandler.END
+
+
 async def _diet_draft_expired(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
@@ -3601,7 +3652,7 @@ diet_conv_handler = ConversationHandler(
             _diet_control_guard,
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_macros),
         ],
-        ConversationHandler.TIMEOUT: [TypeHandler(Update, timeout_handler)],
+        ConversationHandler.TIMEOUT: [TypeHandler(Update, diet_timeout_handler)],
     },
     fallbacks=[
         cancel_handler,

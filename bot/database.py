@@ -1671,6 +1671,16 @@ class DatabaseManager:
             return None
         return DefaultQuantity(amount=float(amount), unit=str(unit))
 
+    async def count_default_quantities(self, user_id: int) -> int:
+        """How many complete "usual" amounts this user has saved."""
+        row = await self._query_one(
+            "SELECT COUNT(*) AS n FROM user_food_preferences "
+            "WHERE user_id = ? AND default_amount IS NOT NULL "
+            "AND default_unit IS NOT NULL",
+            (user_id,),
+        )
+        return int(row["n"]) if row is not None else 0
+
     async def has_partial_default(
         self, user_id: int, source_type: str, source_id: int
     ) -> bool:
@@ -2478,6 +2488,112 @@ class DatabaseManager:
             )
             recipe = await self._get_recipe_by_id_locked(user_id, cursor.lastrowid)
             return {"status": "added", "recipe": recipe}
+
+    async def duplicate_recipe(
+        self, user_id: int, source_key: str, new_name: str
+    ) -> dict[str, Any]:
+        """Copy one recipe and all its ingredients under a new name, atomically.
+
+        The point is variants: clone "chicken curry" to "chicken curry (light)"
+        and then tweak the copy. The duplicate is fully independent — later edits
+        to either recipe do not touch the other — and duplicating a duplicate is
+        fine. Ingredient rows are copied by resolved base amount, so the copy
+        computes identical nutrition immediately.
+
+        Returns a status dict rather than raising for the ordinary outcomes a
+        user can cause: ``not_found``, ``duplicate_name``, ``limit``.
+        """
+        normalized_name = _normalize_catalog_text(
+            new_name, "Recipe name", MAX_CATALOG_NAME_LENGTH
+        )
+        new_key = _catalog_key(new_name, "Recipe name", MAX_CATALOG_NAME_LENGTH)
+        source_lookup_key = _catalog_key(
+            source_key, "Recipe name", MAX_CATALOG_NAME_LENGTH
+        )
+        if new_key == source_lookup_key:
+            return {"status": "duplicate_name", "recipe": None}
+
+        async with self._write_operation(begin_immediate=True):
+            cursor = await self.conn.execute(
+                "SELECT * FROM recipes "
+                "WHERE user_id = ? AND name_key = ? AND is_active = 1",
+                (user_id, source_lookup_key),
+            )
+            source = await cursor.fetchone()
+            if source is None:
+                return {"status": "not_found", "recipe": None}
+
+            cursor = await self.conn.execute(
+                "SELECT id FROM recipes "
+                "WHERE user_id = ? AND name_key = ? AND is_active = 1",
+                (user_id, new_key),
+            )
+            if await cursor.fetchone() is not None:
+                return {"status": "duplicate_name", "recipe": None}
+
+            cursor = await self.conn.execute(
+                "SELECT COUNT(*) AS count FROM recipes "
+                "WHERE user_id = ? AND is_active = 1",
+                (user_id,),
+            )
+            if (await cursor.fetchone())["count"] >= MAX_ACTIVE_RECIPES:
+                return {
+                    "status": "limit",
+                    "recipe": None,
+                    "limit": MAX_ACTIVE_RECIPES,
+                }
+
+            now = _utc_timestamp_now()
+            cursor = await self.conn.execute(
+                "INSERT INTO recipes "
+                "(user_id, name, name_key, yield_amount, yield_unit, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    normalized_name,
+                    new_key,
+                    source["yield_amount"],
+                    source["yield_unit"],
+                    now,
+                ),
+            )
+            new_recipe_id: int = cursor.lastrowid  # type: ignore[assignment]
+
+            # Explicit column list: `id`, `recipe_id`, and the timestamps belong
+            # to the new rows. The base unit is not stored on an ingredient — it
+            # is the referenced food's — so `base_amount` alone carries the
+            # resolved quantity.
+            cursor = await self.conn.execute(
+                "SELECT food_id, base_amount, display_amount, display_unit "
+                "FROM recipe_ingredients "
+                "WHERE user_id = ? AND recipe_id = ? ORDER BY id",
+                (user_id, source["id"]),
+            )
+            ingredients = await cursor.fetchall()
+            for item in ingredients:
+                await self.conn.execute(
+                    "INSERT INTO recipe_ingredients "
+                    "(user_id, recipe_id, food_id, base_amount, "
+                    "display_amount, display_unit, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        user_id,
+                        new_recipe_id,
+                        item["food_id"],
+                        item["base_amount"],
+                        item["display_amount"],
+                        item["display_unit"],
+                        now,
+                    ),
+                )
+
+            return {
+                "status": "added",
+                "recipe": await self._get_recipe_by_id_locked(
+                    user_id, new_recipe_id
+                ),
+                "ingredient_count": len(ingredients),
+            }
 
     async def _get_recipe_by_id_locked(
         self, user_id: int, recipe_id: int

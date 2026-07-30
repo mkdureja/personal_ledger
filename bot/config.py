@@ -229,7 +229,12 @@ REMINDER_TIME: time = time(hour=REMINDER_HOUR, minute=0, second=0, tzinfo=LOCAL_
 # ---------------------------------------------------------------------------
 # Conversation timeout (seconds)
 # ---------------------------------------------------------------------------
-CONVERSATION_TIMEOUT: int = 300
+# Idle window before a guided flow is abandoned. Assembling a multi-item meal
+# involves real-world pauses — reading a label, finishing a bite — and five
+# minutes was short enough to discard drafts mid-use. Fifteen is forgiving
+# without leaving a forgotten flow blocking new commands for long, and /cancel
+# is always available regardless.
+CONVERSATION_TIMEOUT: int = 900
 
 # ---------------------------------------------------------------------------
 # Logging format
