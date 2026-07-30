@@ -264,8 +264,11 @@ bot/
     ├── settings.py  # /settings, /reminders opt-in
     └── reminders.py # Daily reminder + routine anchor jobs
 
+ledger_schema.py     # Dependency-free schema contract (versions, required tables)
+ledger_backup.py     # Dependency-free inspect/verify/online-backup functions
+
 scripts/
-├── backup_db.py        # WAL-safe online backup (sanitized output)
+├── backup_db.py        # CLI over ledger_backup (create / --verify-only)
 └── send_bot_message.py # Manual allowlisted message helper
 
 docs/
@@ -298,9 +301,18 @@ snapshot. Always back up with a consistent method to an explicit destination
 outside the repository. Never place a plaintext backup in cloud storage:
 
 ```bash
-# Consistent online backup (no downtime) with sanitized verification output
-python scripts/backup_db.py --source ledger.db --dest /path/outside/repo/ledger-backup.db
+# Consistent online backup (no downtime), sanitized and version-aware verification
+python -m scripts.backup_db --source ledger.db --dest /path/outside/repo --expect-version latest
+
+# Verify an existing rollback point at whatever schema version it carries
+python -m scripts.backup_db --verify-only /path/outside/repo/ledger-v8-20260730-101500Z.db
 ```
+
+`--dest` has no default and is refused inside the repository; `--expect-version`
+is mandatory when creating, so a stale source can never be certified as current.
+The schema contract itself lives in two dependency-free root modules,
+`ledger_schema.py` and `ledger_backup.py`, which the standalone script, the
+startup verifier, and the migration preflight all share.
 
 - **[docs/backup_runbook.md](docs/backup_runbook.md)** — online/clean-shutdown
   backup, restore, and the pre-migration checklist.

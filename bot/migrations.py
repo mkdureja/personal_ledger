@@ -27,13 +27,17 @@ from collections.abc import Awaitable, Callable
 
 import aiosqlite
 
+from ledger_schema import LATEST_SCHEMA_VERSION, required_tables_for
+
 from .database import _habit_key
 
 logger = logging.getLogger(__name__)
 
-# Bump this (and register a new function in ``_MIGRATIONS``) for every schema
-# change. Version N is produced by ``_MIGRATIONS[N]``.
-LATEST_VERSION = 8
+# Compatibility alias for the one source of truth in ``ledger_schema``. Bump the
+# version there and register the new function in ``_MIGRATIONS``; version N is
+# produced by ``_MIGRATIONS[N]``. Tests monkeypatch this module attribute to pin
+# an older effective latest, so it stays a module-level name.
+LATEST_VERSION = LATEST_SCHEMA_VERSION
 
 
 class MigrationCollisionError(RuntimeError):
@@ -296,18 +300,13 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 
-# The schema version at which each table first appears. The verifier requires a
-# table only when the effective ``LATEST_VERSION`` has reached its introduction,
-# so an intermediate-version binary (or a monkeypatched test) is not asked for
-# objects a later migration will add.
-_TABLE_INTRODUCED: dict[str, int] = {
-    "users": 1, "study_logs": 1, "gym_logs": 1, "diet_logs": 1,
-    "foods": 1, "food_portions": 1, "recipes": 1, "recipe_ingredients": 1,
-    "habits": 1, "habit_logs": 1,
-    "mutation_receipts": 2, "user_settings": 3, "habit_activity_periods": 4,
-    "reminder_deliveries": 5, "diet_log_items": 6, "user_food_preferences": 7,
-    "catalog_foods": 8, "catalog_aliases": 8, "catalog_portions": 8,
-}
+# The table-introduction mapping lives in the dependency-free root module
+# ``ledger_schema`` so the standalone backup tool verifies a copy against exactly
+# the table list the bot enforces at startup. ``required_tables_for(version)``
+# requires a table only once the version being checked has reached its
+# introduction, so an intermediate-version database (a pre-migration rollback
+# point, or a test pinning an older effective latest) is never asked for objects
+# a later migration will add.
 
 # table -> (version at which these exact columns must all exist, column names).
 # Only tables whose shape is confirmed here are column-checked; every other
@@ -352,11 +351,7 @@ async def verify_current_schema(conn: aiosqlite.Connection) -> None:
         "SELECT name FROM sqlite_master WHERE type = 'table'"
     )
     present = {row["name"] for row in await cursor.fetchall()}
-    missing = [
-        table
-        for table, introduced in _TABLE_INTRODUCED.items()
-        if introduced <= target and table not in present
-    ]
+    missing = [table for table in required_tables_for(target) if table not in present]
     if missing:
         raise SchemaVerificationError(
             f"Database is missing {len(missing)} required table(s): "

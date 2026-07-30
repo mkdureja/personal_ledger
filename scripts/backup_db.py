@@ -1,134 +1,163 @@
-r"""Consistent, WAL-safe backup of the Ledger SQLite database.
+r"""Create or verify a consistent, schema-verified Ledger database backup.
 
-Uses SQLite's online backup API, which captures a transactionally consistent
-snapshot **while the bot is running** and folds any pending WAL state into a
-single self-contained ``.db`` file. This is the safe alternative to copying
-``ledger.db`` on its own — a bare file copy misses the ``-wal``/``-shm`` sidecars
-and can restore a torn, older state.
+A thin CLI over the dependency-free :mod:`ledger_backup` module; every rule lives
+there so this command and the production migration preflight cannot drift apart.
 
-Usage (from the repo root, using the project venv):
+Run it from the repository root with the project virtual environment:
 
-    .\.venv\Scripts\python.exe scripts\backup_db.py \
+    .\.venv\Scripts\python.exe -m scripts.backup_db \
         --source ledger.db \
-        --dest   C:\ledger-backups\ledger-YYYYMMDD-HHMMSS.db
+        --dest   E:\ledger-backups \
+        --expect-version latest
 
-The destination directory should live **outside** the repository so a backup is
-never committed. The script prints only sanitized diagnostics: schema version,
-integrity result, and per-table row counts. It never prints Telegram user IDs,
-usernames, first names, or the bot token.
+    .\.venv\Scripts\python.exe -m scripts.backup_db \
+        --verify-only E:\ledger-backups\ledger-v8-20260730-101500Z.db
+
+``--dest`` is mandatory and must resolve **outside** the repository: a backup
+beside ``ledger.db`` shares the disk, directory, and accidental deletion it
+exists to survive. When ``--dest`` is a directory (or ends with a separator) the
+file is named automatically as ``ledger-v<version>-<UTC stamp>Z.db``.
+
+``--expect-version`` is mandatory when creating a backup:
+
+* ``latest`` — a routine backup of a current database. Fails if the source is
+  behind, so a stale copy can never be certified as current.
+* ``<N>`` — a pre-migration backup of a database you have just read as version
+  N. A v7 backup taken by this v8 build is *correct* at v7.
+
+``--verify-only`` verifies a file already on disk at whatever known version it
+carries, which is how a restore rehearsal is checked. Add ``--expect-version``
+to assert a particular restore target.
+
+Output is sanitized: schema names, versions, and aggregate row counts only. Never
+a Telegram ID, username, first name, entry text, or the bot token.
 """
 
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-# Tables whose row counts are safe to report as totals (no identifying content).
-_COUNTED_TABLES = (
-    "users",
-    "study_logs",
-    "gym_logs",
-    "diet_logs",
-    "foods",
-    "food_portions",
-    "recipes",
-    "recipe_ingredients",
-    "habits",
-    "habit_logs",
+from ledger_backup import (
+    DEFAULT_KEEP,
+    BackupError,
+    VerificationFailed,
+    create_backup,
+    create_backup_in,
+    format_facts,
+    verify_backup_file,
 )
+from ledger_schema import LATEST_SCHEMA_VERSION
 
 
-def _default_dest(source: Path) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return source.with_name(f"{source.stem}-backup-{stamp}.db")
+def _looks_like_directory(raw: str, path: Path) -> bool:
+    return path.is_dir() or raw.endswith(("/", "\\")) or path.suffix == ""
 
 
-def backup(source: Path, dest: Path) -> int:
-    """Create a consistent backup of ``source`` at ``dest``. Returns 0 on success."""
-    if not source.exists():
-        print(f"ERROR: source database not found: {source}", file=sys.stderr)
-        return 2
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        print(f"ERROR: destination already exists, refusing to overwrite: {dest}", file=sys.stderr)
-        return 2
+def _print_facts(facts) -> None:
+    for line in format_facts(facts):
+        print(line)
 
-    # Open the live database read-only via the online backup API. The source is
-    # opened normally (backup needs a read transaction); the destination is a
-    # fresh file that receives a fully checkpointed copy.
-    src = sqlite3.connect(str(source))
-    healthy = False
-    try:
-        out = sqlite3.connect(str(dest))
+
+def run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m scripts.backup_db",
+        description="Create or verify a schema-verified Ledger backup.",
+    )
+    parser.add_argument(
+        "--source", default="ledger.db", help="Live database path (create mode)"
+    )
+    parser.add_argument(
+        "--dest",
+        help="Backup destination file or directory, outside the repository (create mode)",
+    )
+    parser.add_argument(
+        "--verify-only",
+        metavar="PATH",
+        help="Verify an existing backup file instead of creating one",
+    )
+    parser.add_argument(
+        "--expect-version",
+        help=(
+            f"'latest' (currently {LATEST_SCHEMA_VERSION}) or an explicit integer "
+            "version. Required when creating a backup."
+        ),
+    )
+    parser.add_argument(
+        "--keep",
+        type=int,
+        default=DEFAULT_KEEP,
+        help=(
+            "Rolling retention for auto-named routine backups in --dest "
+            f"(default {DEFAULT_KEEP}; 0 disables pruning). Pre-migration "
+            "rollback points are never pruned."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    if args.verify_only:
+        if args.dest:
+            parser.error("--verify-only verifies an existing file; --dest is unused")
         try:
-            with out:
-                src.backup(out)
-            healthy = _report(out)
-        finally:
-            out.close()
-    finally:
-        src.close()
+            facts = verify_backup_file(
+                args.verify_only, expect_version=args.expect_version
+            )
+        except VerificationFailed as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        except BackupError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        _print_facts(facts)
+        print(f"OK: verified rollback point at schema version {facts.user_version}.")
+        return 0
 
-    # A backup is only useful as a rollback point if it verifies clean. Never
-    # report success on a corrupt copy — a deployment could otherwise adopt an
-    # unusable snapshot right before modifying production.
-    if not healthy:
-        invalid = dest.with_name(dest.name + ".INVALID")
-        try:
-            dest.rename(invalid)
-        except OSError:
-            invalid = dest
-        print(
-            f"ERROR: backup verification FAILED — integrity or foreign-key checks "
-            f"did not pass. File marked invalid: {invalid}",
-            file=sys.stderr,
+    if not args.dest:
+        parser.error(
+            "--dest is required (a directory or file outside the repository). "
+            "There is deliberately no default: an implicit destination landed "
+            "beside ledger.db."
         )
-        print("Do NOT use this file as a rollback point.", file=sys.stderr)
-        return 1
+    if not args.expect_version:
+        parser.error(
+            "--expect-version is required when creating a backup: pass 'latest' "
+            "for a routine backup, or the exact integer version you just read "
+            "for a pre-migration backup."
+        )
 
-    print(f"OK: backup written and verified: {dest}")
-    print("Record this path and the restore command in your deployment runbook.")
+    dest = Path(args.dest).expanduser()
+    try:
+        if _looks_like_directory(args.dest, dest):
+            facts = create_backup_in(
+                args.source,
+                dest,
+                expect_version=args.expect_version,
+                keep=args.keep,
+            )
+        else:
+            facts = create_backup(
+                args.source, dest, expect_version=args.expect_version
+            )
+    except VerificationFailed as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except BackupError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    _print_facts(facts)
+    print(f"OK: backup written and verified: {facts.path}")
+    print(
+        "Record this path in docs/backup_runbook.md, then rehearse a restore with "
+        f"--verify-only {facts.path}"
+    )
     return 0
 
 
-def _report(conn: sqlite3.Connection) -> bool:
-    """Print sanitized verification output; return True only if the copy is sound.
-
-    Returns ``False`` when ``integrity_check`` reports anything other than ``ok``
-    or ``foreign_key_check`` finds any violating row, so the caller can refuse to
-    certify the backup.
-    """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-    fk_problems = conn.execute("PRAGMA foreign_key_check").fetchall()
-    print(f"schema user_version : {version}")
-    print(f"integrity_check     : {integrity}")
-    print(f"foreign_key_check   : {'OK' if not fk_problems else f'{len(fk_problems)} problem(s)'}")
-    existing = {
-        row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
-    }
-    print("row counts (sanitized):")
-    for table in _COUNTED_TABLES:
-        if table in existing:
-            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
-            print(f"  {table:<20} {count}")
-
-    return integrity == "ok" and not fk_problems
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", default="ledger.db", type=Path, help="Live database path")
-    parser.add_argument("--dest", type=Path, default=None, help="Backup destination (outside the repo)")
-    args = parser.parse_args(argv)
-    dest = args.dest or _default_dest(args.source)
-    return backup(args.source, dest)
+    """Entry point; kept as a stable name for the runbook and tests."""
+    return run(argv)
 
 
 if __name__ == "__main__":
