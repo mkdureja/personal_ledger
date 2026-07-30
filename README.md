@@ -341,4 +341,11 @@ python -m pytest tests/ -v
 ```
 
 Tests cover startup/job scheduling, schema upgrades and constraints, CRUD and undo ordering, timezone boundaries, streaks, authorization, callback expiry/ownership, guided-flow isolation, input bounds, catalog ownership and unit conversion, recipe scaling and snapshots, legacy habit and diet-macro migrations, analytics aggregation/routing, reminder message limits, routine config
-validation, and log-aware anchor composition.
+validation, log-aware anchor composition, backup/schema verification contracts,
+the single-instance lock (in real subprocesses), and the pre-migration backup gate.
+
+`.github/workflows/tests.yml` runs the same suite on **windows-latest** and
+**ubuntu-latest** for every push and pull request — both platforms, because the
+instance lock has a distinct branch on each. `tests/conftest.py` pins every
+validated setting, so the suite needs no `.env` and cannot pick up deployment
+configuration.

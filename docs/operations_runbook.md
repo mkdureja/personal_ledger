@@ -164,7 +164,8 @@ while `Repeat`/`Describe` return disabled guidance. Arbitrary text gets no Phase
 1 surface and no fast mutation runs. `off` does not force keyboard removal on
 every ordinary Home response; use the `remove` rollback mode below when every
 user must clear a previously sent bar. `test_release_a.py` proves the relevant
-paths in the local suite; the active plan adds required GitHub CI.
+paths, and `.github/workflows/tests.yml` runs the whole suite on both
+`windows-latest` and `ubuntu-latest` for every push and pull request.
 
 ### Rollback (disable Phase 1 without a DB restore)
 

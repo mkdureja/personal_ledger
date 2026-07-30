@@ -1,0 +1,53 @@
+name: tests
+
+# Every verification to date has been local, on one machine, on Windows. This
+# workflow is the first automated check, and it deliberately runs on both
+# documented deployment platforms: the single-instance lock in
+# bot/instance_lock.py has a Windows branch (msvcrt.locking) and a POSIX branch
+# (fcntl.flock), and shipping an untested branch in a safety mechanism is not
+# acceptable. The Windows job exercises the deployed path; the Ubuntu job
+# exercises the systemd path documented in docs/operations_runbook.md.
+#
+# CI is only advisory until both checks are *required* by branch protection on
+# main. Enabling that is an owner action in GitHub settings, not something this
+# file can do.
+
+on:
+  push:
+  pull_request:
+
+# A new push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report both platforms even when one fails; a Windows-only or POSIX-only
+      # failure is exactly the signal this matrix exists to surface.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # tests/conftest.py pins every validated setting, so the suite needs no
+      # .env and cannot pick up deployment configuration. Nothing here supplies a
+      # bot token, a database, or a backup destination.
+      - name: Run tests
+        run: python -m pytest -q
