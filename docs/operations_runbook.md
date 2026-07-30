@@ -32,6 +32,11 @@ WantedBy=multi-user.target
 On Windows, run the same `python -m bot` command under NSSM or a Scheduled Task
 set to restart on failure.
 
+> **Current Release 0 gap:** startup does not yet take an OS-level instance lock.
+> Until that guard is implemented, stop the supervisor before running
+> `python -m bot` manually and verify that only one polling process exists. Two
+> processes can split an in-memory guided flow and send the same reminder.
+
 ### Restart behavior
 
 - Pending Telegram updates are intentionally **retained** across restarts
@@ -42,6 +47,10 @@ set to restart on failure.
 - Migrations run automatically at startup and are atomic; a failed migration rolls
   back and leaves the previous schema version usable, and the process aborts
   startup rather than serving on a half-migrated database.
+- The current build does **not** create an automatic pre-migration backup. Before
+  starting a build whose `LATEST_VERSION` exceeds the live `user_version`,
+  complete the manual checklist in `backup_runbook.md`. The active implementation
+  plan replaces this manual-only gap with a fail-closed production preflight.
 - Startup also **fails closed** if the database's `user_version` is *newer* than
   the running binary understands (`UnsupportedSchemaError`) — e.g. an accidental
   rollback to an older build after a forward migration. Deploy the matching (or
@@ -91,8 +100,9 @@ prior reviews. Upgrade only to compatible versions with the full suite still gre
   cases, including the WAL sidecars).
 - The bot silences HTTPX request logging (which embeds the token) and redacts the
   token from any remaining log output; a regression test guards this.
-- Migration and delivery diagnostics contain only sanitized counts/categories —
-  never a token, username, first name, or raw Telegram ID.
+- Migration diagnostics are sanitized. Some reminder/Repeat failure logs still
+  include a raw Telegram ID; Release 0 removes those remaining identifiers.
+  Until then, keep production logs private and short-lived.
 
 ## Phase 1 rollout flags (Home / fast logging)
 
@@ -121,10 +131,14 @@ HOME_KEYBOARD_MODE=off
 HOME_KEYBOARD_PILOT_USER_IDS=
 ```
 
-With these, greetings/`Home`/`Meal`/`Repeat`/`Describe` return `/menu`
-compatibility guidance plus `ReplyKeyboardRemove`; arbitrary text gets no Phase 1
-surface; no snapshot query or mutation runs; and the persistent keyboard is never
-sent. `test_release_a.py` proves these synchronization paths in CI.
+With these, greetings and `Home` still render the read-only Today snapshot plus
+the inline main menu; the persistent quick-action keyboard is never sent. The
+disabled `Meal` label returns `/diet` guidance and removes a stale keyboard,
+while `Repeat`/`Describe` return disabled guidance. Arbitrary text gets no Phase
+1 surface and no fast mutation runs. `off` does not force keyboard removal on
+every ordinary Home response; use the `remove` rollback mode below when every
+user must clear a previously sent bar. `test_release_a.py` proves the relevant
+paths in the local suite; the active plan adds required GitHub CI.
 
 ### Rollback (disable Phase 1 without a DB restore)
 

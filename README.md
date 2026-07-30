@@ -243,16 +243,21 @@ bot/
 ├── database.py      # Async SQLite (aiosqlite)
 ├── migrations.py    # Versioned, atomic PRAGMA user_version migrations
 ├── nutrition.py     # Exact unit parsing and nutrition scaling
+├── meal_models.py   # Typed nutrition/receipt/result contracts
+├── suggestions.py   # Per-user ranked food suggestions
 ├── keyboards.py     # InlineKeyboard builders
 ├── charts.py        # matplotlib chart generation
 ├── routine.py       # routine.yaml loader/validator + quote rotation
+├── services/        # Shared meal logging and current-value resolution
 └── handlers/
     ├── common.py    # Auth, errors, validators, /cancel, /undo, mutation source
     ├── start.py     # /start, /help, /menu
+    ├── home.py      # Today snapshot, quick actions, keyboard controls
     ├── study.py     # Study ConversationHandler
     ├── gym.py       # Gym ConversationHandler
     ├── diet.py      # Diet ConversationHandler
     ├── catalog.py   # Saved food and recipe commands
+    ├── receipts.py  # Targeted meal Undo and current-value replay
     ├── habits.py    # Habit setup + check-off
     ├── analytics.py # Summaries, charts, streaks
     ├── recent.py    # /recent reconciliation
@@ -260,7 +265,8 @@ bot/
     └── reminders.py # Daily reminder + routine anchor jobs
 
 scripts/
-└── backup_db.py     # WAL-safe online backup (sanitized output)
+├── backup_db.py        # WAL-safe online backup (sanitized output)
+└── send_bot_message.py # Manual allowlisted message helper
 
 docs/
 ├── backup_runbook.md      # Backup/restore + pre-migration checklist
@@ -277,10 +283,10 @@ docs/
 - **SQLite hardening**: WAL mode, foreign keys ON, busy_timeout, composite indexes; reads and writes share one connection lock so a read never sees an uncommitted, later-rolled-back write
 - **Reversible undo**: `/undo` previews the exact entry and deletes only on confirm, via an idempotent delete-by-id — a failed retry can't delete a newer entry
 - **Replay-safe mutations**: Pending updates survive restarts (`drop_pending_updates=False`); study/gym/diet writes record a per-update receipt so a replayed Telegram update produces exactly one row, and `/recent` lets a user reconcile a save
-- **Durable reminders**: Reminders are opt-in per user; scheduled nudges retry transient failures with bounded backoff and persist per-chunk delivery state, so a restart resumes at the first undelivered chunk without duplicating delivered ones
+- **Durable reminders**: Reminders are opt-in per user; scheduled nudges retry transient failures with bounded backoff and persist per-chunk delivery state, so a restart resumes at the first recorded undelivered chunk. Operate exactly one bot process; the current code does not yet enforce that invariant, and a crash after send but before recording can still duplicate a chunk.
 - **Habit semantics**: Row presence = done (no "completed" column); streaks = consecutive days with rows, scanned in pages with no fixed cap; case/format-insensitive `name_key` keeps a renamed-case habit's streak intact. Activity periods record when each habit was live, so weekly adherence counts only the days a habit actually existed — deactivating mid-week keeps its earlier completions
 - **Per-exercise persistence**: Gym loop saves each exercise immediately; abandoning loses only the current one
-- **Conversation safety**: `/cancel` fallback, 5-min timeout, input validation with re-prompt
+- **Conversation safety**: `/cancel` fallback, 15-minute timeout, input validation with re-prompt
 - **Bounded Telegram UI**: Habit checklists paginate legacy data and reminders split safely across messages
 - **Habit setup limit**: New setups support up to 49 active habits, matching Telegram's keyboard limits
 - **Routine as data**: Anchors live in an optional `routine.yaml` validated at startup; a missing file falls back to the legacy reminder, so existing installs are unaffected
@@ -288,7 +294,8 @@ docs/
 ## Backup & operations
 
 The database is **WAL-backed and live** — `ledger.db` alone is not a complete
-snapshot. Always back up with a consistent method:
+snapshot. Always back up with a consistent method to an explicit destination
+outside the repository. Never place a plaintext backup in cloud storage:
 
 ```bash
 # Consistent online backup (no downtime) with sanitized verification output
@@ -304,7 +311,9 @@ python scripts/backup_db.py --source ledger.db --dest /path/outside/repo/ledger-
 
 Schema migrations run automatically at startup and are non-destructive: they never
 delete, merge, or reassign a user's rows, and a normalized-name collision stops the
-migration with a sanitized diagnostic rather than mutating data.
+migration with a sanitized diagnostic rather than mutating data. The current build
+does not take an automatic pre-migration backup, so complete the runbook checklist
+before starting any build whose schema version is newer than the live database.
 
 ## Testing
 

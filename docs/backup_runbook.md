@@ -11,6 +11,20 @@ checkpoint. Always back up with one of the consistent methods below; never copy
 > happen. Backups and reports must never contain the bot token or real Telegram
 > IDs.
 
+## Destination and security decision
+
+**Owner input still required:** record the real backup destination and whether it
+will ever be synced or moved off-host.
+
+- A plaintext local backup may remain only on a verified device/disk-encrypted
+  volume excluded from cloud sync.
+- Anything synced or moved off-host must be encrypted at the file/archive layer
+  before transfer, with its recovery key stored separately.
+
+Do not place a plaintext backup in cloud storage. The future
+`BACKUP_DEST_DIR` startup setting remains unavailable until Release 0 is
+implemented; use an explicit `--dest` with the current command below.
+
 ## Option A — online backup while the bot is running (preferred)
 
 Uses SQLite's online backup API, which folds pending WAL state into a single
@@ -61,19 +75,26 @@ safety net.
 4. Verify before starting the bot:
 
    ```powershell
-   .\.venv\Scripts\python.exe -c "import sqlite3; c=sqlite3.connect('ledger.db'); print('user_version', c.execute('PRAGMA user_version').fetchone()[0]); print('integrity', c.execute('PRAGMA integrity_check').fetchone()[0]); c.close()"
+   .\.venv\Scripts\python.exe -c "import sqlite3; c=sqlite3.connect('ledger.db'); print('user_version', c.execute('PRAGMA user_version').fetchone()[0]); print('integrity', c.execute('PRAGMA integrity_check').fetchone()[0]); print('foreign_keys', len(c.execute('PRAGMA foreign_key_check').fetchall())); c.close()"
    ```
 
-5. Start the previous release with the previous allowlist. Confirm row counts match
-   the backup report before re-enabling both users.
+5. Start only a release that supports the restored `user_version`. For a
+   deployment rollback, use the previous release only with its matching
+   pre-migration backup and previous allowlist. Confirm row counts match the
+   backup report before re-enabling both users.
 
 ## Pre-migration checklist
 
-Before any production migration (see `implementation_plan.md`, Phase 0 and the
-Production rollout gates):
+Before any production migration (see `implementation_plan.md`, Release 0 and its
+release gate):
+
+> The current build does not enforce this checklist automatically. Complete it
+> before starting code with a newer schema. The planned Release 0 preflight will
+> create and verify the backup itself and refuse migration when no external
+> destination is configured; do not use its planned flags until they are shipped.
 
 - [ ] Fresh backup taken with Option A or B and its path recorded.
 - [ ] `integrity_check` and `foreign_key_check` pass on the backup.
 - [ ] Row counts captured (sanitized) for before/after comparison.
 - [ ] Restore rehearsed to a temporary path and verified.
-- [ ] Manoj/Ratika numeric-ID mapping confirmed out of band, without changing rows.
+- [ ] User A/User B numeric-ID mapping confirmed out of band, without changing rows.

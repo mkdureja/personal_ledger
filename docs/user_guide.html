@@ -1274,7 +1274,7 @@ DB_PATH=ledger.db</code></pre>
     <p>If you're in the middle of a guided log and want to stop, send <code>/cancel</code>. This works in every conversation flow (study, gym, diet, habit setup).</p>
 
     <h3>Conversation Timeout</h3>
-    <p>If you start a guided log and don't respond within <strong>5 minutes</strong>, the conversation automatically cancels. You'll see:</p>
+    <p>If you start a guided log and don't respond within <strong>15 minutes</strong>, the conversation automatically cancels. You'll see:</p>
     <p>⏰ <em>Timed out. Send the command again to start over.</em></p>
 
     <!-- ═══════════════════════════════════════════════════════ -->
@@ -1401,7 +1401,7 @@ DB_PATH=ledger.db</code></pre>
         <div class="feature-card no-break">
             <span class="icon">💾</span>
             <div class="title">Backup Your Database</div>
-            <div class="desc">Your data lives in one file: <code>ledger.db</code>. Copy it to cloud storage periodically. It's usually under 1 MB.</div>
+            <div class="desc">The live database uses SQLite WAL mode, so never copy <code>ledger.db</code> by itself. Use <code>scripts/backup_db.py</code> and store the verified result outside the repository. Never sync a plaintext backup to cloud storage; follow <code>docs/backup_runbook.md</code>.</div>
         </div>
     </div>
 
@@ -1469,7 +1469,7 @@ DB_PATH=ledger.db</code></pre>
 
     <div class="box box-info no-break">
         <div class="box-title">📁 Your Data</div>
-        <p>All data is stored locally in <code>ledger.db</code> (SQLite). Nothing is sent to any external server. You can inspect the database directly with any SQLite browser (e.g., DB Browser for SQLite).</p>
+        <p>Ledger records are stored locally in <code>ledger.db</code> (SQLite), and nutrition lookup stays local. Messages still pass through Telegram as part of normal bot operation. Inspect only a stopped database or a verified backup with a SQLite browser; do not modify the live file directly.</p>
     </div>
 
     <hr>
