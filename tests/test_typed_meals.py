@@ -69,6 +69,32 @@ def test_whitespace_and_empty_segments_are_dropped():
     assert parse_meal_text(None) == []
 
 
+@pytest.mark.parametrize(
+    "text, expected_name",
+    [
+        ("200g salmon.", "salmon"),
+        ("100g rice!", "rice"),
+        ("oats,", "oats"),
+        ("2 eggs?", "eggs"),
+        ('100g "oats"', "oats"),
+        # Punctuation inside a name is meaningful and must survive.
+        ("100g half-fat milk", "half-fat milk"),
+        ("1 serving shepherd's pie", "shepherd's pie"),
+    ],
+)
+def test_sentence_punctuation_is_trimmed_from_food_names(text, expected_name):
+    """Dictated speech arrives punctuated.
+
+    A voice note transcribed as "200g salmon." produced the name "salmon.",
+    which cannot match a catalog entry called "salmon" — the trailing full stop
+    silently cost an exact match. Only the edges are trimmed, so hyphens and
+    apostrophes inside a name are untouched.
+    """
+    segments = parse_meal_text(text)
+    assert len(segments) == 1
+    assert segments[0].name == expected_name
+
+
 def test_a_bare_quantity_never_becomes_a_confident_item():
     """"100g" names no food, so it must not resolve to anything.
 

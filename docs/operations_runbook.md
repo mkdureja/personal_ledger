@@ -123,15 +123,22 @@ Configuring a key only makes the capability available. Each user must still opt
 in with `/aiparse on`, stored per user and defaulting to off, and only the part
 of a `/describe` message the local parser could not resolve is ever sent.
 
-`GEMINI_MODEL` defaults to `gemini-flash-lite-latest`, chosen by measuring the
-live free tier rather than by reputation:
+`GEMINI_MODEL` defaults to `gemini-flash-latest`, chosen by measuring the live
+free tier rather than by reputation — and then re-measured when the first choice
+degraded in service on the same day:
 
 | Model | Result |
 | --- | --- |
-| `gemini-flash-lite-latest` | 1.6 s, correct, has free quota — **default** |
-| `gemini-flash-latest` | 2.9 s, correct, but 5 requests/minute free |
+| `gemini-flash-latest` | 3.6 s, correct, 5 requests/minute free — **default** |
+| `gemini-flash-lite-latest` | measured 1.6 s, then hung past 45 s hours later |
 | `gemini-2.0-flash` | free-tier quota of zero — unusable |
 | `gemini-2.5-flash`, `-lite` | HTTP 404 on this tier |
+
+**If parsing quietly stops helping, suspect a stalled model first.** A hung
+provider looks identical to "the AI didn't add anything", because the call fails
+soft by design. Change `GEMINI_MODEL` and restart; no code change is needed.
+That a `-latest` alias can degrade under you is the reason the model is
+configuration rather than a constant.
 
 `thinkingConfig: {thinkingBudget: 0}` is rejected with HTTP 400 by the newer
 Flash models, so reasoning cost is avoided by choosing a non-thinking tier. A

@@ -78,16 +78,21 @@ if BACKUP_DEST_DIR:
 # This is only the *capability*. Whether a given user's meal text may be sent is
 # a separate, per-user, default-OFF consent decision.
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
-# Chosen by measurement against the live free tier, not by reputation:
-#   gemini-flash-lite-latest  1.6s, correct segmentation, has quota  <- default
-#   gemini-flash-latest       2.9s, correct, but only 5 requests/minute free
+# Chosen by measurement against the live free tier, and re-measured after the
+# first choice degraded in service:
+#   gemini-flash-latest       3.6s, correct, 5 requests/minute free   <- default
+#   gemini-flash-lite-latest  measured 1.6s, then began hanging past 45s the same
+#                             day, on phrases it had previously answered
 #   gemini-2.0-flash          free-tier quota of *zero* — unusable
 #   gemini-2.5-flash(-lite)   HTTP 404 for generateContent on this tier
-# Splitting a phrase into items needs no reasoning, so the lite tier is the right
-# fit; thinkingBudget=0 is not an option because the newer Flash models reject it
-# with HTTP 400. An alias rather than a pin, because the pinned names above turned
-# out to be the unreliable ones. Override in .env if a specific model is needed.
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
+#
+# The lite alias is left documented rather than deleted: it was genuinely the
+# best option when measured, and the lesson is that a moving alias can degrade
+# under you. Anything here can be overridden in .env without a code change, which
+# is the actual mitigation. Note thinkingBudget=0 is not available — the newer
+# Flash models reject it with HTTP 400 — so slower thinking tiers cannot be made
+# fast; they can only be swapped out.
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-flash-latest").strip()
 GEMINI_AVAILABLE: bool = bool(GEMINI_API_KEY)
 
 # ---------------------------------------------------------------------------

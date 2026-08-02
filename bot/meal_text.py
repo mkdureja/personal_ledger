@@ -37,6 +37,12 @@ MAX_SEGMENT_LENGTH = 120
 #: Split on commas, newlines, semicolons, ``+``, and a standalone "and"/"&".
 _SPLIT_RE = re.compile(r",|\n|;|\+|&|\band\b", re.IGNORECASE)
 
+#: Sentence punctuation to shave off a name's ends. Dictated text arrives
+#: punctuated — "200g salmon." — and a trailing full stop made the name miss an
+#: otherwise exact catalog match. Only the ends are touched, so hyphens and
+#: apostrophes inside a name ("half-fat", "shepherd's pie") survive.
+_EDGE_PUNCTUATION = ".,;:!?\"'`()[]{}"
+
 #: ``100g`` / ``2.5 kg`` / ``1/2 cup`` are not all supported; only a decimal
 #: amount optionally followed by a unit word. The unit is left as written and
 #: validated later by the shared quantity parser, so this module never decides
@@ -68,6 +74,11 @@ def _quantity_tokens(amount: str, unit: str | None) -> tuple[str, ...]:
     return (amount, unit) if unit else (amount,)
 
 
+def _clean_name(value: str) -> str:
+    """Trim sentence punctuation from a food name's edges."""
+    return value.strip().strip(_EDGE_PUNCTUATION).strip()
+
+
 def _parse_segment(raw: str) -> ParsedSegment | None:
     """Split one segment into a name and optional quantity tokens."""
     text = " ".join(raw.split())
@@ -84,7 +95,8 @@ def _parse_segment(raw: str) -> ParsedSegment | None:
     # and is reported as unknown, which is the honest outcome either way.
     match = _LEADING_RE.match(text)
     if match is not None:
-        amount, unit, name = match.group(1), match.group(2), match.group(3).strip()
+        amount, unit = match.group(1), match.group(2)
+        name = _clean_name(match.group(3))
         if name:
             return ParsedSegment(
                 raw=text, name=name, quantity_tokens=_quantity_tokens(amount, unit)
@@ -92,13 +104,14 @@ def _parse_segment(raw: str) -> ParsedSegment | None:
 
     match = _TRAILING_RE.match(text)
     if match is not None:
-        name, amount, unit = match.group(1).strip(), match.group(2), match.group(3)
+        name, amount, unit = _clean_name(match.group(1)), match.group(2), match.group(3)
         if name:
             return ParsedSegment(
                 raw=text, name=name, quantity_tokens=_quantity_tokens(amount, unit)
             )
 
-    return ParsedSegment(raw=text, name=text)
+    cleaned = _clean_name(text)
+    return ParsedSegment(raw=text, name=cleaned or text)
 
 
 def parse_meal_text(text: str) -> list[ParsedSegment]:
