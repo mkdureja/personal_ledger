@@ -7,7 +7,7 @@ A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, and **Habit
 | Category | What it tracks |
 |---|---|
 | 📖 **Study** | Subject, duration (minutes), notes |
-| 🏋️ **Gym** | Exercise, sets, reps, weight (or bodyweight) |
+| 🏋️ **Gym** | Exercise picked by muscle group, then one set at a time — each set keeps its own reps and weight |
 | 🍽️ **Diet** | Meal type, food items, calories, and protein/carbs/fat macros |
 | ✅ **Habits** | Predefined habits, daily check-off, streaks |
 
@@ -79,8 +79,8 @@ python -m bot
 |---|---|
 | `/study` | Guided study log |
 | `/study <subject> <min> [notes]` | Quick study log (see note) |
-| `/gym` | Guided workout log (multi-exercise) |
-| `/gym <exercise> <sets> <reps> [kg]` | Quick single exercise |
+| `/gym` | Tap-through workout log: muscle group → exercise → set by set |
+| `/gym <exercise> <sets> <reps> [kg]` | One-line shortcut, when every set is identical |
 | `/diet` | Guided meal log |
 | `/diet <meal> <food> [calories] [p=<g> c=<g> f=<g>]` | Quick meal log |
 
@@ -106,11 +106,45 @@ The numbers come from one of two places, and the app never estimates them:
 A definition saved before this rule that is still missing a macro is reported as
 "not logged" with the reason, rather than being logged with a hole in it.
 
+### Logging a workout
+
+Tap **🏋️ Workout** and pick a muscle group — Chest, Back, Legs, Shoulders, Arms,
+Core, Cardio/HIIT — then the exercise. Exercises you logged recently appear above
+the groups, because most sessions repeat previous work.
+
+Then log **one set at a time**:
+
+```
+🏋️ Chest press
+
+Set 1 — send reps and weight, e.g. 10 50
+> 12 40
+  1. 12 × 40kg
+[🔁 Same again]  [✏️ Different]
+[✅ Done with this exercise]
+```
+
+`🔁 Same again` repeats the last set with one tap, so a straight 3×10 costs three
+taps and no typing. `✏️ Different` asks for the next set's numbers — because real
+sets vary, and the ledger records each one rather than flattening them.
+
+Send just a number (`15`) for a bodyweight set.
+
+An exercise that isn't listed is added with **➕ Add your own**; it is saved under
+that muscle group for you (not the other user) and you go straight into logging
+it. The shared starter list is never modified.
+
+**How it is stored.** Each set is its own row. The exercise header keeps the
+`sets` count, plus the reps and weight *only when every set matched* — so a
+uniform exercise still summarises as "3×10 @ 50kg" and a varying one honestly
+records no single figure. Total volume is stored either way, so the volume chart
+is unaffected.
+
 ### Saved foods and recipes
 
 | Command | Description |
 |---|---|
-| `/food add <key> per=<qtyunit> [kcal=<n> p=<g> c=<g> f=<g>]` | Save or update a food (at least one nutrient is required) |
+| `/food add <key> per=<qtyunit> kcal=<n> p=<g> c=<g> f=<g>` | Save or update a food (**all four nutrients required**) |
 | `/food portion <key> <portion>=<qtyunit>` | Add or update a named portion |
 | `/food unportion <key> <portion>` | Remove a named portion |
 | `/food list` / `/food show <key>` / `/food remove <key>` | Browse or archive saved foods |
@@ -131,8 +165,9 @@ Quantities accept metric aliases such as `220gm` as well as food-specific
 portions such as `1 medium`. Log a saved definition explicitly so ordinary
 `/diet` commands remain unchanged:
 
-Saving an existing food key replaces its nutrition profile; nutrient labels
-left out of that update become unknown.
+Saving an existing food key replaces its whole nutrition profile, so every
+update restates all four values — an update can no longer blank out a macro by
+omitting it.
 
 Recipe ingredients keep the resolved base quantity, so changing a named
 portion later does not rewrite the recipe. Food nutrition edits affect future

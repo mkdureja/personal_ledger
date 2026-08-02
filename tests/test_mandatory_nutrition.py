@@ -214,11 +214,18 @@ class TestResetDietLogsScript:
             );
             CREATE TABLE habits (id INTEGER PRIMARY KEY, habit_name TEXT);
             CREATE TABLE foods (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE gym_logs (id INTEGER PRIMARY KEY, exercise TEXT);
+            CREATE TABLE gym_sets (id INTEGER PRIMARY KEY, gym_log_id INTEGER);
+            CREATE TABLE exercises (id INTEGER PRIMARY KEY, name TEXT);
             INSERT INTO diet_logs VALUES (1, 7), (2, 7);
             INSERT INTO diet_log_items VALUES (1, 1), (2, 2);
-            INSERT INTO mutation_receipts VALUES (10, 'diet', 1), (11, 'study', 5);
+            INSERT INTO mutation_receipts
+                VALUES (10, 'diet', 1), (11, 'study', 5), (12, 'gym', 1);
             INSERT INTO habits VALUES (1, 'Read');
             INSERT INTO foods VALUES (1, 'oats');
+            INSERT INTO gym_logs VALUES (1, 'Bench press');
+            INSERT INTO gym_sets VALUES (1, 1), (2, 1);
+            INSERT INTO exercises VALUES (1, 'Bench press');
             """
         )
         conn.commit()
@@ -262,14 +269,73 @@ class TestResetDietLogsScript:
             assert (
                 conn.execute("SELECT COUNT(*) FROM diet_log_items").fetchone()[0] == 0
             )
-            # The diet receipt goes; another category's must not.
+            # The diet receipt goes; every other category's stays.
             rows = conn.execute(
-                "SELECT entity_type FROM mutation_receipts"
+                "SELECT entity_type FROM mutation_receipts ORDER BY entity_type"
             ).fetchall()
-            assert [r[0] for r in rows] == ["study"]
+            assert [r[0] for r in rows] == ["gym", "study"]
             # Nothing outside the diet history is touched.
             assert conn.execute("SELECT COUNT(*) FROM habits").fetchone()[0] == 1
             assert conn.execute("SELECT COUNT(*) FROM foods").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+    def test_meals_are_cleared_without_touching_workouts(self, tmp_path):
+        """The default is meals only; a workout is separate history."""
+        from scripts import reset_diet_logs
+
+        path = tmp_path / "ledger.db"
+        self._seed(path)
+
+        assert reset_diet_logs.main(["--db", str(path), "--no-backup"]) == 0
+
+        conn = sqlite3.connect(str(path))
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM diet_logs").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM gym_logs").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM gym_sets").fetchone()[0] == 2
+        finally:
+            conn.close()
+
+    def test_gym_clears_workouts_and_their_sets_and_receipts(self, tmp_path):
+        from scripts import reset_diet_logs
+
+        path = tmp_path / "ledger.db"
+        self._seed(path)
+
+        assert reset_diet_logs.main(
+            ["--db", str(path), "--gym", "--no-backup"]
+        ) == 0
+
+        conn = sqlite3.connect(str(path))
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM gym_logs").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM gym_sets").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM diet_logs").fetchone()[0] == 0
+            remaining = [
+                r[0]
+                for r in conn.execute("SELECT entity_type FROM mutation_receipts")
+            ]
+            assert remaining == ["study"]
+            # The saved exercise list is a definition, not history.
+            assert conn.execute("SELECT COUNT(*) FROM exercises").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+    def test_gym_only_leaves_meals_alone(self, tmp_path):
+        from scripts import reset_diet_logs
+
+        path = tmp_path / "ledger.db"
+        self._seed(path)
+
+        assert reset_diet_logs.main(
+            ["--db", str(path), "--gym-only", "--no-backup"]
+        ) == 0
+
+        conn = sqlite3.connect(str(path))
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM gym_logs").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM diet_logs").fetchone()[0] == 2
         finally:
             conn.close()
 

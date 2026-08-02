@@ -258,10 +258,16 @@ def test_active_study_claims_all_text(text):
     assert _first_handler(app, _text_update(MANOJ, text)) is study_conv_handler
 
 
-@pytest.mark.parametrize("text", ["Meal", "hello", "describe", "random note"])
-def test_active_gym_more_claims_all_text(text):
+@pytest.mark.parametrize("text", ["Meal", "describe", "random note"])
+def test_active_gym_after_set_claims_all_text(text):
+    """A button-only state still absorbs stray text, never the Home router.
+
+    "hello" is deliberately absent: a greeting is navigation and now escapes the
+    flow to Home (see test_release_1), so the conversation still claims the
+    update but hands it to the Home fallback.
+    """
     app = build_application()
-    _activate(gym_conv_handler, gym_mod.MORE)
+    _activate(gym_conv_handler, gym_mod.AFTER_SET)
     assert _first_handler(app, _text_update(MANOJ, text)) is gym_conv_handler
 
 

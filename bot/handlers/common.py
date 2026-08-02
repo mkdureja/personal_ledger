@@ -118,6 +118,10 @@ _CONVERSATION_DATA_KEYS = {
     "gym": (
         "gym_exercises",
         "gym_current_exercise",
+        "gym_sets",
+        "gym_group",
+        # Retired by the tap flow; still cleared so an in-flight conversation
+        # started on the previous build leaves nothing behind after a restart.
         "gym_current_sets",
         "gym_current_reps",
         "gym_more_message_id",
@@ -409,6 +413,52 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 cancel_handler = CommandHandler("cancel", cancel_command)
 
 
+def describe_abandoned_work(
+    context: ContextTypes.DEFAULT_TYPE, flow: str | None
+) -> str | None:
+    """One line naming the half-finished entry a flow is about to lose.
+
+    Returns ``None`` when the flow holds nothing worth mentioning — being told
+    "dropped your unfinished workout" after answering a single prompt is noise,
+    and silence there reads as a clean exit rather than a loss.
+
+    Only work that has *not* already been persisted counts. The gym flow saves
+    each exercise the moment its last set lands, so a completed exercise is never
+    described as dropped.
+    """
+    if flow is None:
+        return None
+    data = context.user_data or {}
+
+    if flow == "gym":
+        exercise = data.get("gym_current_exercise")
+        if exercise:
+            return f"Dropped your unfinished <b>{escape_html(str(exercise))}</b> entry."
+        return None
+
+    if flow == "diet":
+        items = data.get("diet_items")
+        if isinstance(items, list) and items:
+            count = len(items)
+            return (
+                f"Dropped your unsaved meal draft ({count} "
+                f"item{'s' if count != 1 else ''})."
+            )
+        if data.get("diet_food_items"):
+            return "Dropped your unsaved meal."
+        return None
+
+    if flow == "study":
+        subject = data.get("study_subject")
+        if subject:
+            return f"Dropped your unfinished <b>{escape_html(str(subject))}</b> session."
+        return None
+
+    # habits/supplements setup write each entry as it is confirmed, so there is
+    # never uncommitted work worth naming.
+    return None
+
+
 async def active_conversation_hint(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -436,14 +486,29 @@ async def _safe_reply(update: Update, text: str) -> None:
 
 async def active_flow_control_interceptor(
     update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """A Home control word arrived during an active flow: nudge, do not consume.
+):
+    """A Home control word arrived during an active flow.
 
     Registered before a state's ordinary text handler so ``Repeat``/``Describe``/
     a greeting/``Home`` (and ``Meal`` outside Diet) can never become a subject,
-    exercise, habit name, or food description. Returns ``None`` so PTB keeps the
-    current conversation state and every draft key is untouched.
+    exercise, habit name, or food description.
+
+    A greeting or ``home`` is *navigation* and now escapes the flow entirely —
+    this interceptor runs before the conversation's fallbacks, so leaving it to
+    the fallback would never work. Returning ``END`` here is what makes "hi"
+    behave the same as ``/home`` from inside a flow.
+
+    Every other control word still only nudges and returns ``None``, keeping the
+    state and every draft key untouched: ``Repeat`` is a request to log
+    something, not a request to abandon what is half-typed.
     """
+    from .home import open_home  # Local: home imports this module.
+
+    text = getattr(getattr(update, "effective_message", None), "text", "") or ""
+    if normalize_control_text(text) in (set(GREETINGS) | set(HOME_WORDS)):
+        await open_home(update, context)
+        return ConversationHandler.END
+
     await _safe_reply(update, "⏳ Finish this flow or /cancel first.")
     return None
 

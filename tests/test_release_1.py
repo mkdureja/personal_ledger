@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 from telegram import (
     CallbackQuery,
     Chat,
@@ -36,6 +37,7 @@ from telegram.ext import ExtBot
 
 from bot import keyboards, main as main_module, suggestions
 from bot.config import today_local
+from bot.database import DatabaseManager
 from bot.handlers import diet, habits, home, start
 from bot.handlers.common import activate_conversation, active_conversation_flow
 from bot.handlers.diet import diet_conv_handler
@@ -113,8 +115,8 @@ def _first_kwargs(mock) -> dict:
     return mock.call_args_list[0].kwargs
 
 
-@pytest.fixture
-def real_dispatch_app():
+@pytest_asyncio.fixture
+async def real_dispatch_app():
     """A real handler table usable through ``Application.process_update``.
 
     ``initialize()`` would call Telegram's ``getMe`` endpoint. The routing tests
@@ -122,10 +124,18 @@ def real_dispatch_app():
     the Bot API methods that the selected handlers call. ConversationHandler,
     CallbackContext, handler ordering, filters, and state transitions all remain
     production objects.
+
+    A real database is attached because escaping a flow now *renders* Home rather
+    than refusing, so these routing tests reach the Today snapshot query.
     """
     for handler, _state in _FLOW_STATES.values():
         handler._conversations.clear()
     app = main_module.build_application()
+    manager = DatabaseManager(":memory:")
+    await manager.connect()
+    await manager.init_db()
+    await manager.ensure_user(UID, "t", "Test")
+    app.bot_data["db"] = manager
     # CommandHandler needs the cached getMe result to parse /command@bot. Seed
     # only that immutable identity instead of performing a network initialize.
     app.bot._bot_user = User(
@@ -140,6 +150,8 @@ def real_dispatch_app():
     finally:
         app._initialized = False
         app._user_data.clear()
+        app.bot_data.clear()
+        await manager.close()
         for handler, _state in _FLOW_STATES.values():
             handler._conversations.clear()
 
@@ -230,12 +242,18 @@ async def test_every_idle_entry_renders_the_same_home(db, entry):
 
 @pytest.mark.parametrize("flow", ["study", "gym", "diet", "habits"])
 @pytest.mark.parametrize("entry", ["start", "home", "menu", "greeting"])
-async def test_no_idle_entry_disturbs_a_live_draft(db, flow, entry):
-    """Every entry during every guided flow preserves the draft and hints."""
+async def test_every_idle_entry_escapes_a_live_flow(db, flow, entry):
+    """Home always opens, from inside any flow, by any entry point.
+
+    This asserted the opposite until live testing: Home refused while a flow was
+    active, so the one button people reach for when they feel stuck was the one
+    that would not respond, and the way out (``/cancel``) was the thing they had
+    to already know. Home now ends the flow instead of blocking on it.
+    """
+    await db.ensure_user(UID, "t", "Test")
     update = _update("hi")
     context = _context(db)
     activate_conversation(update, context, flow)
-    context.user_data["study_subject"] = "Poetry"
 
     if entry == "start":
         await start.start_command(update, context)
@@ -246,33 +264,85 @@ async def test_no_idle_entry_disturbs_a_live_draft(db, flow, entry):
     else:
         await home.home_text_router(update, context)
 
-    reply = update.effective_message.reply_text
-    reply.assert_awaited_once()
-    assert "Finish this flow" in reply.call_args.args[0]
-    assert active_conversation_flow(context) == flow
-    assert context.user_data["study_subject"] == "Poetry"
+    said = " ".join(
+        str(call.args[0])
+        for call in update.effective_message.reply_text.call_args_list
+        if call.args
+    )
+    assert "here's today" in said
+    assert "Finish this flow" not in said
+    assert active_conversation_flow(context) is None
+
+
+async def test_escaping_a_flow_names_what_it_dropped(db):
+    """Unsaved work is reported, not silently binned."""
+    await db.ensure_user(UID, "t", "Test")
+    update = _update("/home")
+    context = _context(db)
+    activate_conversation(update, context, "gym")
+    context.user_data["gym_current_exercise"] = "Bench press"
+
+    await home.home_command(update, context)
+
+    said = " ".join(
+        str(call.args[0])
+        for call in update.effective_message.reply_text.call_args_list
+        if call.args
+    )
+    assert "Bench press" in said
+    assert "Dropped" in said
+
+
+async def test_escaping_a_flow_with_nothing_pending_says_nothing_extra(db):
+    """Announcing a loss that did not happen is noise."""
+    await db.ensure_user(UID, "t", "Test")
+    update = _update("/home")
+    context = _context(db)
+    activate_conversation(update, context, "gym")
+
+    await home.home_command(update, context)
+
+    said = " ".join(
+        str(call.args[0])
+        for call in update.effective_message.reply_text.call_args_list
+        if call.args
+    )
+    assert "Dropped" not in said
+    assert "here's today" in said
 
 
 @pytest.mark.parametrize("flow", ["study", "gym", "diet", "habits"])
 @pytest.mark.parametrize(
     "text", ["/start", "/home", "/menu", "hi"], ids=["start", "home", "menu", "greeting"]
 )
-async def test_real_dispatcher_preserves_every_active_flow_entry(
+async def test_real_dispatcher_escapes_every_active_flow(
     real_dispatch_app, monkeypatch, flow, text
 ):
-    """Drive the actual application and ConversationHandler state matrix."""
+    """Drive the actual application and ConversationHandler state matrix.
+
+    The unit test above proves ``open_home`` ends the flow; this proves the
+    dispatcher actually routes there. It is the part that could silently not
+    work: PTB gives a live conversation first refusal on an update, so Home has
+    to be registered in each conversation's ``fallbacks`` — a handler outside
+    could never return ``END`` into it, and the state would linger and swallow
+    the next ordinary message.
+    """
     app = real_dispatch_app
-    owner, state = _seed_real_flow(app, flow)
+    owner, _state = _seed_real_flow(app, flow)
     send_message = AsyncMock()
     monkeypatch.setattr(ExtBot, "send_message", send_message)
 
     await app.process_update(_real_text_update(app, text))
 
-    assert send_message.await_count == 1
-    assert "Finish" in send_message.call_args.kwargs["text"]
-    assert owner._conversations[(UID, UID)] == state
-    assert app._user_data[UID]["release_1_draft_probe"] == "keep me"
-    assert app._user_data[UID]["_ledger_active_conversation"] == (flow, UID)
+    assert send_message.await_count >= 1
+    said = " ".join(
+        str(call.kwargs.get("text", "")) for call in send_message.call_args_list
+    )
+    assert "here's today" in said
+    assert "Finish" not in said
+    # The conversation is really over, not merely hidden behind Home.
+    assert owner._conversations.get((UID, UID)) is None
+    assert "_ledger_active_conversation" not in app._user_data[UID]
 
 
 async def test_real_dispatcher_handles_unknown_idle_text_once(
@@ -971,12 +1041,18 @@ async def test_a_guided_diet_prompt_teaches_cancel(monkeypatch):
     "flow,data",
     [("study", "menu_study"), ("gym", "menu_gym"), ("diet", "menu_diet")],
 )
-async def test_a_section_tap_during_its_own_flow_is_not_called_expired(db, flow, data):
-    """The button is current; the flow is busy. Say so, and keep it usable.
+async def test_a_section_tap_during_its_own_flow_escapes_to_home(db, flow, data):
+    """The button is current, so tapping it must do something.
 
     An active conversation offers only its state handlers, so a Home section tap
-    falls through to ``menu_callback`` while that section's flow is live.
+    falls through to ``menu_callback`` while that section's flow is live. It used
+    to answer "finish this flow or /cancel first", which made a live button look
+    broken. It now ends the flow and re-renders Home, so the buttons work again.
+
+    The section itself is *not* re-entered: only a ConversationHandler entry point
+    can do that, and this handler is not one.
     """
+    await db.ensure_user(UID, "t", "Test")
     query = SimpleNamespace(
         data=data,
         answer=AsyncMock(),
@@ -985,43 +1061,52 @@ async def test_a_section_tap_during_its_own_flow_is_not_called_expired(db, flow,
     )
     update = SimpleNamespace(
         callback_query=query,
-        effective_user=SimpleNamespace(id=UID),
+        effective_user=SimpleNamespace(id=UID, username="t", first_name="Test"),
+        effective_message=query.message,
         effective_chat=SimpleNamespace(id=UID, type=ChatType.PRIVATE),
     )
     context = _context(db)
     activate_conversation(update, context, flow)
-    context.user_data["study_subject"] = "Poetry"
 
     await start.menu_callback(update, context)
 
-    assert "Finish this flow" in query.answer.call_args.args[0]
-    # The keyboard is not retired, and the draft is untouched.
-    query.edit_message_reply_markup.assert_not_awaited()
-    assert context.user_data["study_subject"] == "Poetry"
-    assert active_conversation_flow(context) == flow
+    query.answer.assert_awaited()
+    said = " ".join(
+        str(call.args[0])
+        for call in query.message.reply_text.call_args_list
+        if call.args
+    )
+    assert "here's today" in said
+    assert "Finish this flow" not in said
+    assert active_conversation_flow(context) is None
 
 
 @pytest.mark.parametrize(
     "flow,data",
     [("study", "menu_study"), ("gym", "menu_gym"), ("diet", "menu_diet")],
 )
-async def test_real_dispatcher_keeps_same_section_taps_in_the_active_flow(
+async def test_real_dispatcher_routes_same_section_taps_out_of_the_flow(
     real_dispatch_app, monkeypatch, flow, data
 ):
+    """The dispatcher really reaches ``menu_callback`` for these taps."""
     app = real_dispatch_app
-    owner, state = _seed_real_flow(app, flow)
+    owner, _state = _seed_real_flow(app, flow)
     answer_callback = AsyncMock()
     edit_markup = AsyncMock()
+    send_message = AsyncMock()
     monkeypatch.setattr(ExtBot, "answer_callback_query", answer_callback)
     monkeypatch.setattr(ExtBot, "edit_message_reply_markup", edit_markup)
+    monkeypatch.setattr(ExtBot, "send_message", send_message)
 
     await app.process_update(_real_callback_update(app, data))
 
     assert answer_callback.await_count == 1
-    assert "Finish this flow" in answer_callback.call_args.kwargs["text"]
+    said = " ".join(
+        str(call.kwargs.get("text", "")) for call in send_message.call_args_list
+    )
+    assert "here's today" in said
     edit_markup.assert_not_awaited()
-    assert owner._conversations[(UID, UID)] == state
-    assert app._user_data[UID]["release_1_draft_probe"] == "keep me"
+    assert app._user_data[UID].get("_ledger_active_conversation") is None
 
 
 def test_menu_recent_is_a_served_action_not_an_expired_button():

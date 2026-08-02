@@ -25,6 +25,7 @@ from telegram.ext import (
 )
 
 from ..callback_data import parse_base36
+from .home import home_fallback_handlers
 from .common import (
     AUTH_FILTER,
     DIET_NONMEAL_CONTROL_FILTER,
@@ -3757,6 +3758,11 @@ diet_conv_handler = ConversationHandler(
         cancel_handler,
         CallbackQueryHandler(cancel_diet_callback, pattern=r"^dcancel_\d+$"),
         CommandHandler("diet", active_conversation_hint, filters=AUTH_FILTER),
+        # Home is always reachable: it ends this flow and reports anything
+        # unsaved. Must be a fallback — a handler outside the conversation
+        # cannot return END into it, so the state would linger and swallow
+        # the next ordinary message.
+        *home_fallback_handlers(),
     ],
     conversation_timeout=CONVERSATION_TIMEOUT,
     # per_message=False is correct: the code manually validates callback

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # The version this checkout migrates a database to. Bump it (and register the new
 # migration in ``bot.migrations._MIGRATIONS``) for every schema change.
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 
 # Version 0 is the pre-versioning legacy shape. It is *not* a certifiable schema
 # version: those databases never stamped a version and their table/column shape
@@ -67,6 +67,8 @@ TABLE_INTRODUCED: dict[str, int] = {
     "catalog_portions": 8,
     "supplements": 9,
     "supplement_logs": 9,
+    "exercises": 11,
+    "gym_sets": 11,
 }
 
 # The columns each table must carry, grouped by the version that introduced
@@ -91,6 +93,10 @@ VERIFIED_COLUMNS: dict[str, tuple[tuple[int, tuple[str, ...]], ...]] = {
     ),
     "gym_logs": (
         (1, ("user_id", "exercise", "sets", "reps", "weight_kg", "logged_at")),
+        # v11 rebuilds the table to make ``reps`` nullable (a varying-set
+        # exercise has no single rep count) and stores the volume on the header
+        # so a chart never has to read the per-set children.
+        (11, ("total_volume_kg", "total_reps")),
     ),
     "diet_logs": (
         (
@@ -134,6 +140,12 @@ VERIFIED_COLUMNS: dict[str, tuple[tuple[int, tuple[str, ...]], ...]] = {
         ),
     ),
     "supplement_logs": ((9, ("id", "user_id", "supplement_id", "log_date")),),
+    "exercises": (
+        (11, ("id", "user_id", "group_key", "name", "name_key", "is_active")),
+    ),
+    "gym_sets": (
+        (11, ("id", "user_id", "gym_log_id", "set_number", "reps", "weight_kg")),
+    ),
 }
 
 

@@ -145,14 +145,36 @@ async def test_router_disabled_arbitrary_text_gets_one_recovery_reply():
     assert context.bot_data["db"] is None  # no snapshot read was attempted
 
 
-async def test_router_active_flow_gets_hint_and_no_mutation():
+async def test_router_greeting_escapes_an_active_flow():
+    """A greeting is navigation, so it opens Home and ends the flow."""
     update = _update("hi")
+    context = _context(_snapshot_db())
+    activate_conversation(update, context, "study")
+
+    await home.home_text_router(update, context)
+
+    said = " ".join(
+        str(call.args[0])
+        for call in update.effective_message.reply_text.call_args_list
+        if call.args
+    )
+    assert "here's today" in said
+    assert "Finish this flow" not in said
+    assert active_conversation_flow(context) is None
+
+
+async def test_router_action_word_still_nudges_during_a_flow():
+    """``Repeat`` asks to log something; it is not a request to abandon a draft."""
+    update = _update("🔁 Repeat last meal")
     context = _context()
     activate_conversation(update, context, "study")
+
     await home.home_text_router(update, context)
+
     reply = update.effective_message.reply_text
     reply.assert_awaited_once()
     assert "Finish this flow" in reply.call_args.args[0]
+    assert active_conversation_flow(context) == "study"
 
 
 # ---------------------------------------------------------------------------

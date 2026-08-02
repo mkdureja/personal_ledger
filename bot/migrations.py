@@ -1000,6 +1000,126 @@ async def _migration_0010_ai_parsing_consent(conn: aiosqlite.Connection) -> None
         )
 
 
+async def _migration_0011_gym_sets_and_exercises(conn: aiosqlite.Connection) -> None:
+    """Per-set gym logging, and a tappable exercise list.
+
+    Two problems, one migration, because they only make sense together.
+
+    **A set is not the same as every other set.** ``gym_logs`` stored one
+    ``sets``/``reps``/``weight_kg`` triple, which can only describe a workout
+    where every set was identical. Real sets vary — the last one is lighter, or
+    you push an extra rep — and the old shape silently flattened that. ``gym_sets``
+    holds one row per set; the header keeps ``sets`` as the count and carries
+    ``reps``/``weight_kg`` **only when every set matched**, so the existing
+    shortcut, ``/recent``, and the volume chart keep working unchanged and a
+    varying exercise is honestly ``NULL`` rather than misleadingly uniform.
+    ``total_volume_kg`` is stored on the header so a chart never has to fetch
+    children to draw a bar.
+
+    Making ``reps`` nullable needs a table rebuild — SQLite cannot relax NOT NULL
+    in place. The rebuild copies every existing row and backfills its volume, so
+    no history is lost.
+
+    **Typing an exercise name is not tappable.** ``exercises`` is one table for
+    both the shared starter list (``user_id IS NULL``, seeded at startup) and
+    anything a user adds for themselves. One table rather than the food module's
+    two, because unlike foods the two kinds have identical columns — there is no
+    provider or revision to track for "Bench press".
+    """
+    # --- exercises: shared starter list + private additions -----------------
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS exercises (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER,
+            group_key   TEXT NOT NULL,
+            name        TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 50),
+            name_key    TEXT NOT NULL CHECK(length(name_key) BETWEEN 1 AND 50),
+            is_active   INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    # Two partial indexes rather than one: a user may add an exercise whose name
+    # matches a shared one (their own variant), so uniqueness is per owner, and
+    # NULL never equals NULL in a SQL unique index.
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_exercises_shared_name "
+        "ON exercises(name_key) WHERE user_id IS NULL AND is_active = 1"
+    )
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_exercises_private_name "
+        "ON exercises(user_id, name_key) WHERE user_id IS NOT NULL AND is_active = 1"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exercises_group "
+        "ON exercises(group_key, is_active)"
+    )
+
+    # --- gym_logs rebuild: nullable reps + stored volume --------------------
+    cursor = await conn.execute("PRAGMA table_info(gym_logs)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    if "total_volume_kg" not in columns:
+        await conn.execute(
+            """
+            CREATE TABLE gym_logs_new (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL,
+                exercise        TEXT NOT NULL,
+                sets            INTEGER NOT NULL CHECK(sets > 0),
+                reps            INTEGER,
+                weight_kg       REAL,
+                total_volume_kg REAL,
+                total_reps      INTEGER,
+                logged_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+            """
+        )
+        # Every pre-v11 row was uniform by construction, so its volume is exact.
+        await conn.execute(
+            """
+            INSERT INTO gym_logs_new
+                (id, user_id, exercise, sets, reps, weight_kg, total_volume_kg,
+                 total_reps, logged_at)
+            SELECT id, user_id, exercise, sets, reps, weight_kg,
+                   CASE WHEN weight_kg IS NULL THEN NULL
+                        ELSE sets * reps * weight_kg END,
+                   sets * reps,
+                   logged_at
+            FROM gym_logs
+            """
+        )
+        await conn.execute("DROP TABLE gym_logs")
+        await conn.execute("ALTER TABLE gym_logs_new RENAME TO gym_logs")
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gym_user_date "
+            "ON gym_logs(user_id, logged_at)"
+        )
+
+    # --- gym_sets: one row per set ------------------------------------------
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gym_sets (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            gym_log_id INTEGER NOT NULL,
+            set_number INTEGER NOT NULL CHECK(set_number > 0),
+            reps       INTEGER NOT NULL CHECK(reps > 0),
+            weight_kg  REAL CHECK(weight_kg IS NULL OR weight_kg >= 0),
+            UNIQUE(gym_log_id, set_number),
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (gym_log_id) REFERENCES gym_logs(id) ON DELETE CASCADE
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_gym_sets_parent "
+        "ON gym_sets(gym_log_id, set_number)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1011,6 +1131,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     8: _migration_0008_shared_catalog,
     9: _migration_0009_supplements,
     10: _migration_0010_ai_parsing_consent,
+    11: _migration_0011_gym_sets_and_exercises,
 }
 
 

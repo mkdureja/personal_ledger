@@ -269,9 +269,11 @@ async def test_undo_is_blocked_when_flow_is_active_in_another_chat() -> None:
     [
         (study.receive_subject, "S" * (study.MAX_SUBJECT_LENGTH + 1), study.SUBJECT),
         (
-            gym.receive_exercise,
+            # The gym flow no longer types an exercise name to pick one, but a
+            # user's *own* exercise is still typed, and the same cap applies.
+            gym.receive_new_exercise_name,
             "E" * (gym.MAX_EXERCISE_NAME_LENGTH + 1),
-            gym.EXERCISE,
+            gym.NEW_NAME,
         ),
         (
             diet.receive_food_items,
@@ -294,32 +296,6 @@ async def test_guided_text_fields_enforce_message_safe_limits(
     assert "too long" in message.reply_text.await_args.args[0]
 
 
-@pytest.mark.asyncio
-async def test_guided_workout_auto_finishes_at_exercise_limit() -> None:
-    db = SimpleNamespace(log_gym=AsyncMock())
-    existing = [f"Exercise {index}" for index in range(gym.MAX_GYM_EXERCISES - 1)]
-    state = {
-        "gym_exercises": existing,
-        "gym_current_exercise": "Rows",
-        "gym_current_sets": 3,
-        "gym_current_reps": 8,
-    }
-    context = _context(db, state)
-    message = _message()
-    update = SimpleNamespace(
-        message=message, effective_message=message,
-        effective_user=_allowed_user(),
-        effective_chat=SimpleNamespace(id=10),
-    )
-    activate_conversation(update, context, "gym")
-
-    result = await gym._save_current_exercise(update, context, 40.0)
-
-    assert result == ConversationHandler.END
-    db.log_gym.assert_awaited_once()
-    assert context.user_data == {}
-    confirmation = message.reply_text.await_args.args[0]
-    assert f"({gym.MAX_GYM_EXERCISES} exercises)" in confirmation
 
 
 @pytest.mark.asyncio
@@ -337,25 +313,6 @@ async def test_study_state_survives_database_failure() -> None:
     message.reply_text.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_gym_state_survives_database_failure() -> None:
-    db = SimpleNamespace(log_gym=AsyncMock(side_effect=RuntimeError("db down")))
-    state = {
-        "gym_current_exercise": "Rows",
-        "gym_current_sets": 3,
-        "gym_current_reps": 8,
-        "gym_exercises": [],
-        "study_subject": "Math",
-    }
-    context = _context(db, state)
-    message = _message()
-    update = SimpleNamespace(message=message, effective_message=message, effective_user=_allowed_user())
-
-    with pytest.raises(RuntimeError, match="db down"):
-        await gym._save_current_exercise(update, context, 40.0)
-
-    assert context.user_data == state
-    message.reply_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -398,30 +355,6 @@ async def test_study_confirmation_failure_still_ends_persisted_flow() -> None:
     assert context.user_data == {}
 
 
-@pytest.mark.asyncio
-async def test_gym_progress_failure_still_ends_persisted_flow() -> None:
-    db = SimpleNamespace(log_gym=AsyncMock())
-    state = {
-        "gym_exercises": [],
-        "gym_current_exercise": "Rows",
-        "gym_current_sets": 3,
-        "gym_current_reps": 8,
-    }
-    context = _context(db, state)
-    message = _message()
-    message.reply_text.side_effect = NetworkError("offline")
-    update = SimpleNamespace(
-        message=message, effective_message=message,
-        effective_user=_allowed_user(),
-        effective_chat=SimpleNamespace(id=10),
-    )
-    activate_conversation(update, context, "gym")
-
-    result = await gym._save_current_exercise(update, context, 40.0)
-
-    assert result == ConversationHandler.END
-    db.log_gym.assert_awaited_once()
-    assert context.user_data == {}
 
 
 @pytest.mark.asyncio
@@ -480,32 +413,6 @@ async def test_diet_shortcut_rejects_invalid_numeric_calorie_tokens(
     message.reply_text.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_stale_gym_callback_does_not_advance_conversation() -> None:
-    query_message = SimpleNamespace(message_id=9, reply_text=AsyncMock())
-    query = SimpleNamespace(
-        data=f"gym_{_allowed_user().id}_yes",
-        message=query_message,
-        answer=AsyncMock(),
-        edit_message_reply_markup=AsyncMock(),
-    )
-    update = SimpleNamespace(
-        effective_user=_allowed_user(),
-        callback_query=query,
-        effective_chat=SimpleNamespace(id=10, type=ChatType.PRIVATE),
-    )
-    state = {"gym_more_message_id": 10, "gym_exercises": ["existing"]}
-    context = _context(SimpleNamespace(), state)
-
-    result = await gym.more_callback(update, context)
-
-    assert result == gym.MORE
-    assert context.user_data == state
-    query.answer.assert_awaited_once_with(
-        "This workout prompt has expired.", show_alert=True
-    )
-    query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
-    query_message.reply_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -164,10 +164,20 @@ def gym_chart(
         if d not in date_range:
             continue
         s, r, w = log["sets"], log["reps"], log["weight_kg"]
-        if w is not None:
+        # A varying-set exercise has no single reps/weight, so the header stores
+        # its pre-computed total instead. Prefer that when present; fall back to
+        # sets×reps×weight for uniform rows and anything logged before v11.
+        volume = log.get("total_volume_kg")
+        if volume:
+            weighted[d] += float(volume)
+        elif w is not None and r is not None:
             weighted[d] += s * r * w
-        else:
+        elif r is not None:
             bodyweight[d] += s * r
+        else:
+            # Varying bodyweight sets: no stored volume (nothing was lifted), so
+            # count the reps the children recorded.
+            bodyweight[d] += float(log.get("total_reps") or 0)
 
     fig, ax = plt.subplots(figsize=(10, 5))
     _apply_theme(ax, fig)

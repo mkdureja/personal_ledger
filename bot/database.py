@@ -100,6 +100,10 @@ MAX_ACTIVE_FOODS = 500
 MAX_PORTIONS_PER_FOOD = 50
 MAX_ACTIVE_RECIPES = 200
 MAX_INGREDIENTS_PER_RECIPE = 100
+#: One exercise's sets. Generous for drop sets and pyramids, bounded so a stuck
+#: "same again" tap cannot write an unbounded number of child rows.
+MAX_GYM_SETS_PER_EXERCISE = 30
+MAX_EXERCISE_NAME = 50
 MAX_CATALOG_AMOUNT = float(NUTRITION_MAX_CATALOG_AMOUNT)
 MAX_NUTRIENT_VALUE = float(NUTRITION_MAX_NUTRIENT_VALUE)
 MAX_SUPPLEMENT_NAME_LENGTH = 50
@@ -636,6 +640,199 @@ class DatabaseManager:
             if source is not None:
                 await self._record_receipt(source, user_id, "gym_log", "gym", row_id)
             return row_id
+
+    async def log_gym_sets(
+        self,
+        user_id: int,
+        exercise: str,
+        sets: Sequence[Mapping[str, Any]],
+        *,
+        source: MutationSource | None = None,
+    ) -> int:
+        """Log one exercise as a header plus one child row per set.
+
+        Each set carries its own reps and weight, because real sets vary — the
+        last one is lighter, or you push an extra rep — and the old single
+        ``sets``/``reps``/``weight_kg`` triple could only describe a workout where
+        every set was identical.
+
+        The header stays readable on its own: ``sets`` is the count, and
+        ``reps``/``weight_kg`` are filled **only when every set matched**, so
+        ``/recent`` and the daily summary can still say "3×10 @ 50kg" for the
+        common case and honestly say nothing for a varying one. ``total_volume_kg``
+        is always computed, so the volume chart never needs the children.
+
+        Idempotent when ``source`` is supplied.
+        """
+        if not sets:
+            raise ValueError("An exercise must have at least one set.")
+        if len(sets) > MAX_GYM_SETS_PER_EXERCISE:
+            raise ValueError(
+                f"An exercise can have at most {MAX_GYM_SETS_PER_EXERCISE} sets."
+            )
+
+        reps_values = [int(entry["reps"]) for entry in sets]
+        weight_values = [entry.get("weight_kg") for entry in sets]
+        uniform = len(set(reps_values)) == 1 and len(set(weight_values)) == 1
+        header_reps = reps_values[0] if uniform else None
+        header_weight = weight_values[0] if uniform else None
+        volume = sum(
+            reps * float(weight)
+            for reps, weight in zip(reps_values, weight_values, strict=True)
+            if weight is not None
+        )
+
+        async with self._write_operation():
+            replayed = await self._replayed_entity_id(source, user_id, "gym_log")
+            if replayed is not None:
+                return replayed
+            cursor = await self.conn.execute(
+                "INSERT INTO gym_logs "
+                "(user_id, exercise, sets, reps, weight_kg, total_volume_kg, "
+                "total_reps, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    exercise,
+                    len(sets),
+                    header_reps,
+                    header_weight,
+                    volume or None,
+                    sum(reps_values),
+                    _utc_timestamp_now(),
+                ),
+            )
+            gym_log_id: int = cursor.lastrowid  # type: ignore[assignment]
+            await self.conn.executemany(
+                "INSERT INTO gym_sets "
+                "(user_id, gym_log_id, set_number, reps, weight_kg) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (user_id, gym_log_id, index, reps, weight)
+                    for index, (reps, weight) in enumerate(
+                        zip(reps_values, weight_values, strict=True), start=1
+                    )
+                ],
+            )
+            if source is not None:
+                await self._record_receipt(
+                    source, user_id, "gym_log", "gym", gym_log_id
+                )
+            return gym_log_id
+
+    async def get_gym_sets(self, user_id: int, gym_log_id: int) -> list[Any]:
+        """Owner-scoped per-set detail for one logged exercise, in order."""
+        return await self._query_all(
+            "SELECT * FROM gym_sets WHERE user_id = ? AND gym_log_id = ? "
+            "ORDER BY set_number",
+            (user_id, gym_log_id),
+        )
+
+    # -------------------------------------------------------------------
+    # Exercises — shared starter list (user_id IS NULL) + private additions
+    # -------------------------------------------------------------------
+    async def seed_exercises(self, rows: Sequence[tuple[str, str]]) -> int:
+        """Insert any missing shared exercises. Returns how many were added.
+
+        Idempotent by ``name_key`` among shared rows, so a restart never
+        duplicates one and a user's own exercise of the same name is untouched —
+        the two live in the same table but are keyed by different unique indexes.
+        """
+        added = 0
+        async with self._write_operation():
+            for group_key, name in rows:
+                name_key = _catalog_key(name, "Exercise", MAX_EXERCISE_NAME)
+                cursor = await self.conn.execute(
+                    "SELECT id FROM exercises "
+                    "WHERE user_id IS NULL AND name_key = ? AND is_active = 1",
+                    (name_key,),
+                )
+                if await cursor.fetchone() is not None:
+                    continue
+                await self.conn.execute(
+                    "INSERT INTO exercises (user_id, group_key, name, name_key) "
+                    "VALUES (NULL, ?, ?, ?)",
+                    (group_key, name, name_key),
+                )
+                added += 1
+        return added
+
+    async def list_exercises(self, user_id: int, group_key: str) -> list[Any]:
+        """Shared and this user's exercises in one group, theirs first.
+
+        A user's own entry of the same name shadows the shared one in the list,
+        so adding "Bench press" with their own spelling does not show twice.
+        """
+        return await self._query_all(
+            """
+            SELECT * FROM exercises
+            WHERE group_key = ? AND is_active = 1
+              AND (user_id IS NULL OR user_id = ?)
+              AND (
+                user_id IS NOT NULL
+                OR name_key NOT IN (
+                    SELECT name_key FROM exercises
+                    WHERE user_id = ? AND is_active = 1
+                )
+              )
+            ORDER BY (user_id IS NULL), name
+            """,
+            (group_key, user_id, user_id),
+        )
+
+    async def get_exercise(self, user_id: int, exercise_id: int) -> Any | None:
+        """One exercise the user is allowed to see (shared, or their own)."""
+        return await self._query_one(
+            "SELECT * FROM exercises WHERE id = ? AND is_active = 1 "
+            "AND (user_id IS NULL OR user_id = ?)",
+            (exercise_id, user_id),
+        )
+
+    async def add_user_exercise(
+        self, user_id: int, group_key: str, name: str
+    ) -> dict[str, Any]:
+        """Add one exercise for this user. Returns ``{status, exercise}``.
+
+        ``status`` is ``added`` or ``exists``; an existing name is returned
+        rather than duplicated, so tapping through the add flow twice is safe.
+        """
+        name_key = _catalog_key(name, "Exercise", MAX_EXERCISE_NAME)
+        display = _normalize_catalog_text(name, "Exercise", MAX_EXERCISE_NAME)
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "SELECT * FROM exercises WHERE is_active = 1 AND name_key = ? "
+                "AND (user_id = ? OR user_id IS NULL)",
+                (name_key, user_id),
+            )
+            existing = await cursor.fetchone()
+            if existing is not None:
+                return {"status": "exists", "exercise": dict(existing)}
+            cursor = await self.conn.execute(
+                "INSERT INTO exercises (user_id, group_key, name, name_key) "
+                "VALUES (?, ?, ?, ?)",
+                (user_id, group_key, display, name_key),
+            )
+            cursor = await self.conn.execute(
+                "SELECT * FROM exercises WHERE id = ?", (cursor.lastrowid,)
+            )
+            return {"status": "added", "exercise": dict(await cursor.fetchone())}
+
+    async def get_recent_exercises(self, user_id: int, limit: int = 6) -> list[Any]:
+        """The exercises this user logged most recently, newest first.
+
+        Repeat work is the norm in a gym, so the fastest route to today's
+        exercise is usually the one from last time — this feeds a shortcut row
+        above the muscle groups.
+        """
+        return await self._query_all(
+            """
+            SELECT exercise, MAX(logged_at) AS last_logged
+            FROM gym_logs WHERE user_id = ?
+            GROUP BY exercise
+            ORDER BY last_logged DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
 
     async def get_gym_logs(
         self, user_id: int, start_date: date, end_date: date

@@ -22,6 +22,7 @@ from telegram.ext import (
     filters,
 )
 
+from .home import home_fallback_handlers
 from .common import (
     ACTIVE_CONTROL_FILTER,
     AUTH_FILTER,
@@ -343,6 +344,11 @@ study_conv_handler = ConversationHandler(
     fallbacks=[
         cancel_handler,
         CommandHandler("study", active_conversation_hint, filters=AUTH_FILTER),
+        # Home is always reachable: it ends this flow and reports anything
+        # unsaved. Must be a fallback — a handler outside the conversation
+        # cannot return END into it, so the state would linger and swallow
+        # the next ordinary message.
+        *home_fallback_handlers(),
     ],
     conversation_timeout=CONVERSATION_TIMEOUT,
 )

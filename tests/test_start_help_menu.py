@@ -75,22 +75,31 @@ async def test_start_command_returning_user_skips_the_welcome(db, user_id):
     assert "here's today" in text
 
 
-async def test_start_command_preserves_a_live_draft(db, user_id):
-    """/start mid-flow returns the finish-or-cancel hint and writes nothing."""
-    from bot.handlers.common import activate_conversation
+async def test_start_command_escapes_a_live_flow(db, user_id):
+    """/start mid-flow opens Home and ends the flow, naming what it dropped.
+
+    This asserted the opposite until live testing showed the cost: every way
+    back to Home refused while a flow was active, so the user's only escape was
+    a command they had to already know.
+    """
+    from bot.handlers.common import activate_conversation, active_conversation_flow
 
     update = create_update("/start", user_id=user_id, first_name="Test")
     update.effective_chat = SimpleNamespace(id=user_id, type=ChatType.PRIVATE)
     context = SimpleNamespace(bot_data={"db": db}, user_data={})
     activate_conversation(update, context, "diet")
-    context.user_data["diet_food_items"] = ["oats"]
+    context.user_data["diet_food_items"] = "oats"
 
     await start_command(update, context)
 
-    assert "Finish this flow" in update.message.reply_text.call_args.args[0]
-    assert context.user_data["diet_food_items"] == ["oats"]
-    cursor = await db.conn.execute("SELECT COUNT(*) FROM users WHERE user_id = ?", (user_id,))
-    assert (await cursor.fetchone())[0] == 0  # no onboarding write happened
+    said = " ".join(
+        str(call.args[0])
+        for call in update.message.reply_text.call_args_list
+        if call.args
+    )
+    assert "here's today" in said
+    assert "Dropped your unsaved meal" in said
+    assert active_conversation_flow(context) is None
 
 
 async def test_help_command(user_id):

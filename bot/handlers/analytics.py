@@ -414,6 +414,18 @@ async def _send_study_chart(
     await message.reply_photo(buf, caption="📖 Study — Last 7 Days")
 
 
+def _row_value(row, column: str):
+    """Read an optional column from a Row that may predate it.
+
+    Tests build gym rows from plain dicts and older fixtures omit the v11
+    totals, so a missing key means "not recorded" rather than an error.
+    """
+    try:
+        return row[column]
+    except (KeyError, IndexError):
+        return None
+
+
 async def _send_gym_chart(message: Message, db, user_id: int, start, end) -> None:
     """Generate and send a gym chart without blocking the event loop."""
     raw_logs = await db.get_gym_logs(user_id, start, end)
@@ -422,6 +434,10 @@ async def _send_gym_chart(message: Message, db, user_id: int, start, end) -> Non
             "sets": row["sets"],
             "reps": row["reps"],
             "weight_kg": row["weight_kg"],
+            # v11: a varying-set exercise carries no single reps/weight, so the
+            # header's pre-computed totals are what the chart adds up.
+            "total_volume_kg": _row_value(row, "total_volume_kg"),
+            "total_reps": _row_value(row, "total_reps"),
             "local_date": local_date_from_utc(datetime.fromisoformat(row["logged_at"])),
         }
         for row in raw_logs

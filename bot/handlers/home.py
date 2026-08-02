@@ -14,7 +14,12 @@ from __future__ import annotations
 import logging
 
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import (
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+)
 
 from .. import config
 from ..config import (
@@ -31,11 +36,15 @@ from ..keyboards import (
 )
 from ..meal_models import RepeatStatus
 from .common import (
+    AUTH_FILTER,
+    GREETING_HOME_FILTER,
     GREETINGS,
     HOME_ACTIONS,
     HOME_WORDS,
     active_conversation_flow,
+    describe_abandoned_work,
     escape_html,
+    finish_conversation,
     mutation_source,
     normalize_control_text,
     reply_html,
@@ -194,20 +203,55 @@ async def open_home(
     *,
     prelude: str | None = None,
 ) -> None:
-    """Open Home, or preserve a live guided flow and return its hint.
+    """Open Home, ending any guided flow that was in progress.
 
-    Every idle entry point routes through here, so none of them can silently
-    replace or end a draft the user is in the middle of.
+    Home is the way out, so it always works. It used to refuse while a flow was
+    live — which meant the one button people reach for when they feel stuck was
+    the one that would not respond, and the way out (``/cancel``) was the thing
+    they had to already know.
+
+    Ending the flow is the honest half of that: leaving it alive behind Home
+    would let the next ordinary message be swallowed by a prompt no longer on
+    screen. Anything unsaved is named rather than dropped in silence.
     """
-    if active_conversation_flow(context) is not None:
-        await update.effective_message.reply_text(_ACTIVE_FLOW_HINT)
+    flow = active_conversation_flow(context)
+    if flow is None:
+        await show_home(update, context, prelude=prelude)
         return
+
+    note = describe_abandoned_work(context, flow)
+    finish_conversation(update, context)
+    if note:
+        prelude = f"✖️ {note}" if not prelude else f"✖️ {note}\n\n{prelude}"
     await show_home(update, context, prelude=prelude)
 
 
-async def home_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """``/home`` — Today and the action buttons."""
+async def home_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """``/home`` — Today and the action buttons, from anywhere.
+
+    Returns ``ConversationHandler.END`` so the same coroutine can serve both as
+    an idle command and as a fallback inside every guided conversation; PTB
+    ignores the return value outside a conversation.
+    """
     await open_home(update, context)
+    return ConversationHandler.END
+
+
+#: ``/home`` and its aliases, for use in a ConversationHandler's ``fallbacks``.
+#:
+#: Registered by every guided flow so Home is reachable from inside one. A
+#: fallback is the only place this can live: a handler outside the conversation
+#: cannot return ``END`` into it, so the flow would keep its state and quietly
+#: eat the next message.
+def home_fallback_handlers() -> list:
+    """Fresh handler instances for one conversation's ``fallbacks`` list."""
+    return [
+        CommandHandler("home", home_command, filters=AUTH_FILTER),
+        CommandHandler("menu", home_command, filters=AUTH_FILTER),
+        CommandHandler("start", home_command, filters=AUTH_FILTER),
+        # "hi"/"home" typed mid-flow means the same thing as the command.
+        MessageHandler(AUTH_FILTER & GREETING_HOME_FILTER, home_command),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -276,19 +320,20 @@ async def home_text_router(
     if not text:
         return
 
-    # 1. Defense in depth: a state handler should already have consumed control
-    # text during an active flow. If one leaks here, nudge and never mutate.
-    if active_conversation_flow(context) is not None:
-        await message.reply_text(_ACTIVE_FLOW_HINT)
-        return
-
     normalized = normalize_control_text(text)
 
-    # 2. Home is the app's home page — a greeting or "home" always opens it (some
-    # text + the main menu), for every authorized user, regardless of the Phase 1
-    # flag. The flag only governs the B quick-action bar inside show_home.
+    # 1. A greeting or "home" is navigation, and navigation always works — even
+    # if a state handler leaked it here while a flow was live. ``open_home`` ends
+    # the flow and reports anything unsaved.
     if normalized in GREETINGS or normalized in HOME_WORDS:
-        await show_home(update, context)
+        await open_home(update, context)
+        return
+
+    # 2. Defense in depth for everything else: a state handler should already
+    # have consumed control text during an active flow. If one leaks here, nudge
+    # and never mutate — an action word is not a request to abandon the flow.
+    if active_conversation_flow(context) is not None:
+        await message.reply_text(_ACTIVE_FLOW_HINT)
         return
 
     # 3. Meal/Repeat/Describe are the Phase 1 (B) fast actions, matched through

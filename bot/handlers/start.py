@@ -15,6 +15,8 @@ from telegram.ext import ContextTypes
 from .common import (
     active_conversation_flow,
     authorized_callback,
+    describe_abandoned_work,
+    finish_conversation,
     reply_html,
 )
 from ..config import phase1_enabled_for
@@ -46,13 +48,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """
     from .home import open_home
 
-    if active_conversation_flow(context) is not None:
-        # Never replace or end a live draft: preserve it and return the hint.
-        await update.effective_message.reply_text(
-            "⏳ Finish this flow or /cancel first."
-        )
-        return
-
+    # No active-flow refusal here: ``open_home`` ends whatever is live and
+    # reports anything unsaved. /start is one of the ways out.
     db = context.bot_data["db"]
     user = update.effective_user
     first_ever = await db.get_user_settings(user.id) is None
@@ -156,18 +153,24 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     flow directly and never reach here. This handler serves the remaining
     non-conversation categories.
     """
+    from .home import open_home
+
     query = update.callback_query
     data = query.data or ""
-    flow_active = active_conversation_flow(context) is not None
+    flow = active_conversation_flow(context)
 
     # A Study/Gym/Diet tap normally never reaches here — their ConversationHandler
     # entry points claim it first. But an *active* conversation offers only its
-    # state handlers, so while one is live the same tap falls through to this
-    # handler. Treating it as an expired button would be a lie: the button is
-    # current, the flow is simply busy. Answer with the finish-or-cancel hint and
-    # leave the keyboard usable.
-    if flow_active and data in _CONVERSATION_MENU_ACTIONS:
-        await query.answer("Finish this flow or /cancel first.", show_alert=True)
+    # state handlers, so while one is live the same tap falls through here.
+    #
+    # It used to answer "finish this flow or /cancel first", which made a current
+    # button look broken. The flow is ended instead, and Home is re-rendered so
+    # the buttons are live again — the section cannot be entered from this
+    # handler (only a ConversationHandler entry point can do that), so the tap is
+    # a way *out* rather than a way across.
+    if flow is not None and data in _CONVERSATION_MENU_ACTIONS:
+        await query.answer()
+        await open_home(update, context)
         return
 
     valid_actions = {
@@ -184,13 +187,15 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             pass
         return
 
-    # Honor an active guided flow: a menu tap must not switch sections mid-flow
-    # (plan §8.6).
-    if flow_active:
-        await query.answer("Finish this flow or /cancel first.", show_alert=True)
-        return
-
     await query.answer()
+
+    # These sections open no conversation of their own, so an active flow can be
+    # ended and the tap honoured in one step.
+    if flow is not None:
+        note = describe_abandoned_work(context, flow)
+        finish_conversation(update, context)
+        if note:
+            await reply_html(query.message, f"✖️ {note}")
 
     if data == "menu_habits":
         # Import here to avoid circular imports

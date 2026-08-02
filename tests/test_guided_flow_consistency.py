@@ -85,64 +85,15 @@ async def test_study_duration_prompt_failure_ends_and_clears(db):
 # ---------------------------------------------------------------------------
 # Gym — each state-advancing prompt fails independently
 # ---------------------------------------------------------------------------
-async def test_gym_exercise_prompt_failure_ends_and_clears(db):
-    update = _failing_update("Squats")
-    context = _ctx(db, gym_exercises=[])
-    activate_conversation(update, context, "gym")
-
-    result = await gym.receive_exercise(update, context)
-
-    assert result == ConversationHandler.END
-    assert "gym_current_exercise" not in context.user_data
-    assert active_conversation_flow(context) is None
 
 
-async def test_gym_sets_prompt_failure_ends_and_clears(db):
-    update = _failing_update("3")
-    context = _ctx(db, gym_exercises=[], gym_current_exercise="Squats")
-    activate_conversation(update, context, "gym")
-
-    result = await gym.receive_sets(update, context)
-
-    assert result == ConversationHandler.END
-    assert "gym_current_sets" not in context.user_data
-    assert active_conversation_flow(context) is None
 
 
-async def test_gym_reps_prompt_failure_ends_and_clears(db):
-    update = _failing_update("10")
-    context = _ctx(
-        db, gym_exercises=[], gym_current_exercise="Squats", gym_current_sets=3
-    )
-    activate_conversation(update, context, "gym")
-
-    result = await gym.receive_reps(update, context)
-
-    assert result == ConversationHandler.END
-    assert "gym_current_reps" not in context.user_data
-    assert active_conversation_flow(context) is None
 
 
 # ---------------------------------------------------------------------------
 # A durable save survives a failed continuation prompt (no blind retry)
 # ---------------------------------------------------------------------------
-async def test_saved_gym_exercise_survives_failed_continuation(db):
-    update = _failing_update("/skip")  # bodyweight; triggers save then "log another?"
-    context = _ctx(
-        db,
-        gym_exercises=[],
-        gym_current_exercise="Pushups",
-        gym_current_sets=3,
-        gym_current_reps=12,
-    )
-    activate_conversation(update, context, "gym")
-
-    result = await gym.receive_weight(update, context)
-
-    assert result == ConversationHandler.END  # flow ended, not stuck
-    # The exercise was persisted before the failed prompt — visible via /recent.
-    recent = await db.get_recent_entries(USER)
-    assert any(e["kind"] == "gym" and e["summary"] == "Pushups" for e in recent)
 
 
 # ---------------------------------------------------------------------------

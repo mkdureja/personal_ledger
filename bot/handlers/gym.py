@@ -1,11 +1,31 @@
-"""
-/gym handler — ConversationHandler with per-exercise persistence.
+"""``/gym`` — a tappable workout log with per-set detail.
 
-Shortcut: /gym pushups 3 15
-Guided:   /gym → EXERCISE → SETS → REPS → WEIGHT → MORE → (loop or done)
+Rewritten after live use. The old flow asked four questions in a row, all by
+typing, with no buttons anywhere: exercise name, sets, reps, weight. That made
+the commonest action in the app the slowest, spelled the same exercise
+differently every week, and could only record a workout where every set was
+identical — which is not how anyone trains.
 
-Each exercise is saved immediately after WEIGHT, before asking "Log another?"
-Abandoning mid-loop loses only the current incomplete exercise.
+The shape now is:
+
+    Workout → muscle group → exercise → one set at a time
+
+Nothing is typed except the numbers, and even those collapse to a single tap
+(**🔁 Same again**) when a set repeats. An exercise missing from the shared list
+is added once, in the flow, and belongs to that user from then on.
+
+Two things are deliberate:
+
+* **A set is recorded individually.** ``12 × 40``, ``10 × 45``, ``8 × 50`` is
+  three rows, not "3 sets" of something averaged. The header keeps the uniform
+  numbers only when they *are* uniform, so a summary can still say "3×10 @ 50kg"
+  without ever inventing one.
+* **The exercise is written when you finish it**, not per set. A set is cheap to
+  re-enter; a half-saved exercise that analytics counts is not. Abandoning
+  mid-exercise loses only that exercise, exactly as before.
+
+``/gym <exercise> <sets> <reps> [weight]`` still works unchanged for anyone who
+prefers one line to four taps.
 """
 
 from __future__ import annotations
@@ -13,7 +33,7 @@ from __future__ import annotations
 import logging
 import re
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import (
     CallbackQueryHandler,
@@ -25,6 +45,7 @@ from telegram.ext import (
     filters,
 )
 
+from .home import home_fallback_handlers
 from .common import (
     ACTIVE_CONTROL_FILTER,
     AUTH_FILTER,
@@ -35,7 +56,6 @@ from .common import (
     buttons_or_cancel_catchall,
     cancel_handler,
     conversation_available,
-    deliver_or_end,
     escape_html,
     finish_conversation,
     mutation_source,
@@ -45,34 +65,163 @@ from .common import (
     timeout_handler,
     voice_mid_flow_interceptor,
 )
-from ..keyboards import yes_no_keyboard
 from ..config import CONVERSATION_TIMEOUT
+from ..exercise_seed import MUSCLE_GROUPS, group_label
 
 logger = logging.getLogger(__name__)
 
-# Conversation states
-EXERCISE, SETS, REPS, WEIGHT, MORE = range(5)
+# Conversation states. EXERCISE is the tap surface (groups + recents); SET_INPUT
+# takes "reps [weight]"; AFTER_SET and AFTER_EXERCISE are button-only.
+EXERCISE, PICK, SET_INPUT, AFTER_SET, AFTER_EXERCISE, NEW_NAME = range(6)
+
 MAX_GYM_SETS = 100
 MAX_GYM_REPS = 1_000
 MAX_WEIGHT_KG = 1_000.0
 MAX_EXERCISE_NAME_LENGTH = 50
 MAX_GYM_EXERCISES = 10
+#: Matches the database's per-exercise cap; kept here so the flow refuses before
+#: it builds a draft the write path would reject.
+MAX_SETS_PER_EXERCISE = 30
+
 _GYM_MORE_RE = re.compile(r"^gym_(\d+)_(yes|no)$")
+_TAP_RE = re.compile(r"^gx_([a-z]+)_(\d+)(?:_(.+))?$")
+
+_SET_HINT = (
+    "Send <b>reps</b> and <b>weight</b> — e.g. <code>10 50</code>.\n"
+    "Just reps (<code>15</code>) means bodyweight."
+)
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+def _tap(action: str, user_id: int, payload: str | None = None) -> str:
+    """Callback data carrying its owner, so a stale tap can be rejected."""
+    return f"gx_{action}_{user_id}" + (f"_{payload}" if payload else "")
+
+
+def _weight_text(weight: float | None) -> str:
+    return f"{weight:g}kg" if weight is not None else "bodyweight"
+
+
+def _set_line(index: int, reps: int, weight: float | None) -> str:
+    return f"  {index}. {reps} × {_weight_text(weight)}"
+
+
+def _draft_summary(exercise: str, sets: list[dict]) -> str:
+    lines = [f"🏋️ <b>{escape_html(exercise)}</b>"]
+    lines += [_set_line(i, s["reps"], s["weight_kg"]) for i, s in enumerate(sets, 1)]
+    volume = sum(
+        s["reps"] * float(s["weight_kg"]) for s in sets if s["weight_kg"] is not None
+    )
+    if volume:
+        lines.append(f"\n<i>Volume so far: {volume:g} kg</i>")
+    return "\n".join(lines)
+
+
+def _groups_keyboard(user_id: int, recents: list[str]) -> InlineKeyboardMarkup:
+    """Recent exercises first, then the muscle groups two per row.
+
+    Repeat work is the norm in a gym, so last session's exercise is usually the
+    fastest route to this one's.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    for name in recents[:4]:
+        rows.append(
+            [InlineKeyboardButton(f"🔁 {name}", callback_data=_tap("r", user_id, name))]
+        )
+    keys = list(MUSCLE_GROUPS)
+    rows += [
+        [
+            InlineKeyboardButton(group_label(key), callback_data=_tap("g", user_id, key))
+            for key in keys[index : index + 2]
+        ]
+        for index in range(0, len(keys), 2)
+    ]
+    rows.append([InlineKeyboardButton("✖️ Cancel", callback_data=_tap("x", user_id))])
+    return InlineKeyboardMarkup(rows)
+
+
+def _exercises_keyboard(user_id: int, group_key: str, rows) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                str(row["name"]), callback_data=_tap("e", user_id, str(row["id"]))
+            )
+        ]
+        for row in rows
+    ]
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                "➕ Add your own", callback_data=_tap("add", user_id, group_key)
+            )
+        ]
+    )
+    buttons.append(
+        [InlineKeyboardButton("⬅️ Back", callback_data=_tap("back", user_id))]
+    )
+    return InlineKeyboardMarkup(buttons)
+
+
+def _after_set_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🔁 Same again", callback_data=_tap("same", user_id)
+                ),
+                InlineKeyboardButton(
+                    "✏️ Different", callback_data=_tap("diff", user_id)
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ Done with this exercise", callback_data=_tap("done", user_id)
+                )
+            ],
+        ]
+    )
+
+
+def _after_exercise_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "➕ Another exercise", callback_data=_tap("more", user_id)
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🏁 Finish workout", callback_data=_tap("fin", user_id)
+                )
+            ],
+        ]
+    )
 
 
 def _exercise_summary(
-    exercise: str,
-    sets: int,
-    reps: int,
-    weight: float | None,
+    exercise: str, sets: int, reps: int, weight: float | None
 ) -> str:
-    """Build one safe HTML exercise-summary line."""
+    """One safe HTML line for a uniform exercise (the shortcut path)."""
     weight_text = f" @ {weight:g}kg" if weight is not None else " (bodyweight)"
     return f"🏋️ {escape_html(exercise)} — {sets}×{reps}{weight_text}"
 
 
+def _logged_summary(exercise: str, sets: list[dict]) -> str:
+    """One line naming what was saved, uniform or not."""
+    reps = {s["reps"] for s in sets}
+    weights = {s["weight_kg"] for s in sets}
+    if len(reps) == 1 and len(weights) == 1:
+        return _exercise_summary(
+            exercise, len(sets), next(iter(reps)), next(iter(weights))
+        )
+    detail = ", ".join(f"{s['reps']}×{_weight_text(s['weight_kg'])}" for s in sets)
+    return f"🏋️ {escape_html(exercise)} — {escape_html(detail)}"
+
+
 def _workout_confirmation(exercises: list[str]) -> str:
-    """Build a bounded, safe HTML workout confirmation."""
     count = len(exercises)
     summary = "\n".join(exercises)
     return (
@@ -81,6 +230,9 @@ def _workout_confirmation(exercises: list[str]) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 async def _finish_workout(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -88,8 +240,13 @@ async def _finish_workout(
     exercises: list[str],
 ) -> int:
     """End a persisted workout even if Telegram cannot deliver its summary."""
+    text = (
+        _workout_confirmation(exercises)
+        if exercises
+        else "✖️ Nothing logged this time."
+    )
     try:
-        await reply_html(message, _workout_confirmation(exercises))
+        await reply_html(message, text)
     except TelegramError:
         logger.warning("Could not deliver workout confirmation", exc_info=True)
     finish_conversation(update, context, "gym")
@@ -104,6 +261,27 @@ async def _remove_callback_markup(query: object) -> None:
         logger.debug("Could not remove stale gym keyboard", exc_info=True)
 
 
+def _validate_tap(query, user_id: int) -> tuple[str, str | None] | None:
+    """Parse a ``gx_*`` callback and confirm it belongs to the tapping user."""
+    match = _TAP_RE.fullmatch(query.data or "")
+    if match is None or int(match.group(2)) != user_id:
+        return None
+    return match.group(1), match.group(3)
+
+
+async def _show_groups(message, context, user_id: int, *, prefix: str = "") -> int:
+    """Render the muscle-group picker, with this user's recent exercises on top."""
+    db = context.bot_data["db"]
+    try:
+        recents = [str(row["exercise"]) for row in await db.get_recent_exercises(user_id)]
+    except Exception:  # A shortcut row is a convenience, never a blocker.
+        logger.warning("Could not read recent exercises", exc_info=False)
+        recents = []
+    body = f"{prefix}🏋️ <b>Log Workout</b>\n\nPick a muscle group, or repeat a recent one:"
+    await reply_html(message, body, reply_markup=_groups_keyboard(user_id, recents))
+    return EXERCISE
+
+
 @authorized_callback
 async def stale_gym_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -111,13 +289,26 @@ async def stale_gym_callback(
     """Acknowledge a workout button that has no active gym conversation."""
     query = update.callback_query
     match = _GYM_MORE_RE.fullmatch(query.data or "")
-    if match is None:
+    if match is not None:
+        if int(match.group(1)) != update.effective_user.id:
+            await query.answer(
+                "This workout prompt belongs to another user.", show_alert=True
+            )
+            return
+        await query.answer("This workout prompt has expired.", show_alert=True)
+        await _remove_callback_markup(query)
+        return
+
+    tap = _TAP_RE.fullmatch(query.data or "")
+    if tap is None:
         await query.answer("This workout prompt is no longer valid.", show_alert=True)
         return
-    if int(match.group(1)) != update.effective_user.id:
-        await query.answer("This workout prompt belongs to another user.", show_alert=True)
+    if int(tap.group(2)) != update.effective_user.id:
+        await query.answer(
+            "This workout prompt belongs to another user.", show_alert=True
+        )
         return
-    await query.answer("This workout prompt has expired.", show_alert=True)
+    await query.answer("This workout has already finished — tap 🏋️ Workout to start a new one.", show_alert=True)
     await _remove_callback_markup(query)
 
 
@@ -125,7 +316,7 @@ async def stale_gym_callback(
 # Entry point
 # ---------------------------------------------------------------------------
 async def gym_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /gym with optional shortcut args."""
+    """Handle /gym, with the one-line shortcut still available."""
     db = context.bot_data["db"]
     user = update.effective_user
     await db.ensure_user(user.id, user.username, user.first_name)
@@ -135,7 +326,7 @@ async def gym_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     args = context.args or []
 
-    # Shortcut: /gym <exercise> <sets> <reps> [weight]
+    # Shortcut: /gym <exercise> <sets> <reps> [weight] — every set identical.
     if len(args) >= 3:
         exercise = args[0]
         if len(exercise) > MAX_EXERCISE_NAME_LENGTH:
@@ -154,57 +345,61 @@ async def gym_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
         weight = None
         if len(args) >= 4:
-            weight, err = parse_float(
-                args[3], "Weight", max_value=MAX_WEIGHT_KG
-            )
+            weight, err = parse_float(args[3], "Weight", max_value=MAX_WEIGHT_KG)
             if err:
                 await update.message.reply_text(err)
                 return ConversationHandler.END
 
-        await db.log_gym(
-            user.id, exercise, sets, reps, weight, source=mutation_source(update)
-        )
-        # Row committed; a failed confirmation is recoverable via /recent.
-        try:
-            await reply_html(
-                update.message,
-                "✅ <b>Exercise logged!</b>\n"
-                f"{_exercise_summary(exercise, sets, reps, weight)}",
+        if sets > MAX_SETS_PER_EXERCISE:
+            await update.message.reply_text(
+                f"❌ That's more than {MAX_SETS_PER_EXERCISE} sets in one exercise."
             )
-        except TelegramError:
-            logger.warning("Could not deliver gym confirmation", exc_info=True)
-        return ConversationHandler.END
+            return ConversationHandler.END
+        return await _log_shortcut(update, context, exercise, sets, reps, weight)
 
-    # Guided flow
     return await _begin_gym_flow(update, context)
 
 
-async def _begin_gym_flow(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+async def _log_shortcut(
+    update: Update, context, exercise: str, sets: int, reps: int, weight: float | None
 ) -> int:
-    """Start the guided gym flow from either /gym or the Gym menu tap.
-
-    Uses ``effective_message`` so it works for a callback entry (where
-    ``update.message`` is ``None``).
-    """
-    context.user_data["gym_exercises"] = []
-    activate_conversation(update, context, "gym")
+    """Write the one-line form, where every set is identical by definition."""
+    db = context.bot_data["db"]
+    await db.log_gym_sets(
+        update.effective_user.id,
+        exercise,
+        [{"reps": reps, "weight_kg": weight}] * sets,
+        source=mutation_source(update),
+    )
     try:
         await reply_html(
-            update.effective_message,
-            "🏋️ <b>Log Workout</b>\n\nWhat exercise did you do?",
+            update.message,
+            "✅ <b>Exercise logged!</b>\n"
+            f"{_exercise_summary(exercise, sets, reps, weight)}",
+        )
+    except TelegramError:
+        logger.warning("Could not deliver gym confirmation", exc_info=True)
+    return ConversationHandler.END
+
+
+async def _begin_gym_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start the guided gym flow from either /gym or the Workout tap."""
+    context.user_data["gym_exercises"] = []
+    context.user_data.pop("gym_sets", None)
+    context.user_data.pop("gym_current_exercise", None)
+    activate_conversation(update, context, "gym")
+    try:
+        return await _show_groups(
+            update.effective_message, context, update.effective_user.id
         )
     except BaseException:
         finish_conversation(update, context, "gym")
         raise
-    return EXERCISE
 
 
 @authorized_callback
-async def gym_menu_entry(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> int:
-    """Enter the guided gym flow from a main-menu 'Gym' tap."""
+async def gym_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Enter the guided gym flow from a Home 'Workout' tap."""
     query = update.callback_query
     await query.answer()
     db = context.bot_data["db"]
@@ -216,197 +411,275 @@ async def gym_menu_entry(
 
 
 # ---------------------------------------------------------------------------
-# Guided conversation states
+# Picking an exercise
 # ---------------------------------------------------------------------------
-async def receive_exercise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive exercise name."""
-    exercise = update.message.text.strip()
-    if not exercise:
-        await update.message.reply_text("❌ Exercise name can't be empty. What exercise?")
+@authorized_callback
+async def group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """A muscle group was tapped: list its exercises."""
+    query = update.callback_query
+    parsed = _validate_tap(query, update.effective_user.id)
+    if parsed is None:
+        await query.answer("That button is no longer valid.", show_alert=True)
         return EXERCISE
-    if len(exercise) > MAX_EXERCISE_NAME_LENGTH:
-        await update.message.reply_text(
-            f"❌ Exercise name too long (max {MAX_EXERCISE_NAME_LENGTH} characters)."
-        )
-        return EXERCISE
+    action, payload = parsed
+    await query.answer()
 
-    context.user_data["gym_current_exercise"] = exercise
-    if not await deliver_or_end(
-        update,
-        context,
-        "gym",
-        reply_html(
-            update.message,
-            f"🏋️ <b>{escape_html(exercise)}</b> — how many sets?",
-        ),
-    ):
-        return ConversationHandler.END
-    return SETS
-
-
-async def receive_sets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive number of sets."""
-    sets, err = parse_int(
-        update.message.text,
-        "Sets",
-        max_value=MAX_GYM_SETS,
-    )
-    if err:
-        await update.message.reply_text(err)
-        return SETS
-
-    context.user_data["gym_current_sets"] = sets
-    if not await deliver_or_end(
-        update,
-        context,
-        "gym",
-        update.message.reply_text("How many reps per set?"),
-    ):
-        return ConversationHandler.END
-    return REPS
-
-
-async def receive_reps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive number of reps."""
-    reps, err = parse_int(
-        update.message.text,
-        "Reps",
-        max_value=MAX_GYM_REPS,
-    )
-    if err:
-        await update.message.reply_text(err)
-        return REPS
-
-    context.user_data["gym_current_reps"] = reps
-    if not await deliver_or_end(
-        update,
-        context,
-        "gym",
-        update.message.reply_text("Weight in kg? (/skip for bodyweight)"),
-    ):
-        return ConversationHandler.END
-    return WEIGHT
-
-
-async def receive_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive weight (or skip for bodyweight). Saves exercise immediately."""
-    text = update.message.text.strip()
-
-    weight = None
-    if text.lower() != "/skip":
-        weight, err = parse_float(
-            text,
-            "Weight",
-            max_value=MAX_WEIGHT_KG,
-        )
-        if err:
-            await update.message.reply_text(err + "\nOr /skip for bodyweight.")
-            return WEIGHT
-
-    return await _save_current_exercise(update, context, weight)
-
-
-async def skip_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /skip for weight."""
-    return await _save_current_exercise(update, context, None)
-
-
-async def _save_current_exercise(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, weight: float | None
-) -> int:
-    """Save the current exercise to DB immediately, then ask for more."""
-    db = context.bot_data["db"]
-    user_id = update.effective_user.id
-
-    exercise = context.user_data["gym_current_exercise"]
-    sets = context.user_data["gym_current_sets"]
-    reps = context.user_data["gym_current_reps"]
-
-    await db.log_gym(user_id, exercise, sets, reps, weight, source=mutation_source(update))
-
-    # Track for final summary
-    context.user_data.setdefault("gym_exercises", []).append(
-        _exercise_summary(exercise, sets, reps, weight)
-    )
-    context.user_data.pop("gym_current_exercise", None)
-    context.user_data.pop("gym_current_sets", None)
-    context.user_data.pop("gym_current_reps", None)
-
-    count = len(context.user_data["gym_exercises"])
-    if count >= MAX_GYM_EXERCISES:
+    if action == "x":
+        await _remove_callback_markup(query)
         return await _finish_workout(
-            update,
-            context,
-            update.message,
-            context.user_data.pop("gym_exercises"),
+            update, context, query.message, context.user_data.pop("gym_exercises", [])
         )
+    if action == "back":
+        await _remove_callback_markup(query)
+        return await _show_groups(query.message, context, update.effective_user.id)
+    if action == "r":  # repeat a recent exercise by name
+        await _remove_callback_markup(query)
+        return await _start_exercise(query.message, context, str(payload))
 
-    try:
-        prompt = await update.message.reply_text(
-            f"✅ Saved! ({count} exercise{'s' if count > 1 else ''} logged)\n\n"
-            "Log another exercise?",
-            reply_markup=yes_no_keyboard("gym", user_id),
+    db = context.bot_data["db"]
+    rows = await db.list_exercises(update.effective_user.id, str(payload))
+    await _remove_callback_markup(query)
+    context.user_data["gym_group"] = str(payload)
+    if not rows:
+        await reply_html(
+            query.message,
+            f"{group_label(str(payload))} — nothing here yet.\nAdd your first one:",
+            reply_markup=_exercises_keyboard(
+                update.effective_user.id, str(payload), []
+            ),
         )
-    except TelegramError:
-        logger.warning("Could not deliver workout continuation prompt", exc_info=True)
-        finish_conversation(update, context, "gym")
-        return ConversationHandler.END
-    context.user_data["gym_more_message_id"] = prompt.message_id
-    return MORE
+        return PICK
+    await reply_html(
+        query.message,
+        f"{group_label(str(payload))} — pick an exercise:",
+        reply_markup=_exercises_keyboard(
+            update.effective_user.id, str(payload), rows
+        ),
+    )
+    return PICK
 
 
 @authorized_callback
-async def more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle Yes/No for logging another exercise."""
+async def exercise_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """An exercise was tapped (or "add your own"/"back")."""
     query = update.callback_query
-    match = _GYM_MORE_RE.fullmatch(query.data or "")
-    if match is None:
-        await query.answer("This workout prompt is no longer valid.", show_alert=True)
-        return MORE
-    if int(match.group(1)) != update.effective_user.id:
-        await query.answer("This workout prompt belongs to another user.", show_alert=True)
-        return MORE
+    parsed = _validate_tap(query, update.effective_user.id)
+    if parsed is None:
+        await query.answer("That button is no longer valid.", show_alert=True)
+        return PICK
+    action, payload = parsed
+    await query.answer()
 
-    expected_message_id = context.user_data.get("gym_more_message_id")
-    actual_message_id = getattr(query.message, "message_id", None)
-    if expected_message_id is None or actual_message_id != expected_message_id:
-        await query.answer("This workout prompt has expired.", show_alert=True)
+    if action == "back":
         await _remove_callback_markup(query)
-        return MORE
+        return await _show_groups(query.message, context, update.effective_user.id)
+
+    if action == "add":
+        await _remove_callback_markup(query)
+        context.user_data["gym_group"] = str(payload)
+        await reply_html(
+            query.message,
+            f"➕ What's it called? It'll be saved under {group_label(str(payload))} "
+            "for next time.",
+        )
+        return NEW_NAME
+
+    db = context.bot_data["db"]
+    row = await db.get_exercise(update.effective_user.id, int(payload))
+    await _remove_callback_markup(query)
+    if row is None:
+        await reply_html(query.message, "That exercise is no longer available.")
+        return await _show_groups(query.message, context, update.effective_user.id)
+    return await _start_exercise(query.message, context, str(row["name"]))
+
+
+async def receive_new_exercise_name(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Save a user's own exercise, then go straight into logging it."""
+    name = (update.message.text or "").strip()
+    if not name:
+        await update.message.reply_text("❌ Name can't be empty. What's it called?")
+        return NEW_NAME
+    if len(name) > MAX_EXERCISE_NAME_LENGTH:
+        await update.message.reply_text(
+            f"❌ Exercise name too long (max {MAX_EXERCISE_NAME_LENGTH} characters)."
+        )
+        return NEW_NAME
+
+    db = context.bot_data["db"]
+    group_key = context.user_data.get("gym_group", "chest")
+    try:
+        result = await db.add_user_exercise(
+            update.effective_user.id, group_key, name
+        )
+    except ValueError as exc:
+        await update.message.reply_text(f"❌ {exc}")
+        return NEW_NAME
+
+    saved = str(result["exercise"]["name"])
+    note = "Saved — it'll be in your list from now on.\n\n" if result[
+        "status"
+    ] == "added" else "You already had that one.\n\n"
+    return await _start_exercise(update.message, context, saved, prefix=note)
+
+
+async def _start_exercise(message, context, exercise: str, *, prefix: str = "") -> int:
+    """Open the set-by-set logger for one exercise."""
+    context.user_data["gym_current_exercise"] = exercise
+    context.user_data["gym_sets"] = []
+    await reply_html(
+        message,
+        f"{prefix}🏋️ <b>{escape_html(exercise)}</b>\n\nSet 1 — {_SET_HINT}",
+    )
+    return SET_INPUT
+
+
+# ---------------------------------------------------------------------------
+# Logging sets
+# ---------------------------------------------------------------------------
+def _parse_set(text: str) -> tuple[dict | None, str | None]:
+    """Parse "reps" or "reps weight" into a set, or return a message."""
+    parts = (text or "").replace("x", " ").replace("×", " ").split()
+    if not parts or len(parts) > 2:
+        return None, "❌ Send reps, or reps and weight — e.g. <code>10 50</code>."
+    reps, err = parse_int(parts[0], "Reps", max_value=MAX_GYM_REPS)
+    if err:
+        return None, err
+    weight = None
+    if len(parts) == 2:
+        weight, err = parse_float(parts[1], "Weight", max_value=MAX_WEIGHT_KG)
+        if err:
+            return None, err
+    return {"reps": reps, "weight_kg": weight}, None
+
+
+async def receive_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Take one set's reps (and optional weight)."""
+    entry, error = _parse_set(update.message.text)
+    if error is not None:
+        await reply_html(update.message, f"{error}\n{_SET_HINT}")
+        return SET_INPUT
+    return await _record_set(update, context, update.message, entry)
+
+
+async def _record_set(update: Update, context, message, entry: dict) -> int:
+    """Append one set to the draft and offer the next action."""
+    user_id = update.effective_user.id
+    sets: list[dict] = context.user_data.setdefault("gym_sets", [])
+    sets.append(entry)
+    if len(sets) >= MAX_SETS_PER_EXERCISE:
+        await reply_html(
+            message,
+            f"That's {MAX_SETS_PER_EXERCISE} sets — saving this exercise now.",
+        )
+        return await _save_current_exercise(update, context, message)
+
+    exercise = str(context.user_data.get("gym_current_exercise", "Exercise"))
+    await reply_html(
+        message,
+        f"{_draft_summary(exercise, sets)}\n\nNext set?",
+        reply_markup=_after_set_keyboard(user_id),
+    )
+    return AFTER_SET
+
+
+@authorized_callback
+async def after_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """🔁 Same again / ✏️ Different / ✅ Done."""
+    query = update.callback_query
+    parsed = _validate_tap(query, update.effective_user.id)
+    if parsed is None:
+        await query.answer("That button is no longer valid.", show_alert=True)
+        return AFTER_SET
+    action, _payload = parsed
+    sets: list[dict] = context.user_data.get("gym_sets") or []
+    if not sets:
+        await query.answer("This exercise is no longer open.", show_alert=True)
+        await _remove_callback_markup(query)
+        return await _show_groups(query.message, context, update.effective_user.id)
 
     await query.answer()
-    context.user_data.pop("gym_more_message_id", None)
     await _remove_callback_markup(query)
 
-    if match.group(2) == "yes":
-        try:
-            await query.message.reply_text("What exercise?")
-        except TelegramError:
-            logger.warning("Could not deliver next exercise prompt", exc_info=True)
-            finish_conversation(update, context, "gym")
-            return ConversationHandler.END
-        return EXERCISE
-    else:
-        # Done — show summary
-        exercises = context.user_data.pop("gym_exercises", [])
+    if action == "same":
+        return await _record_set(update, context, query.message, dict(sets[-1]))
+    if action == "diff":
+        await reply_html(query.message, f"Set {len(sets) + 1} — {_SET_HINT}")
+        return SET_INPUT
+    return await _save_current_exercise(update, context, query.message)
+
+
+async def _save_current_exercise(update: Update, context, message) -> int:
+    """Write the finished exercise, then ask what's next.
+
+    The exercise is written here rather than per set: a set is cheap to re-enter,
+    but a half-saved exercise that analytics already counts is not.
+    """
+    db = context.bot_data["db"]
+    user_id = update.effective_user.id
+    exercise = str(context.user_data.get("gym_current_exercise", "Exercise"))
+    sets: list[dict] = context.user_data.get("gym_sets") or []
+    if not sets:
+        await reply_html(message, "Nothing to save for that one.")
+        return await _show_groups(message, context, user_id)
+
+    await db.log_gym_sets(
+        user_id, exercise, sets, source=mutation_source(update)
+    )
+
+    logged: list[str] = context.user_data.setdefault("gym_exercises", [])
+    logged.append(_logged_summary(exercise, sets))
+    context.user_data.pop("gym_sets", None)
+    context.user_data.pop("gym_current_exercise", None)
+
+    if len(logged) >= MAX_GYM_EXERCISES:
         return await _finish_workout(
-            update, context, query.message, exercises
+            update, context, message, context.user_data.pop("gym_exercises")
         )
+
+    await reply_html(
+        message,
+        f"✅ Saved.\n{logged[-1]}\n\n"
+        f"<i>{len(logged)} exercise{'s' if len(logged) != 1 else ''} this workout.</i>",
+        reply_markup=_after_exercise_keyboard(user_id),
+    )
+    return AFTER_EXERCISE
+
+
+@authorized_callback
+async def after_exercise_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """➕ Another exercise / 🏁 Finish workout."""
+    query = update.callback_query
+    parsed = _validate_tap(query, update.effective_user.id)
+    if parsed is None:
+        await query.answer("That button is no longer valid.", show_alert=True)
+        return AFTER_EXERCISE
+    action, _payload = parsed
+    await query.answer()
+    await _remove_callback_markup(query)
+
+    if action == "more":
+        return await _show_groups(query.message, context, update.effective_user.id)
+    return await _finish_workout(
+        update, context, query.message, context.user_data.pop("gym_exercises", [])
+    )
 
 
 # ---------------------------------------------------------------------------
 # ConversationHandler
 # ---------------------------------------------------------------------------
 # Reject voice mid-flow (no download) and nudge on any Home control word before
-# it can be captured as an exercise name (plan §8.5/§8.6). MORE is callback-only,
-# so it also gets a text catchall so arbitrary text never reaches the Home router.
+# it can be captured as an exercise name or a set (plan §8.5/§8.6). Button-only
+# states also get a text catchall so stray text never reaches the Home router.
 _voice_guard = MessageHandler(filters.VOICE, voice_mid_flow_interceptor)
-_control_guard = MessageHandler(
-    ACTIVE_CONTROL_FILTER, active_flow_control_interceptor
-)
+_control_guard = MessageHandler(ACTIVE_CONTROL_FILTER, active_flow_control_interceptor)
 _text_catchall = MessageHandler(
     filters.TEXT & ~filters.COMMAND, buttons_or_cancel_catchall
 )
+_TAP_PATTERN = r"^gx_[a-z]+_\d+(?:_.+)?$"
 
 gym_conv_handler = ConversationHandler(
     entry_points=[
@@ -416,28 +689,35 @@ gym_conv_handler = ConversationHandler(
     states={
         EXERCISE: [
             _voice_guard,
+            CallbackQueryHandler(group_callback, pattern=_TAP_PATTERN),
             _control_guard,
-            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_exercise),
+            _text_catchall,
         ],
-        SETS: [
+        PICK: [
+            _voice_guard,
+            CallbackQueryHandler(exercise_callback, pattern=_TAP_PATTERN),
+            _control_guard,
+            _text_catchall,
+        ],
+        NEW_NAME: [
             _voice_guard,
             _control_guard,
-            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sets),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_new_exercise_name),
         ],
-        REPS: [
+        SET_INPUT: [
             _voice_guard,
             _control_guard,
-            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reps),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_set),
         ],
-        WEIGHT: [
-            CommandHandler("skip", skip_weight),
+        AFTER_SET: [
             _voice_guard,
+            CallbackQueryHandler(after_set_callback, pattern=_TAP_PATTERN),
             _control_guard,
-            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_weight),
+            _text_catchall,
         ],
-        MORE: [
+        AFTER_EXERCISE: [
             _voice_guard,
-            CallbackQueryHandler(more_callback, pattern=r"^gym_\d+_(yes|no)$"),
+            CallbackQueryHandler(after_exercise_callback, pattern=_TAP_PATTERN),
             _control_guard,
             _text_catchall,
         ],
@@ -446,9 +726,14 @@ gym_conv_handler = ConversationHandler(
     fallbacks=[
         cancel_handler,
         CommandHandler("gym", active_conversation_hint, filters=AUTH_FILTER),
+        # Home is always reachable: it ends this flow and reports anything
+        # unsaved. Must be a fallback — a handler outside the conversation
+        # cannot return END into it, so the state would linger and swallow
+        # the next ordinary message.
+        *home_fallback_handlers(),
     ],
     conversation_timeout=CONVERSATION_TIMEOUT,
-    # per_message=False is correct: the code manually validates callback
-    # ownership via ``gym_more_message_id`` in user_data.
+    # per_message=False is correct: every callback re-validates its owner id from
+    # the callback data rather than relying on PTB's per-message tracking.
     per_message=False,
 )

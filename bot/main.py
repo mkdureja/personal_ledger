@@ -270,6 +270,18 @@ async def post_init(application, *, register_commands: bool = False) -> None:
         # failed" and then continued into polling. Those must propagate.
         logger.warning("Catalog seeding failed; search may be empty", exc_info=True)
 
+    # Seed the shared exercise list (idempotent by name among shared rows).
+    try:
+        from .exercise_seed import seed_rows
+
+        added = await db.seed_exercises(seed_rows())
+        logger.info("Exercise list ready (%d new shared exercise(s))", added)
+    except Exception:
+        logger.warning(
+            "Exercise seeding failed; the muscle-group lists may be empty",
+            exc_info=True,
+        )
+
     await _preload_voice_model(application)
 
     # Schedule routine anchors when a routine file is present; otherwise fall
