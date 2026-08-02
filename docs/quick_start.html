@@ -1,0 +1,655 @@
+<title>Ledger — Quick Start</title>
+
+<style>
+  /* ---------------------------------------------------------------
+     Tokens. Components style through these only, never inside the
+     media query, so the viewer's theme toggle can win in both
+     directions.
+     --------------------------------------------------------------- */
+  :root {
+    --paper:      #f6f8f7;
+    --card:       #ffffff;
+    --ink:        #14181a;
+    --ink-soft:   #3d4a49;
+    --muted:      #5d6b6b;
+    --rule:       #dde4e1;
+    --accent:     #1f6f5c;
+    --accent-ink: #16513f;
+    --accent-wash:#e4f0eb;
+    --warn:       #a86b1f;
+    --warn-wash:  #f7edda;
+    --chip:       #eef2f0;
+
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+            "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono",
+            Menlo, Consolas, "Liberation Mono", monospace;
+
+    --measure: 34rem;
+    --radius: 10px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:      #0e1211;
+      --card:       #161b1a;
+      --ink:        #e9efec;
+      --ink-soft:   #c2cec9;
+      --muted:      #8fa09b;
+      --rule:       #263230;
+      --accent:     #4fbf9f;
+      --accent-ink: #7fd6bd;
+      --accent-wash:#16302a;
+      --warn:       #e0a94e;
+      --warn-wash:  #2e2413;
+      --chip:       #1e2624;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0e1211;
+    --card:       #161b1a;
+    --ink:        #e9efec;
+    --ink-soft:   #c2cec9;
+    --muted:      #8fa09b;
+    --rule:       #263230;
+    --accent:     #4fbf9f;
+    --accent-ink: #7fd6bd;
+    --accent-wash:#16302a;
+    --warn:       #e0a94e;
+    --warn-wash:  #2e2413;
+    --chip:       #1e2624;
+  }
+
+  :root[data-theme="light"] {
+    --paper:      #f6f8f7;
+    --card:       #ffffff;
+    --ink:        #14181a;
+    --ink-soft:   #3d4a49;
+    --muted:      #5d6b6b;
+    --rule:       #dde4e1;
+    --accent:     #1f6f5c;
+    --accent-ink: #16513f;
+    --accent-wash:#e4f0eb;
+    --warn:       #a86b1f;
+    --warn-wash:  #f7edda;
+    --chip:       #eef2f0;
+  }
+
+  /* ---------------------------------------------------------------
+     Page
+     --------------------------------------------------------------- */
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.55;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  .wrap {
+    max-width: var(--measure);
+    margin: 0 auto;
+    padding: 2rem 1.15rem 4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2.25rem;
+  }
+
+  /* Masthead ---------------------------------------------------- */
+  .masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .eyebrow {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(2rem, 8vw, 2.6rem);
+    line-height: 1.08;
+    letter-spacing: -0.028em;
+    font-weight: 800;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    margin: 0;
+    color: var(--muted);
+    font-size: 1.02rem;
+    text-wrap: pretty;
+  }
+
+  /* Jump bar ---------------------------------------------------- */
+  .jump {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    margin: 0 -1.15rem;
+    padding: 0.6rem 1.15rem;
+    background: color-mix(in srgb, var(--paper) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--rule);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .jump::-webkit-scrollbar { display: none; }
+
+  .jump ul {
+    display: flex;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    width: max-content;
+  }
+
+  .jump a {
+    display: block;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--rule);
+    border-radius: 100px;
+    background: var(--card);
+    color: var(--ink-soft);
+    font-size: 0.82rem;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .jump a:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Task cards -------------------------------------------------- */
+  .task {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    scroll-margin-top: 4rem;
+  }
+
+  .task > h2 {
+    margin: 0;
+    font-size: 1.32rem;
+    line-height: 1.2;
+    letter-spacing: -0.018em;
+    font-weight: 750;
+    text-wrap: balance;
+  }
+
+  .task > p { margin: 0; color: var(--ink-soft); }
+
+  /* The two-tier route pattern: fastest first, then the fallbacks.
+     The accent rail marks the fast route only — it means something. */
+  .route {
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--card);
+    padding: 0.9rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .route.fast {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-wash);
+    border-color: var(--accent-wash);
+  }
+
+  .route-label {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .route.fast .route-label { color: var(--accent-ink); }
+
+  .route p { margin: 0; }
+  .route p + p { margin-top: 0.15rem; }
+
+  /* Inline bits -------------------------------------------------- */
+  code, .cmd {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--chip);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 0.1em 0.38em;
+    white-space: nowrap;
+  }
+
+  .btn {
+    display: inline-block;
+    font-size: 0.85em;
+    font-weight: 600;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 0.16em 0.5em;
+    white-space: nowrap;
+  }
+
+  strong { font-weight: 700; }
+
+  /* Chat mock ---------------------------------------------------- */
+  .chat {
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--card);
+    padding: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-size: 0.92rem;
+  }
+
+  .bubble {
+    border-radius: 12px;
+    padding: 0.55rem 0.7rem;
+    max-width: 92%;
+  }
+
+  .bubble.you {
+    align-self: flex-end;
+    background: var(--accent);
+    color: #fff;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+  }
+  :root[data-theme="dark"] .bubble.you { color: #08110e; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .bubble.you { color: #08110e; }
+  }
+
+  .bubble.bot {
+    align-self: flex-start;
+    background: var(--chip);
+    border: 1px solid var(--rule);
+    color: var(--ink);
+  }
+
+  .keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.5rem;
+  }
+  .keys span {
+    border: 1px solid var(--rule);
+    background: var(--card);
+    border-radius: 7px;
+    padding: 0.2em 0.55em;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  /* Notes -------------------------------------------------------- */
+  .note {
+    border-left: 3px solid var(--warn);
+    background: var(--warn-wash);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 0.75rem 0.9rem;
+    font-size: 0.94rem;
+  }
+  .note p { margin: 0; }
+  .note-title {
+    display: block;
+    font-weight: 750;
+    color: var(--warn);
+    margin-bottom: 0.15rem;
+  }
+
+  /* Rules list --------------------------------------------------- */
+  .rules {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .rules li {
+    padding-left: 1.4rem;
+    position: relative;
+    color: var(--ink-soft);
+  }
+  .rules li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.62em;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  /* Cheat sheet -------------------------------------------------- */
+  .sheet-scroll { overflow-x: auto; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.9rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.7rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 800;
+    border-bottom-color: var(--ink-soft);
+  }
+  td:first-child { white-space: nowrap; }
+
+  /* Footer ------------------------------------------------------- */
+  .foot {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.1rem;
+    color: var(--muted);
+    font-size: 0.86rem;
+  }
+  .foot p { margin: 0 0 0.4rem; }
+
+  a { color: var(--accent); }
+  a:focus-visible, .jump a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <span class="eyebrow">Ledger</span>
+    <h1>How to use the bot</h1>
+    <p class="standfirst">
+      Everything you actually need, in about three minutes. Your ledger is
+      private — the other person can never see your entries.
+    </p>
+  </header>
+
+  <nav class="jump" aria-label="Jump to section">
+    <ul>
+      <li><a href="#start">Start here</a></li>
+      <li><a href="#meal">Log a meal</a></li>
+      <li><a href="#habits">Habits</a></li>
+      <li><a href="#supps">Supplements</a></li>
+      <li><a href="#fix">Fix a mistake</a></li>
+      <li><a href="#see">See progress</a></li>
+      <li><a href="#sheet">Cheat sheet</a></li>
+    </ul>
+  </nav>
+
+  <!-- ============================================================ -->
+  <section class="task" id="start">
+    <h2>Start here</h2>
+    <p>
+      Say <strong>hi</strong> to the bot. That opens Home — today's totals and
+      every button you need. <code>/start</code>, <code>/home</code> and
+      <code>/menu</code> all do the same thing.
+    </p>
+
+    <div class="chat">
+      <div class="bubble you">hi</div>
+      <div class="bubble bot">
+        👋 <strong>Here's today</strong><br>
+        🍽️ 2 meals, 640 cal · 📖 45 min · ✅ Habits 3/5
+        <div class="keys">
+          <span>🍽️ Log meal</span><span>✅ Habits</span>
+          <span>💊 Supplements</span><span>📖 Study</span>
+          <span>🏋️ Workout</span><span>🗒️ Recent</span>
+          <span>📊 Analytics</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <span class="note-title">Do this once, first</span>
+      <p>
+        The bot only knows food you've saved. Save one thing you eat often, then
+        logging it later takes one tap:<br>
+        <code>/food add oats per=100g kcal=380 p=13 c=67 f=7</code>
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="task" id="meal">
+    <h2>Log a meal</h2>
+
+    <div class="route fast">
+      <span class="route-label">Fastest — tap it</span>
+      <p>
+        Tap <span class="btn">🍽️ Log meal</span>, pick the meal type, then pick
+        the food. Rows marked <strong>⚡</strong> already know your usual amount
+        and save the moment you tap them.
+      </p>
+    </div>
+
+    <div class="route">
+      <span class="route-label">Type the whole thing</span>
+      <p><code>/describe 2 eggs, 100g oats</code></p>
+      <p>
+        You get a preview first. Nothing is saved until you tap a meal type.
+      </p>
+    </div>
+
+    <div class="route">
+      <span class="route-label">Same meal as last time</span>
+      <p>
+        Tap <span class="btn">🔁 Repeat last meal</span>. It copies your previous
+        meal exactly.
+      </p>
+    </div>
+
+    <div class="chat">
+      <div class="bubble you">/describe 2 eggs, 100g oats, quinoa</div>
+      <div class="bubble bot">
+        📝 <strong>Ready to log</strong><br>
+        • 2 eggs — 156 cal<br>
+        • 100 g oats — 380 cal<br>
+        <strong>Total:</strong> 536 cal<br><br>
+        ⚠️ <strong>Not logged</strong><br>
+        • quinoa — not in your foods
+        <div class="keys">
+          <span>🌅 Breakfast</span><span>🥗 Lunch</span>
+          <span>🍽️ Dinner</span><span>🍎 Snack</span>
+        </div>
+      </div>
+    </div>
+
+    <p>
+      Anything the bot doesn't recognise is listed as <strong>not logged</strong>
+      and left out — it never guesses a calorie number. Save that food with
+      <code>/food add</code>, then describe it again.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="task" id="habits">
+    <h2>Check off habits</h2>
+
+    <div class="route fast">
+      <span class="route-label">Fastest</span>
+      <p>
+        Tap <span class="btn">✅ Habits</span>, then <strong>tap the habit's
+        name</strong> to tick it. Tap again to untick.
+      </p>
+    </div>
+
+    <div class="route">
+      <span class="route-label">Set them up</span>
+      <p>
+        <code>/habits setup</code> — type a name to add one, tap ❌ to remove.
+        Send <code>/cancel</code> when you're done.
+      </p>
+    </div>
+
+    <p>
+      Forgot yesterday? Tap <span class="btn">← Yesterday</span> on the checklist
+      and tick it there. A streak counts back from today, so an unticked today
+      shows a streak of&nbsp;0.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="task" id="supps">
+    <h2>Track supplements</h2>
+
+    <div class="route fast">
+      <span class="route-label">Fastest</span>
+      <p>
+        Tap <span class="btn">💊 Supplements</span> and tap each one you've
+        taken. Works exactly like habits.
+      </p>
+    </div>
+
+    <div class="route">
+      <span class="route-label">Set them up</span>
+      <p><code>/supplements setup</code></p>
+      <p>
+        Type <code>Magnesium</code>, or add detail:
+        <code>Vitamin D3, 2 capsules, with breakfast</code>. Dose and timing are
+        optional.
+      </p>
+    </div>
+
+    <p>
+      Supplements only record <strong>whether you took them</strong>. They never
+      count toward calories or macros.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="task" id="fix">
+    <h2>Fix a mistake</h2>
+
+    <ul class="rules">
+      <li>
+        <code>/undo</code> — removes your most recent entry. It shows you what
+        it's about to delete and asks first.
+      </li>
+      <li>
+        <code>/cancel</code> — gets you out of anything half-finished. Use this
+        whenever you feel stuck.
+      </li>
+      <li>
+        <code>/recent</code> — check whether something actually saved.
+      </li>
+      <li>
+        Tapped a ⚡ row by accident? It saved immediately — use
+        <code>/undo</code>.
+      </li>
+    </ul>
+
+    <div class="note">
+      <span class="note-title">If the bot stops responding to buttons</span>
+      <p>
+        Guided steps time out after 15 minutes and old buttons stop working.
+        Say <strong>hi</strong> to get a fresh Home and start again.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="task" id="see">
+    <h2>See how you're doing</h2>
+
+    <ul class="rules">
+      <li><code>/summary</code> — today at a glance.</li>
+      <li><code>/summary week</code> — the last seven days.</li>
+      <li><code>/streak</code> — your current habit streaks.</li>
+      <li><code>/chart habits</code> — also <code>diet</code>, <code>study</code>, <code>gym</code>.</li>
+    </ul>
+
+    <p>
+      Where a food has no calorie information saved, totals say
+      <strong>partial</strong> rather than quietly counting it as zero.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="task" id="sheet">
+    <h2>Cheat sheet</h2>
+
+    <div class="sheet-scroll">
+      <table>
+        <thead>
+          <tr><th>Command</th><th>What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>hi</code></td><td>Open Home</td></tr>
+          <tr><td><code>/describe</code></td><td>Type a whole meal at once</td></tr>
+          <tr><td><code>/habits</code></td><td>Today's habit checklist</td></tr>
+          <tr><td><code>/supplements</code></td><td>Today's supplement checklist</td></tr>
+          <tr><td><code>/undo</code></td><td>Remove the last entry</td></tr>
+          <tr><td><code>/recent</code></td><td>Did it save?</td></tr>
+          <tr><td><code>/cancel</code></td><td>Get unstuck</td></tr>
+          <tr><td><code>/food add</code></td><td>Save a food you eat often</td></tr>
+          <tr><td><code>/recipe</code></td><td>Save a combination of foods</td></tr>
+          <tr><td><code>/summary</code></td><td>Today's totals</td></tr>
+          <tr><td><code>/settings</code></td><td>See all your settings</td></tr>
+          <tr><td><code>/reminders on</code></td><td>Daily nudges (off by default)</td></tr>
+          <tr><td><code>/suggestions on</code></td><td>Order foods by what you log most</td></tr>
+          <tr><td><code>/help</code></td><td>The full reference</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="task" id="extras">
+    <h2>Two optional extras</h2>
+
+    <p>
+      These are off unless switched on, and the bot will tell you plainly if
+      they aren't available.
+    </p>
+
+    <ul class="rules">
+      <li>
+        <strong>Voice notes.</strong> Send a voice note from Home instead of
+        typing. It's transcribed on the home computer, deleted straight after,
+        and never sent anywhere. You still confirm the meal before it saves.
+      </li>
+      <li>
+        <strong>AI help reading meals</strong> — <code>/aiparse on</code>.
+        Lets the bot understand phrases like "two eggs and a slice of toast".
+        Only the words it couldn't read are sent; your logs, totals and name
+        never are. Calories still come only from your saved foods — the AI never
+        supplies a nutrition number. <code>/aiparse off</code> turns it back off.
+      </li>
+    </ul>
+  </section>
+
+  <footer class="foot">
+    <p><strong>Three things that are always true</strong></p>
+    <p>
+      Your entries are private to you. Calories are never invented — unknown
+      stays unknown. Anything that saves instantly can be reversed with
+      <code>/undo</code>.
+    </p>
+  </footer>
+
+</div>

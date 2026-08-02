@@ -20,6 +20,8 @@ What is genuinely new, and therefore tested hardest:
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -282,18 +284,45 @@ async def test_every_failure_reason_produces_its_own_sentence(monkeypatch, reaso
 # ---------------------------------------------------------------------------
 # The transcriber itself
 # ---------------------------------------------------------------------------
-async def test_a_missing_package_degrades_honestly_and_is_not_retried():
-    """The real un-mocked path: faster-whisper is not installed here."""
+async def test_a_missing_package_reports_not_installed(monkeypatch):
+    """Forced, not inferred from the environment.
+
+    An earlier version of this test simply relied on faster-whisper being absent
+    from the dev machine. That made its meaning flip the moment the package was
+    installed — it started exercising a different branch while still looking
+    green. Both branches are now driven deterministically.
+    """
+    # Binding a module name to None makes ``import`` raise ImportError.
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
     transcriber = VoiceTranscriber("base")
 
-    first = await transcriber.transcribe("does-not-matter.ogg")
-    second = await transcriber.transcribe("does-not-matter.ogg")
+    result = await transcriber.transcribe("does-not-matter.ogg")
 
-    assert first.ok is False
-    assert first.reason in {"not_installed", "model_unavailable"}
-    assert first.message  # a real sentence, not an empty string
-    # The second attempt short-circuits rather than retrying a failed load.
+    assert result.ok is False
+    assert result.reason == "not_installed"
+    assert "isn't installed" in result.message
+
+
+async def test_a_package_that_cannot_build_a_model_says_so_and_is_not_retried(
+    monkeypatch,
+):
+    """Installed but unusable — a different problem, and a different sentence."""
+    fake = types.ModuleType("faster_whisper")
+
+    def _explode(*args, **kwargs):
+        raise RuntimeError("model files missing")
+
+    fake.WhisperModel = _explode
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    transcriber = VoiceTranscriber("base")
+
+    first = await transcriber.transcribe("a.ogg")
+    second = await transcriber.transcribe("a.ogg")
+
+    assert first.reason == "model_unavailable"
+    # A failed load is remembered, so a second note does not pay for it again.
     assert second.reason == "model_unavailable"
+    assert transcriber.loaded is False
 
 
 async def test_transcription_is_sequential():

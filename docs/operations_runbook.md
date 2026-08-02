@@ -160,10 +160,13 @@ pip install -r requirements-voice.txt   # then set VOICE_ENABLED=true and restar
 - **CPU:** transcription runs on CPU in `int8` and is serialized by a lock, so
   two notes queue rather than competing. It is the most CPU-intensive thing this
   bot does.
-- **Python version:** `ctranslate2` ships compiled wheels that can lag a very new
-  interpreter. This project targets 3.14; if the install fails, either wait for a
-  wheel or run on 3.12/3.13. Failure to install is not an outage — without the
-  package voice notes reply "type it instead" and everything else is unaffected.
+- **Python version:** verified installing on 3.14 (`ctranslate2` 4.8.1). Those
+  are compiled wheels, so a future interpreter could outpace them; a failed
+  install is not an outage, since without the package voice notes reply "type it
+  instead" and everything else is unaffected.
+- **First note is slow.** Loading the model took ~21 s the first time, including
+  the download; afterwards it stays in memory and a short note takes ~1 s. The
+  first voice note after a restart therefore pauses noticeably.
 - **Privacy:** audio never leaves the host. It is written to a temporary
   directory that is removed whatever happens, is never stored, and is never
   attached to a log row. There is deliberately no consent switch, because nothing

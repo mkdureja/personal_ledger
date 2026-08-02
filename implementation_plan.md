@@ -920,12 +920,15 @@ optional package installed and a live client.
 
 **`faster-whisper` is deliberately not a hard dependency.** It lives in
 `requirements-voice.txt`, is imported inside the call rather than at module
-scope, and `VOICE_ENABLED` defaults to false. The suite never needs it — and
-because it is genuinely absent from this development environment, the
-"not installed" path is tested un-mocked rather than simulated. Note it depends
-on `ctranslate2`, whose compiled wheels may lag a very new Python; the project
-targets 3.14, so the install may need 3.12/3.13 until a wheel exists. That is
-survivable precisely because absence degrades instead of breaking.
+scope, and `VOICE_ENABLED` defaults to false, so the suite and CI never need it.
+It installs cleanly on Python 3.14 (`ctranslate2` 4.8.1); an earlier note here
+warned that wheels might lag that interpreter, which measurement disproved.
+
+Both degraded paths are driven deterministically in the tests by binding
+`faster_whisper` in `sys.modules`. An earlier version relied on the package
+simply being absent from the development machine — which meant its meaning
+flipped, silently, the moment the package was installed. A test whose branch
+depends on the environment is not a test of that branch.
 
 Two defects the new tests caught: a whitespace-only transcript counted as
 success (silence is not speech), and the handler HTML-escaped its own static

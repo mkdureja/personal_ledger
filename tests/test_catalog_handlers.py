@@ -347,7 +347,16 @@ async def test_cross_dimension_alias_command_normalizes_and_resolves(
     assert resolved.calories == 500
 
 
-def test_main_registers_food_and_recipe_commands(monkeypatch) -> None:
+def test_main_registers_food_and_recipe_commands(monkeypatch, tmp_path) -> None:
+    # ``main()`` takes the real single-instance lock on the real DB_PATH before
+    # doing anything else. Without redirecting it, this test fails whenever the
+    # deployed bot happens to be running — the lock doing its job, but reported
+    # as a broken test. Point it at a temporary path so the check stays about
+    # handler registration.
+    monkeypatch.setattr(
+        main_module, "lock_path_for", lambda _db: str(tmp_path / "test.instance.lock")
+    )
+
     class FakeApplication:
         def __init__(self) -> None:
             self.handlers = []

@@ -15,9 +15,8 @@
 # faster-whisper bundles its own audio decoding via PyAV, so no separate ffmpeg
 # binary is required.
 #
-# NOTE: this depends on ctranslate2, which ships as compiled wheels. On a very
-# new Python (this project targets 3.14) a wheel may not exist yet, and the
-# install will fail rather than degrade. That is survivable by design: without
-# the package the bot keeps working and voice notes reply "type it instead". If
-# the install fails, either wait for a wheel or run the bot on 3.12/3.13.
+# Verified installing cleanly on Python 3.14 (ctranslate2 4.8.1 has a wheel).
+# If a future interpreter outpaces those wheels the install will fail rather
+# than degrade — which is survivable by design, because without the package the
+# bot keeps working and voice notes reply "type it instead".
 faster-whisper==1.2.1
