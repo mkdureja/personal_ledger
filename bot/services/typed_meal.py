@@ -19,6 +19,7 @@ the existing atomic meal path performs the single write.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -31,7 +32,15 @@ from ..nutrition_resolution import (
     resolve_recipe_diet_entry,
 )
 
-__all__ = ["TypedMealPlan", "UnresolvedSegment", "plan_typed_meal", "REASON_TEXT"]
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "TypedMealPlan",
+    "UnresolvedSegment",
+    "augment_plan_with_parser",
+    "plan_typed_meal",
+    "REASON_TEXT",
+]
 
 #: Why a segment could not become a log item. Each maps to a distinct user
 #: message, because the fix differs: add a food, give an amount, or disambiguate.
@@ -64,6 +73,9 @@ class TypedMealPlan:
 
     resolved: tuple[ResolvedCatalogDietEntry, ...] = ()
     unresolved: tuple[UnresolvedSegment, ...] = ()
+    #: True when an external parser contributed at least one resolved item, so
+    #: the confirm screen can say so. Assistance is never invisible.
+    model_assisted: bool = False
 
     @property
     def has_items(self) -> bool:
@@ -118,6 +130,61 @@ async def plan_typed_meal(
             resolved.append(outcome)
 
     return TypedMealPlan(resolved=tuple(resolved), unresolved=tuple(unresolved))
+
+
+async def augment_plan_with_parser(
+    db: Any,
+    user_id: int,
+    plan: TypedMealPlan,
+    parser: Any,
+) -> TypedMealPlan:
+    """Re-attempt only the *unresolved* segments through an external parser.
+
+    Deterministic results are never revisited: anything already resolved locally
+    keeps its local resolution, so turning the model on cannot change how an
+    already-working meal is logged. The model only sees text the local parser
+    could not use, and its output goes through the same resolver — so it can
+    contribute a better *segmentation*, never a nutrient value.
+
+    Any failure leaves ``plan`` untouched, because :meth:`MealParser.parse`
+    returns an empty list rather than raising.
+    """
+    if parser is None or not plan.unresolved:
+        return plan
+
+    # Only the raw text of what could not be understood leaves the host, and
+    # only for segments the user just typed.
+    leftover = ", ".join(item.raw for item in plan.unresolved)
+    try:
+        proposed = await parser.parse(leftover)
+    except Exception:  # A provider must not be able to break logging.
+        logger.warning("Meal parser raised; keeping local result", exc_info=False)
+        return plan
+
+    if not proposed:
+        return plan
+
+    segments = [
+        ParsedSegment(
+            raw=item.food, name=item.food, quantity_tokens=tuple(item.as_tokens())
+        )
+        for item in proposed
+        if item.food
+    ]
+    if not segments:
+        return plan
+
+    retry = await plan_typed_meal(db, user_id, segments)
+    if not retry.resolved:
+        # The model re-segmented but nothing resolved. Keep the original
+        # unresolved list, whose reasons describe what the user actually typed.
+        return plan
+
+    return TypedMealPlan(
+        resolved=(*plan.resolved, *retry.resolved),
+        unresolved=retry.unresolved,
+        model_assisted=True,
+    )
 
 
 async def _resolve_one(

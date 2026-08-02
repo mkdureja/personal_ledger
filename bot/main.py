@@ -104,6 +104,7 @@ from .handlers.analytics import (
 from .handlers.reminders import anchor_job, daily_reminder
 from .handlers.recent import recent_command
 from .handlers.settings import (
+    aiparse_command,
     reminders_command,
     settings_command,
     suggestions_command,
@@ -350,6 +351,7 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(CommandHandler("settings", settings_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("reminders", reminders_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("suggestions", suggestions_command, filters=AUTH_FILTER))
+    application.add_handler(CommandHandler("aiparse", aiparse_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("keyboard", keyboard_command, filters=AUTH_FILTER))
     # Conversation fallbacks consume /cancel while active; this catches a
     # stale marker or a cancel command sent outside an active conversation.

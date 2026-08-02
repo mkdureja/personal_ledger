@@ -104,6 +104,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/diet &lt;meal&gt; &lt;food&gt; [calories] "
         "[p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</code> — Quick log\n"
         "<code>/describe &lt;items&gt;</code> — Type a whole meal at once\n"
+        "<code>/aiparse on|off</code> — Optional AI help reading meals (off by default)\n"
         "<code>/food</code> — Manage saved foods and portions\n"
         "<code>/recipe</code> — Manage saved recipes\n\n"
         "<b>Habits</b>\n"

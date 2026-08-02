@@ -994,6 +994,32 @@ async def _migration_0009_supplements(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0010_ai_parsing_consent(conn: aiosqlite.Connection) -> None:
+    """Add per-user consent for sending meal text to an external parser.
+
+    Adds no table, so ``required_tables_for`` is unchanged; this is a column-only
+    migration on ``user_settings``.
+
+    ``DEFAULT 0`` is the whole point. Consent cannot be inherited, inferred from
+    another setting, or granted by deploying a key — every existing and future
+    user starts opted out and must turn it on themselves. ``consented_at`` records
+    when, so the choice is auditable rather than merely asserted; it is cleared on
+    opt-out so a revoked consent leaves no lingering "they agreed once" evidence.
+    """
+    cursor = await conn.execute("PRAGMA table_info(user_settings)")
+    existing = {row["name"] for row in await cursor.fetchall()}
+
+    if "ai_parsing_enabled" not in existing:
+        await conn.execute(
+            "ALTER TABLE user_settings ADD COLUMN ai_parsing_enabled "
+            "INTEGER NOT NULL DEFAULT 0 CHECK(ai_parsing_enabled IN (0, 1))"
+        )
+    if "ai_parsing_consented_at" not in existing:
+        await conn.execute(
+            "ALTER TABLE user_settings ADD COLUMN ai_parsing_consented_at TIMESTAMP"
+        )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1004,6 +1030,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     7: _migration_0007_food_preferences,
     8: _migration_0008_shared_catalog,
     9: _migration_0009_supplements,
+    10: _migration_0010_ai_parsing_consent,
 }
 
 

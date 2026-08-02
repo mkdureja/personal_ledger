@@ -29,6 +29,10 @@ os.environ["HOME_KEYBOARD_PILOT_USER_IDS"] = ""
 # destination is set. Pinning it empty keeps a developer's real BACKUP_DEST_DIR
 # from making the suite write backups to a live directory.
 os.environ["BACKUP_DEST_DIR"] = ""
+# Same leak risk, higher stakes: without pinning, a developer's real key would be
+# picked up by the suite and could send test meal text to Google. Tests that
+# exercise the Gemini path monkeypatch bot.config and stub the transport.
+os.environ["GEMINI_API_KEY"] = ""
 
 from bot.database import DatabaseManager
 

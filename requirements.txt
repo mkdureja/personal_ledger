@@ -9,3 +9,7 @@ numpy==2.5.1
 python-dotenv==1.2.2
 PyYAML==6.0.2
 tzdata==2026.3
+# Used by bot/services/llm_parser.py for the optional Gemini call. It already
+# arrives transitively via python-telegram-bot, but declare it rather than
+# depending on a transitive pin (same reasoning as numpy above).
+httpx==0.28.1

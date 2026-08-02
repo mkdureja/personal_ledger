@@ -2035,6 +2035,45 @@ class DatabaseManager:
                 (1 if enabled else 0, _utc_timestamp_now(), user_id),
             )
 
+    async def get_ai_parsing_enabled(self, user_id: int) -> bool:
+        """Whether this user consented to external meal-text parsing.
+
+        Defaults to **False**, including for a missing settings row. Unlike
+        suggestions, absence must never mean "on": the default here governs
+        whether text leaves the host, so an unmigrated, unseen, or newly created
+        user is opted out until they say otherwise.
+        """
+        row = await self._query_one(
+            "SELECT ai_parsing_enabled FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        )
+        return bool(row is not None and row["ai_parsing_enabled"])
+
+    async def set_ai_parsing_enabled(self, user_id: int, enabled: bool) -> None:
+        """Record or revoke consent for external meal-text parsing.
+
+        The timestamp is set on opt-in and cleared on opt-out, so the row never
+        keeps evidence of a consent that no longer holds.
+        """
+        async with self._write_operation():
+            await self.conn.execute(
+                "INSERT INTO user_settings (user_id) VALUES (?) "
+                "ON CONFLICT(user_id) DO NOTHING",
+                (user_id,),
+            )
+            await self.conn.execute(
+                "UPDATE user_settings "
+                "SET ai_parsing_enabled = ?, ai_parsing_consented_at = ?, "
+                "    updated_at = ? "
+                "WHERE user_id = ?",
+                (
+                    1 if enabled else 0,
+                    _utc_timestamp_now() if enabled else None,
+                    _utc_timestamp_now(),
+                    user_id,
+                ),
+            )
+
     async def get_diet_logs(
         self, user_id: int, start_date: date, end_date: date
     ) -> list[aiosqlite.Row]:

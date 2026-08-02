@@ -841,6 +841,47 @@ Layered on §3.2, which stays the default and the fallback.
 The free tier is a rate-limited external dependency. It must never be on a path
 that can block or break logging a meal.
 
+#### Release 4 status — implemented 2026-08-02
+
+Implemented on `hardening/review-fixes`. **1235 tests pass** (1168 before, 67
+added). Migration **v10** adds `ai_parsing_enabled` and `ai_parsing_consented_at`
+to `user_settings` — columns only, no new table. Verified against the live API.
+
+- `bot/services/llm_parser.py` — `MealParser` protocol plus a `GeminiParser`
+  backend over REST. The key travels in a header, never the URL. Only the
+  current message's unresolved text is sent: no history, no totals, no ids.
+- `_coerce_items` narrows model output to `{food, qty, unit}` and reads nothing
+  else, so a model volunteering `"calories": 500` has it dropped before anything
+  can see it. Quantities are normalized to digits here, deterministically.
+- `augment_plan_with_parser` re-attempts **only** the unresolved segments.
+  Locally resolved items are never revisited, so enabling the model cannot change
+  how an already-working meal logs.
+- Three independent gates, all required: something unresolved, a configured key,
+  and this user's opt-in. A failed consent read counts as "no".
+- `/aiparse on|off` is the consent moment and states plainly what is sent.
+  `/settings` shows the state only when a key is configured, so nobody is offered
+  a privacy choice that cannot take effect. The preview says when AI helped.
+- Every failure is soft — timeout, 429, 400, malformed JSON, blocked response —
+  and leaves the deterministic result standing.
+
+**Model choice was made by measurement, not reputation.** Against the live free
+tier: `gemini-flash-lite-latest` 1.6s and correct (**chosen**);
+`gemini-flash-latest` 2.9s but only 5 requests/minute; `gemini-2.0-flash` has a
+free-tier quota of *zero*; `gemini-2.5-flash` and `-lite` return HTTP 404 on this
+tier. `thinkingBudget: 0` is rejected with HTTP 400 by the newer Flash models, so
+reasoning cost is avoided by choosing a non-thinking tier instead.
+
+A Google One AI Premium ("Gemini Plus") subscription does **not** raise API
+limits — the 429s name `generate_content_free_tier_requests`. Higher limits mean
+enabling billing on the key's Cloud project. The current free tier is sufficient
+because the model is only consulted for leftovers.
+
+**Deliberately not done:** no retry or backoff on 429 — a second call for a
+convenience feature is the wrong trade against an interactive path, and the
+deterministic result is already shown. No caching of model output. No provider
+beyond Gemini implemented, though the protocol makes adding one a new class and
+no handler change.
+
 ### Release 5 — local voice notes
 
 - Local transcription via `faster-whisper`. Audio never leaves the host — the

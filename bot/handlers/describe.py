@@ -27,9 +27,15 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
+from .. import config
 from ..callback_data import parse_base36, to_base36
 from ..meal_text import MAX_SEGMENTS, parse_meal_text
-from ..services.typed_meal import TypedMealPlan, plan_typed_meal
+from ..services.llm_parser import build_parser
+from ..services.typed_meal import (
+    TypedMealPlan,
+    augment_plan_with_parser,
+    plan_typed_meal,
+)
 from .common import (
     active_conversation_flow,
     authorized_callback,
@@ -120,6 +126,14 @@ def render_plan(plan: TypedMealPlan) -> str:
             "or give an amount and describe again."
         )
 
+    if plan.model_assisted:
+        # Say it plainly. The user consented to text being sent, but consent is
+        # not the same as knowing it happened on this particular message.
+        lines.append(
+            "\n<i>🤖 AI helped read this. Amounts and nutrition still come from "
+            "your saved foods — check the items above.</i>"
+        )
+
     if plan.resolved:
         lines.append("\nPick a meal type to save:")
     return "\n".join(lines)
@@ -166,6 +180,7 @@ async def start_describe(
     db = context.bot_data["db"]
     await db.ensure_user(user_id, None, None)
     plan = await plan_typed_meal(db, user_id, segments)
+    plan = await _maybe_assist(db, user_id, plan)
 
     if not plan.has_items:
         context.user_data.pop(_PENDING_KEY, None)
@@ -184,6 +199,28 @@ async def start_describe(
     await reply_html(
         message, render_plan(plan), reply_markup=_confirm_keyboard(user_id, token)
     )
+
+
+async def _maybe_assist(db, user_id: int, plan: TypedMealPlan) -> TypedMealPlan:
+    """Consult the external parser only when every gate is open.
+
+    Three independent conditions, checked cheapest-first, and all required:
+    something was left unresolved, the deployment has a key, and *this user* has
+    opted in. The consent read happens per request rather than being cached, so
+    revoking it takes effect on the very next message.
+    """
+    if not plan.unresolved or not config.GEMINI_AVAILABLE:
+        return plan
+    try:
+        if not await db.get_ai_parsing_enabled(user_id):
+            return plan
+    except Exception:
+        # Unreadable consent is treated as absent: never send on a failed check.
+        logger.warning("Could not read parsing consent; staying local", exc_info=False)
+        return plan
+
+    parser = build_parser(config.GEMINI_API_KEY, config.GEMINI_MODEL)
+    return await augment_plan_with_parser(db, user_id, plan, parser)
 
 
 def _nothing_resolved_text(plan: TypedMealPlan) -> str:

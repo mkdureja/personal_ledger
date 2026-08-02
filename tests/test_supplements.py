@@ -142,7 +142,12 @@ async def test_migrating_a_populated_v8_database_adds_supplements_and_keeps_rows
         habit_id, _ = await mgr.add_habit(UID, "Read")
         await mgr.check_habit(UID, habit_id, today_local())
 
-        await migrations.run_migrations(mgr.conn)
+        # Pin the target again: this test is about the 8 → 9 step specifically,
+        # so it must not drift into "run every migration that exists" as later
+        # versions land.
+        with monkeypatch.context() as patched:
+            patched.setattr(migrations, "LATEST_VERSION", 9)
+            await migrations.run_migrations(mgr.conn)
 
         assert await migrations.get_user_version(mgr.conn) == 9
         cursor = await mgr.conn.execute(

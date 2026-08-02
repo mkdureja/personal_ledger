@@ -1155,6 +1155,23 @@ DB_PATH=ledger.db</code></pre>
     Nothing is saved until you tap a meal type.</p>
 
     <div class="box box-info no-break">
+        <div class="box-title">🤖 Optional AI help (off by default)</div>
+        <p>If the bot is configured with an AI key, you can turn on
+        <code>/aiparse on</code> so phrases the bot can't read locally — like
+        <em>"two eggs and a slice of toast"</em> — get split into items for you.
+        It is <strong>off until you turn it on</strong>, and
+        <code>/aiparse off</code> turns it back off at any time.</p>
+        <p><strong>What is sent:</strong> only the part of your message the bot
+        couldn't understand, and only when you use <code>/describe</code>. Your
+        logs, totals, name, and Telegram ID are never sent. Items the bot already
+        understood are not sent either.</p>
+        <p><strong>What the AI cannot do:</strong> supply any calorie or macro
+        number. It only splits your words into items; every nutrition figure still
+        comes from your saved foods or the shared catalog. You still confirm the
+        meal before it saves, and the preview tells you when AI helped.</p>
+    </div>
+
+    <div class="box box-info no-break">
         <div class="box-title">💡 Why some items are left out</div>
         <p>Nutrition always comes from your saved foods or the shared catalog —
         it is never estimated. An item is left out when it is

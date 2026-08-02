@@ -67,6 +67,29 @@ if BACKUP_DEST_DIR:
         )
     BACKUP_DEST_DIR = str(_backup_dest)
 
+# ---------------------------------------------------------------------------
+# Optional Gemini parsing (Release 4) — absent by default
+# ---------------------------------------------------------------------------
+# Unset is the normal, supported state: with no key the typed-meal parser stays
+# fully deterministic and nothing about logging changes. The key is read here so
+# there is exactly one place it enters the process, and it is never logged,
+# echoed into a message, or written to the database.
+#
+# This is only the *capability*. Whether a given user's meal text may be sent is
+# a separate, per-user, default-OFF consent decision.
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+# Chosen by measurement against the live free tier, not by reputation:
+#   gemini-flash-lite-latest  1.6s, correct segmentation, has quota  <- default
+#   gemini-flash-latest       2.9s, correct, but only 5 requests/minute free
+#   gemini-2.0-flash          free-tier quota of *zero* — unusable
+#   gemini-2.5-flash(-lite)   HTTP 404 for generateContent on this tier
+# Splitting a phrase into items needs no reasoning, so the lite tier is the right
+# fit; thinkingBudget=0 is not an option because the newer Flash models reject it
+# with HTTP 400. An alias rather than a pin, because the pinned names above turned
+# out to be the unreliable ones. Override in .env if a specific model is needed.
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
+GEMINI_AVAILABLE: bool = bool(GEMINI_API_KEY)
+
 # Optional routine file (motivational anchors). When absent, the bot falls
 # back to the single legacy reminder configured by REMINDER_HOUR below.
 ROUTINE_PATH: str = _resolve_under_root(

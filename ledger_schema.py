@@ -26,7 +26,7 @@ from __future__ import annotations
 
 # The version this checkout migrates a database to. Bump it (and register the new
 # migration in ``bot.migrations._MIGRATIONS``) for every schema change.
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 10
 
 # Version 0 is the pre-versioning legacy shape. It is *not* a certifiable schema
 # version: those databases never stamped a version and their table/column shape
