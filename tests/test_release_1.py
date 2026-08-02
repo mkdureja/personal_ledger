@@ -35,6 +35,7 @@ from telegram.constants import ChatType
 from telegram.ext import ExtBot
 
 from bot import keyboards, main as main_module, suggestions
+from bot.config import today_local
 from bot.handlers import diet, habits, home, start
 from bot.handlers.common import activate_conversation, active_conversation_flow
 from bot.handlers.diet import diet_conv_handler
@@ -735,7 +736,10 @@ async def test_tapping_a_habit_name_toggles_only_that_users_date(db):
     await db.ensure_user(OTHER, "o", "Other")
     mine, _ = await db.add_habit(UID, "Read")
     theirs, _ = await db.add_habit(OTHER, "Read")
-    today = date(2026, 7, 30)
+    # The handler only accepts today or yesterday, so this date must track the
+    # real clock; a frozen literal turns this test into a time bomb that starts
+    # asserting the "expired checklist" path instead of the toggle.
+    today = today_local()
 
     row = keyboards.habit_checklist_keyboard(
         [{"id": mine, "habit_name": "Read"}], set(), today, UID
@@ -782,7 +786,7 @@ async def test_a_stale_noop_label_never_mutates(db, target):
     await habits.habit_noop_callback(update, _context(db))
 
     query.answer.assert_awaited_once()
-    assert await db.get_checked_habits(UID, date(2026, 7, 30)) == set()
+    assert await db.get_checked_habits(UID, today_local()) == set()
     if target == "habit":
         # An old checklist's habit label explains itself instead of looking dead.
         assert "refresh" in query.answer.call_args.args[0]
@@ -819,7 +823,7 @@ async def test_a_current_habit_setup_label_explains_setup_without_mutating(db):
 
     assert "Habit Setup" in query.answer.call_args.args[0]
     assert "Remove" in query.answer.call_args.args[0]
-    assert await db.get_checked_habits(UID, date(2026, 7, 30)) == set()
+    assert await db.get_checked_habits(UID, today_local()) == set()
     query.edit_message_reply_markup.assert_not_awaited()
 
 
