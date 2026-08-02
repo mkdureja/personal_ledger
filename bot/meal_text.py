@@ -10,12 +10,19 @@ only ever produce the same shape this produces — ``{food, qty, unit}`` — so 
 deterministic path stays the default and the fallback, and no model output can
 introduce a nutrient number.
 
-Supported shapes, chosen because they are what people actually type:
+Supported shapes, chosen because they are what people actually type *and say*:
 
 * ``100g oats`` / ``100 g oats`` — leading quantity, attached or spaced
 * ``oats 100g`` — trailing quantity
 * ``2 eggs`` — leading count with the unit carried by the food name
 * ``coffee`` — no quantity at all
+* ``I have eaten 100g rice`` — a spoken opener before the amount
+
+That last shape arrived with voice notes: people type "100g rice" but say "I
+have eaten 100g rice", which buries the amount where neither the leading nor the
+trailing pattern can reach it. A closed list of opening words that cannot be food
+is removed first. It is not general language parsing, and it does not replace the
+Release 4 model — that still handles genuinely conversational input.
 
 Segments are split on commas, newlines, ``+``, and a standalone ``and``. Nothing
 here guesses a quantity: a segment without one is reported as having none, and
@@ -51,6 +58,41 @@ _NUMBER = r"\d+(?:\.\d+)?"
 _LEADING_RE = re.compile(rf"^({_NUMBER})\s*([a-zA-Z]+)?\s+(.*)$")
 _TRAILING_RE = re.compile(rf"^(.*?)\s+({_NUMBER})\s*([a-zA-Z]+)?$")
 
+#: Words that can open a spoken meal description but can never begin a food name.
+#:
+#: Voice made this necessary. People type "100g rice" but *say* "I have eaten
+#: 100g rice" — the amount lands mid-phrase, where neither the leading nor the
+#: trailing pattern can reach it, and the whole item was lost. Stripping these
+#: from the front is not natural-language parsing and not a guess: the list is
+#: closed, every entry is a pronoun, an auxiliary, an eating verb, or a meal
+#: name, and none of them is a food. Anything not on the list stops the strip
+#: immediately, so a real name is never eaten away.
+#:
+#: This does not replace the Release 4 parser. It rescues the common opener;
+#: genuinely conversational input is still the model's job.
+_LEADING_FILLER = frozenset(
+    {
+        "i", "im", "ive", "id", "we", "weve", "my", "me",
+        "just", "then", "also", "today", "now",
+        "eat", "eaten", "ate", "eating",
+        "have", "has", "had", "having",
+        "take", "took", "taken", "taking",
+        "drank", "drink", "drunk", "consumed",
+        "for", "in", "at", "on", "of",
+    }
+)
+
+#: Meal names, stripped only as a *second attempt*.
+#:
+#: "for lunch I had 2 eggs" needs them gone, but "breakfast cereal" and
+#: "snack bar" are real foods whose names begin with one. Removing them
+#: unconditionally would quietly rename a food the user actually eats, so they
+#: are used only when the first parse found no amount and dropping them finds
+#: one — a strictly better reading, never a worse one.
+_MEAL_WORD_FILLER = _LEADING_FILLER | {
+    "breakfast", "lunch", "dinner", "snack", "brunch", "supper", "meal",
+}
+
 
 @dataclass(frozen=True)
 class ParsedSegment:
@@ -79,39 +121,92 @@ def _clean_name(value: str) -> str:
     return value.strip().strip(_EDGE_PUNCTUATION).strip()
 
 
+def _strip_leading_filler(text: str, filler: frozenset[str]) -> str:
+    """Drop opening words that cannot be part of a food name.
+
+    Stops at the first word not in ``filler``, so "chicken and rice" and "date
+    syrup" are untouched. Returns the original text if stripping would leave
+    nothing — an all-filler segment is better reported as unrecognized than
+    silently erased.
+    """
+    words = text.split()
+    index = 0
+    while index < len(words):
+        candidate = words[index].strip(_EDGE_PUNCTUATION).casefold()
+        if candidate not in filler:
+            break
+        index += 1
+    if index == 0 or index >= len(words):
+        return text
+    return " ".join(words[index:])
+
+
+def _name_has_filler(name: str) -> bool:
+    """Whether a parsed name still contains words no food name would carry."""
+    return any(
+        word.strip(_EDGE_PUNCTUATION).casefold() in _MEAL_WORD_FILLER
+        for word in name.split()
+    )
+
+
+def _match_quantity(text: str) -> tuple[str, tuple[str, ...]] | None:
+    """Return ``(name, quantity_tokens)`` if this text carries an amount."""
+    match = _LEADING_RE.match(text)
+    if match is not None:
+        name = _clean_name(match.group(3))
+        if name:
+            return name, _quantity_tokens(match.group(1), match.group(2))
+
+    match = _TRAILING_RE.match(text)
+    if match is not None:
+        name = _clean_name(match.group(1))
+        if name:
+            return name, _quantity_tokens(match.group(2), match.group(3))
+
+    return None
+
+
 def _parse_segment(raw: str) -> ParsedSegment | None:
     """Split one segment into a name and optional quantity tokens."""
-    text = " ".join(raw.split())
-    if not text:
+    original = " ".join(raw.split())
+    if not original:
         return None
-    if len(text) > MAX_SEGMENT_LENGTH:
-        text = text[:MAX_SEGMENT_LENGTH].rstrip()
+    if len(original) > MAX_SEGMENT_LENGTH:
+        original = original[:MAX_SEGMENT_LENGTH].rstrip()
 
+    # Parse from the filler-stripped form, but keep ``raw`` as what the user
+    # actually said: an unresolved item is reported back to them, and echoing a
+    # trimmed version of their own words would read as though the bot misheard.
+    #
     # Note there is no "bare quantity" special case. After a leading number, a
     # single remaining word is genuinely ambiguous — "2 eggs" is a count of a
     # food, "100 g" is a unit with no food — and this module deliberately does
     # not know which strings are units. Treating it as a food name is right for
     # what people actually type; the degenerate "100g" simply fails to resolve
     # and is reported as unknown, which is the honest outcome either way.
-    match = _LEADING_RE.match(text)
-    if match is not None:
-        amount, unit = match.group(1), match.group(2)
-        name = _clean_name(match.group(3))
-        if name:
-            return ParsedSegment(
-                raw=text, name=name, quantity_tokens=_quantity_tokens(amount, unit)
-            )
+    #
+    # Meal words are only dropped on the second attempt, and only if doing so
+    # actually finds an amount. That keeps "breakfast cereal" intact while still
+    # reading "for lunch I had 2 eggs".
+    text = _strip_leading_filler(original, _LEADING_FILLER)
+    wider = _strip_leading_filler(original, _MEAL_WORD_FILLER)
 
-    match = _TRAILING_RE.match(text)
-    if match is not None:
-        name, amount, unit = _clean_name(match.group(1)), match.group(2), match.group(3)
-        if name:
-            return ParsedSegment(
-                raw=text, name=name, quantity_tokens=_quantity_tokens(amount, unit)
-            )
+    # Both readings are scored, not just the first that matches. The trailing
+    # pattern is greedy enough to "succeed" badly — "lunch I had 2 eggs" parses
+    # as name "lunch I had" with unit "eggs" — and a bad match must not block a
+    # good one. A name still carrying filler words is the tell.
+    found = _match_quantity(text)
+    if wider != text and (found is None or _name_has_filler(found[0])):
+        better = _match_quantity(wider)
+        if better is not None and not _name_has_filler(better[0]):
+            found = better
+
+    if found is not None:
+        name, tokens = found
+        return ParsedSegment(raw=original, name=name, quantity_tokens=tokens)
 
     cleaned = _clean_name(text)
-    return ParsedSegment(raw=text, name=cleaned or text)
+    return ParsedSegment(raw=original, name=cleaned or original)
 
 
 def parse_meal_text(text: str) -> list[ParsedSegment]:

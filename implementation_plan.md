@@ -1,10 +1,51 @@
 # Ledger implementation plan
 
-**Status:** Releases 0 and 1 implemented; Releases 2–5 are committed 1.0 scope
+**Status:** Releases 0–5 all implemented; acceptance and merge remain open
 **Prepared:** 2026-07-30 · **Scope revised:** 2026-08-02
 **Original planning baseline:** `hardening/review-fixes` at `16d1f3a`
 **Product boundary:** one private Telegram bot for the owner and spouse
 **Canonical roadmap:** `implementation_plan.md`
+
+## Where this stands right now — read first
+
+Last updated end of 2026-08-02. **Every release in this plan is built.** There is
+no remaining implementation task; what is left is acceptance, an owner decision,
+and merge controls.
+
+**Code:** branch `hardening/review-fixes`, **1281 tests green**, CI green on
+`windows-latest` and `ubuntu-latest`. Schema **v10**.
+
+**Deployment:** the live database has migrated to v10. The §0.5 backup gate fired
+in production for the first time and wrote
+`E:\ledger-backups\ledger-premigration-v8-20260802-102740Z.db` before touching
+the schema. Voice is installed (`faster-whisper` 1.2.1) and `VOICE_ENABLED=true`.
+Gemini is configured but **each user is still opted out** — consent is theirs to
+give with `/aiparse on`, and must never be set for them.
+
+**Verified live:** Home, meal builder, Repeat, Undo, `/recent`, supplements
+empty-state, and voice notes end to end ("100 gm rice" → catalog match →
+preview → save).
+
+**The one blocking fact:** both ledgers still hold **zero private foods and zero
+recipes**. No `⚡` instant row can render for anyone, and `/describe` can only
+match the small shared catalog. Several observed frustrations trace back to this
+single gap, not to missing features. Saving a handful of staples with
+`/food add` is the highest-value next action in the whole project.
+
+**Open, and owner-owned:**
+
+1. Save real foods, then run the two-client gate (§Release 1 live gate), which
+   now also covers supplements, `/describe`, `/aiparse`, and voice.
+2. Backup security on `E:` — still unencrypted with a broad folder ACL. Secure
+   it or record explicit acceptance.
+3. Open the pull request; enable branch protection on `main` requiring both CI
+   jobs; register the daily backup task.
+4. After acceptance, flip `HOME_KEYBOARD_MODE` from `pilot` to `on`.
+
+**One flagged preference, deliberately not changed:** `infer_meal_type` puts the
+lunch/dinner boundary at exactly 16:00, so a 16:00 meal defaults to Dinner. That
+caused real friction in the first live session, but it governs what logged data
+means, so it is the owner's call rather than a defect to fix unilaterally.
 
 ## Goal
 
@@ -813,6 +854,23 @@ One parser defect was found and fixed by the new tests: a "bare quantity" guard
 intended for `100g` also matched `2 eggs`, swallowing the count. The guard was
 removed rather than patched — the parser deliberately does not know which words
 are units, so it cannot make that distinction by shape and should not pretend to.
+
+**Two further defects came from the first live voice session**, and both are
+fixed:
+
+- Dictated text is punctuated, so "200g salmon." produced the name `salmon.`,
+  which can never match a catalog `salmon`. Edge punctuation is now trimmed;
+  hyphens and apostrophes inside a name survive.
+- People *say* "I have eaten 100g rice", burying the amount where neither the
+  leading nor the trailing pattern reaches it, and the item was lost entirely.
+  A closed list of opening words that cannot be food is now removed first.
+  Meal words (`breakfast`, `lunch`, …) are dropped only on a second attempt and
+  only when that actually finds an amount, so "breakfast cereal" is not quietly
+  renamed to "cereal". Both readings are scored rather than taking the first
+  match, because the trailing pattern can "succeed" badly — "lunch I had 2 eggs"
+  otherwise parses as name "lunch I had" with unit "eggs".
+
+This narrows what the model is needed for; it does not replace it.
 
 **Deliberately not done here:** the preview does not reuse the Builder's
 draft-edit UI, so an unresolved item cannot be fixed in place — the user

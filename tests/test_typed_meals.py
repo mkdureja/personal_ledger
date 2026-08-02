@@ -95,6 +95,71 @@ def test_sentence_punctuation_is_trimmed_from_food_names(text, expected_name):
     assert segments[0].name == expected_name
 
 
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # The exact live-test failure: the amount sits mid-phrase.
+        ("I have eaten 100g rice", [("rice", ("100", "g"))]),
+        ("I had 2 eggs", [("eggs", ("2",))]),
+        ("for lunch I had 2 eggs", [("eggs", ("2",))]),
+        ("just ate 200g chicken", [("chicken", ("200", "g"))]),
+        ("today I have taken 50g oats", [("oats", ("50", "g"))]),
+    ],
+)
+def test_spoken_openers_are_stripped_so_the_amount_is_reachable(text, expected):
+    """Voice made this necessary: people say "I have eaten 100g rice".
+
+    Neither the leading nor the trailing pattern can see an amount buried after
+    "I have eaten", so the whole item was lost. The opener is removed from a
+    closed list of words that cannot be food.
+    """
+    assert _shape(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text, expected_name",
+    [
+        # Foods whose names *start* with a meal word must survive. These have no
+        # amount, so the wider strip is attempted and correctly declines to help.
+        ("breakfast cereal", "breakfast cereal"),
+        ("snack bar", "snack bar"),
+        ("dinner roll", "dinner roll"),
+        # Ordinary names are untouched.
+        ("100g date syrup", "date syrup"),
+        ("100g chicken", "chicken"),
+        ("200g oats", "oats"),
+    ],
+)
+def test_the_filler_list_never_eats_a_real_food_name(text, expected_name):
+    """Meal words are dropped only when doing so actually finds an amount.
+
+    Stripping them unconditionally would quietly rename "breakfast cereal" to
+    "cereal" — a food the user does not eat, logged as though they did.
+    """
+    segments = parse_meal_text(text)
+    assert segments[0].name == expected_name
+
+
+def test_a_meal_word_food_still_parses_with_an_amount():
+    """The wider strip must not fire when the plain reading already works."""
+    assert _shape("100g breakfast cereal") == [("breakfast cereal", ("100", "g"))]
+
+
+def test_an_all_filler_segment_is_reported_rather_than_erased():
+    """Stripping everything would silently delete what the user said."""
+    segments = parse_meal_text("I have eaten")
+    assert len(segments) == 1
+    assert segments[0].name == "I have eaten"
+    assert segments[0].has_quantity is False
+
+
+def test_the_unresolved_report_echoes_the_users_own_words():
+    """``raw`` keeps the opener, so a rejection doesn't look like a mishearing."""
+    segment = parse_meal_text("I have eaten 100g quinoa")[0]
+    assert segment.raw == "I have eaten 100g quinoa"
+    assert segment.name == "quinoa"
+
+
 def test_a_bare_quantity_never_becomes_a_confident_item():
     """"100g" names no food, so it must not resolve to anything.
 
