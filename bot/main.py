@@ -79,6 +79,17 @@ from .handlers.habits import (
     habit_setup_done_callback,
     habit_setup_page_callback,
 )
+from .handlers.supplements import (
+    supplements_setup_conv_handler,
+    supplement_take_callback,
+    supplement_untake_callback,
+    supplement_toggle_day_callback,
+    supplement_page_callback,
+    supplement_noop_callback,
+    remove_supplement_callback,
+    supplement_setup_done_callback,
+    supplement_setup_page_callback,
+)
 from .handlers.analytics import (
     summary_command,
     chart_command,
@@ -314,6 +325,7 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(gym_conv_handler)
     application.add_handler(diet_conv_handler)
     application.add_handler(habits_setup_conv_handler)
+    application.add_handler(supplements_setup_conv_handler)
 
     # --- Simple command handlers ---
     application.add_handler(CommandHandler("start", start_command, filters=AUTH_FILTER))
@@ -391,6 +403,36 @@ def build_application(*, register_commands: bool = False) -> Application:
     # Also handle a setup button after its conversation has timed out.
     application.add_handler(
         CallbackQueryHandler(habit_setup_done_callback, pattern=r"^habit_setup_done_")
+    )
+    # Supplement callbacks — a distinct prefix family from habits, so neither
+    # checklist can route into the other's writes.
+    application.add_handler(
+        CallbackQueryHandler(supplement_take_callback, pattern=r"^supp_c_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(supplement_untake_callback, pattern=r"^supp_u_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(supplement_toggle_day_callback, pattern=r"^supp_toggle_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(supplement_page_callback, pattern=r"^supp_page_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(supplement_noop_callback, pattern=r"^supp_noop_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(remove_supplement_callback, pattern=r"^supp_remove_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            supplement_setup_page_callback, pattern=r"^supp_setup_page_"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            supplement_setup_done_callback, pattern=r"^supp_setup_done_"
+        )
     )
     # Undo confirm/cancel callbacks
     application.add_handler(

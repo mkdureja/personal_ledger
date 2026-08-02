@@ -110,6 +110,7 @@ _CONVERSATION_LABELS = {
     "gym": "a workout",
     "diet": "a meal",
     "habits": "habit setup",
+    "supplements": "supplement setup",
 }
 _CONVERSATION_DATA_KEYS = {
     "study": ("study_subject", "study_duration"),
@@ -144,6 +145,7 @@ _CONVERSATION_DATA_KEYS = {
         "diet_edit_index",
     ),
     "habits": ("habit_setup_prompt",),
+    "supplements": ("supplement_setup_prompt",),
 }
 _MAX_UNDO_TEXT_LENGTH = 400
 _MAX_UNDO_VALUE_LENGTH = 32

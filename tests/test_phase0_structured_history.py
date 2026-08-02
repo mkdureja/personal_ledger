@@ -11,6 +11,7 @@ from telegram.error import NetworkError
 
 from bot.handlers import diet
 from bot.database import MutationSource
+from ledger_schema import LATEST_SCHEMA_VERSION
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,9 +38,16 @@ def _context(db: object, args: list[str] | None = None, user_data: dict | None =
         user_data=user_data if user_data is not None else {},
     )
 
-async def test_schema_version_is_8(db):
+async def test_a_fresh_database_is_stamped_at_the_current_schema_version(db):
+    """A new database migrates all the way to this checkout's version.
+
+    Asserted against ``LATEST_SCHEMA_VERSION`` rather than a literal: pinning the
+    number here meant every migration broke this test for no product reason,
+    while still not checking the thing that matters — that setup reaches the
+    version the rest of the code assumes.
+    """
     row = await db._query_one("PRAGMA user_version")
-    assert row["user_version"] == 8
+    assert row["user_version"] == LATEST_SCHEMA_VERSION
 
 async def test_food_and_recipe_reference_write_structured_child(db_with_user, user_id):
     await db_with_user.save_food(user_id, "apple", "g", 100.0, calories=52)

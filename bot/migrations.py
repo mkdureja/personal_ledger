@@ -937,6 +937,63 @@ async def _migration_0008_shared_catalog(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0009_supplements(conn: aiosqlite.Connection) -> None:
+    """Add ``supplements`` and ``supplement_logs`` — adherence, never nutrition.
+
+    A supplement is deliberately *not* a food. It carries a dose and a timing
+    label so "2 capsules, with dinner" is recorded as written, but it has no
+    calorie or macro columns and no relationship to ``diet_logs``,
+    ``diet_log_items``, or the catalog. Nothing here can reach nutrition
+    resolution, so a supplement can never move a meal total.
+
+    ``supplement_logs`` mirrors ``habit_logs``: one row per user/supplement/local
+    date, uniquely keyed so a double tap is idempotent rather than a second
+    adherence record. Deactivation is a soft archive, as with habits, so history
+    survives and a name can be reused later.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS supplements (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        INTEGER NOT NULL,
+            name           TEXT NOT NULL,
+            name_key       TEXT NOT NULL,
+            dose_amount    REAL,
+            dose_unit      TEXT,
+            timing         TEXT,
+            is_active      INTEGER NOT NULL DEFAULT 1,
+            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CHECK (dose_amount IS NULL OR dose_amount > 0),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    # Enforce "one active supplement per name per user" in the database rather
+    # than only in the handler, so a future script or alternate entry point
+    # cannot create the duplicate that would split a streak across two ids.
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_supplements_active_name "
+        "ON supplements(user_id, name_key) WHERE is_active = 1"
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS supplement_logs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL,
+            supplement_id INTEGER NOT NULL,
+            log_date      DATE NOT NULL,
+            UNIQUE(user_id, supplement_id, log_date),
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (supplement_id) REFERENCES supplements(id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_supplement_logs_lookup "
+        "ON supplement_logs(user_id, log_date)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -946,6 +1003,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     6: _migration_0006_diet_log_items,
     7: _migration_0007_food_preferences,
     8: _migration_0008_shared_catalog,
+    9: _migration_0009_supplements,
 }
 
 

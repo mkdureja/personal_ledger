@@ -223,7 +223,8 @@ async def test_every_idle_entry_renders_the_same_home(db, entry):
     markup = _first_kwargs(update.effective_message.reply_text)["reply_markup"]
     assert "here's today" in text
     assert _labels(markup) == [
-        "🍽️ Log meal", "✅ Habits", "📖 Study", "🏋️ Workout", "🗒️ Recent", "📊 Analytics",
+        "🍽️ Log meal", "✅ Habits", "💊 Supplements", "📖 Study",
+        "🏋️ Workout", "🗒️ Recent", "📊 Analytics",
     ]
 
 

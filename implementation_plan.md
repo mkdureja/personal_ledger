@@ -1,7 +1,7 @@
 # Ledger implementation plan
 
-**Status:** Releases 0 and 1 implemented; operational acceptance and merge remain open
-**Prepared:** 2026-07-30
+**Status:** Releases 0 and 1 implemented; Releases 2–5 are committed 1.0 scope
+**Prepared:** 2026-07-30 · **Scope revised:** 2026-08-02
 **Original planning baseline:** `hardening/review-fixes` at `16d1f3a`
 **Product boundary:** one private Telegram bot for the owner and spouse
 **Canonical roadmap:** `implementation_plan.md`
@@ -14,7 +14,20 @@ Turn the strong current build into an obvious, dependable household app:
 - every tap that immediately writes data looks like a write action;
 - recovery, backup, and reminder behavior is honest;
 - the current isolation and snapshot guarantees remain unchanged; and
-- new features are selected from real household friction, not the old phase list.
+- the 1.0 feature set the owner specified — a supplements section, deterministic
+  typed meals, Gemini-assisted parsing, and local voice — is built after the
+  current build is accepted, in dependency order.
+
+**Scope correction (2026-08-02).** An earlier revision of this file moved
+supplements, LLM parsing, and voice into "explicitly deferred," gated behind
+evidence from a household trial. Those were the owner's locked decisions from
+2026-07-28, and deferring them converted a *sequencing* judgment into a *scope*
+removal. They are restored below as committed Releases 2–5. What survives from
+that revision is the part that was always correct: these features have real build
+dependencies on each other, so the order matters even though nothing is optional.
+
+Selecting *additional* features beyond this 1.0 set still requires observed
+friction. The trial informs what comes after Release 5, not whether 2–5 happen.
 
 This plan replaces the old phase roadmap that previously occupied
 `implementation_plan.md`, and absorbs the reviewed Codex artifact that briefly
@@ -71,14 +84,12 @@ the per-release status sections below for what each slice delivered.
 An `⚡` row requires a stored default in `user_food_preferences`, so the current
 live data cannot exercise §1.2. Before the Release 1 live gate, each user creates
 one private food and one complete usual amount using the current supported path.
-Record whether that setup is genuinely awkward; that is evidence for Candidate
-B, not a reason to promote it before the test.
+Record whether that setup is genuinely awkward — it is the first evidence for how
+much guided food editing Release 3 needs.
 
-Likewise, empty preference tables do not justify Candidate A. For a two-user
-SQLite database, migrating zero rows instead of a small future row count is not a
-material risk reduction. Schema work remains usage-driven and §0.5 must land
-before any v9 work. The small current database makes backup and restore rehearsal
-cheap, but does not make the data disposable.
+§0.5 must land before any v9 work; it has. The small current database makes
+backup and restore rehearsal cheap, but does not make the data disposable: every
+migration below still goes through the verified-backup gate at startup.
 
 ## Release 0 — protect and align the baseline
 
@@ -623,21 +634,9 @@ condition is true.
 
 ### Before adding another nutrition input
 
-Move the pure resolved-entry types and these functions out of
-`bot/handlers/catalog.py`:
-
-- `resolve_food_diet_entry`
-- `resolve_recipe_diet_entry`
-- `resolve_catalog_food_entry`
-- their pure helpers
-
-Place them in `bot/nutrition_resolution.py` (or a clearly named service module).
-Both handlers and `DatabaseManager` import that module. It must have no Telegram
-dependency and no database I/O.
-
-Do not split every large file during this extraction. Later, when a diet section
-is changed for product reasons, extract along the existing picker/draft,
-quick/default, and replay/current-values seams.
+**Now scheduled — this is Release 3.1.** Release 3 adds a nutrition input, so the
+trigger is met and the extraction is no longer conditional. The contract moves to
+§3.1 below.
 
 ### Before adding a script or other non-handler write path
 
@@ -667,10 +666,167 @@ clear degraded-catalog status without swallowing cancellation or shutdown.
 - Existing behavior and two-user isolation remain unchanged.
 - Focused tests and the full suite pass.
 
-## Household trial — choose, do not accumulate
+## The 1.0 feature set — Releases 2 to 5
 
-Use the accepted app for a short normal-use period. Keep a tiny friction log,
-without building telemetry:
+These are committed, not candidates. The order is set by build dependency:
+
+```text
+Release 2  Supplements            no dependencies — can start immediately
+Release 3  Typed meals            3.1 extraction → 3.2 deterministic parser
+Release 4  Gemini parsing         needs 3.2's resolver to land its output in
+Release 5  Voice                  needs 3.2/4 to parse the transcript
+```
+
+The dependency claim is concrete, not procedural. The parser contract returns
+only `{food, qty, unit}` — by deliberate design, so nutrition is never invented
+by a model. Something must convert that tuple into a resolved, snapshotted meal
+item, and that something is the Release 3 resolver. Building Release 4 first
+would mean model output with nowhere to go; building Release 5 first would mean a
+transcript with no parser. Release 2 shares none of that and is independent.
+
+Each release is separately shippable and separately acceptable. Do not bundle.
+
+### Release 2 — supplements as their own section
+
+The owner chose a dedicated section over reusing the habits machinery, because
+dose and timing are real fields that a habit checkbox cannot carry.
+
+One migration, **v9**, adding two tables:
+
+- `supplements` — owner-scoped definition: name, optional dose amount and unit,
+  optional schedule/timing label, active flag, created/deactivated timestamps.
+- `supplement_logs` — one adherence row per user/supplement/local date, matching
+  the `habit_logs` uniqueness and owner-scoping pattern.
+
+Rules:
+
+- Adherence only. A supplement **never** contributes calories or macros, and
+  never appears in meal totals, diet analytics, or nutrition resolution.
+- Mirror the proven habits patterns rather than inventing new ones: owner id
+  embedded in every callback, the today/yesterday validation window, one
+  full-width toggle per row, pagination, and inert stale labels.
+- Reuse the streak and reminder machinery, with supplements as a distinct
+  reminder job key so a supplement reminder cannot be mistaken for a habit one.
+- Add a Home action; keep the grid balanced.
+- Deactivation is a soft archive that preserves history, as habits do.
+
+Explicitly **not** in Release 2: interaction warnings, inventory or refill
+counts, prescription data, or any health claim.
+
+#### Release 2 status — implemented 2026-08-02
+
+Implemented on `hardening/review-fixes`. **1118 tests pass** (1065 before, 53
+added). Not yet accepted on a real client, and the migration has not run against
+the live database.
+
+- Migration **v9** adds `supplements` and `supplement_logs`, plus a partial
+  unique index on `(user_id, name_key) WHERE is_active = 1` so the "one active
+  supplement per name" rule is enforced by the database, not only the handler.
+- `bot/handlers/supplements.py` mirrors `habits.py`: `supp_*` callbacks carrying
+  the owner id, the today/yesterday window, one full-width toggle per row, inert
+  stale labels, pagination, and a `/supplements setup` conversation.
+- Typed setup accepts `Name`, `Name, dose`, `Name, timing`, or
+  `Name, dose, timing`. `parse_supplement_input` is pure and separately tested.
+- Home gains **💊 Supplements**; the grid is now three pairs plus Analytics.
+- The no-nutrition rule is asserted structurally — the table has no nutrient
+  columns — rather than only through handler behavior.
+
+Two defects were found by the new tests and fixed before the suite went green:
+a malformed dose such as `-1 mg` was silently stored as a *timing* label instead
+of being rejected, and a version-pinned assertion (`user_version == 8`) was
+rewritten against `LATEST_SCHEMA_VERSION`.
+
+**Deferred within Release 2:** supplements do not yet appear in `/summary`,
+charts, `/undo`, or the evening reminder. Adding them to the reminder means a
+second job key and its own delivery-state rows; that is worth doing once real use
+shows the checklist is being forgotten, and it is listed in the follow-up backlog
+rather than assumed.
+
+### Release 3 — deterministic typed meals
+
+#### 3.1 Extract nutrition resolution
+
+Move the pure resolved-entry types and these functions out of
+`bot/handlers/catalog.py`:
+
+- `resolve_food_diet_entry`
+- `resolve_recipe_diet_entry`
+- `resolve_catalog_food_entry`
+- their pure helpers
+
+Place them in `bot/nutrition_resolution.py`. Both handlers and `DatabaseManager`
+import that module. It must have no Telegram dependency and no database I/O.
+This removes the current layering inversion, where
+`database.py::_resolve_quantity_locked` lazy-imports from a handler module.
+
+Do not split every large file during this extraction. Later, when a diet section
+is changed for product reasons, extract along the existing picker/draft,
+quick/default, and replay/current-values seams.
+
+#### 3.2 Parse typed meals locally
+
+- Parse only quantities/units already supported locally.
+- Match private exact names first, then known catalog aliases/search.
+- Never invent nutrition or select an ambiguous food.
+- Keep unresolved items in a visible draft with Search, Free-text snapshot, or
+  Remove, plus guidance to the existing `/food add` command.
+- Confirm the resolved draft before saving through the existing atomic
+  meal/item path.
+
+No LLM, online provider, or schema migration. This is the fallback Release 4
+degrades to, so it must be genuinely useful on its own.
+
+### Release 4 — Gemini-assisted parsing
+
+Layered on §3.2, which stays the default and the fallback.
+
+- Google Gemini Flash by default, behind a provider-pluggable OpenAI-compatible
+  client so the provider can change without touching handlers.
+- **Parsing only.** The model returns `{food, qty, unit}`; the §3.1 resolver
+  computes all nutrition. A model never supplies a calorie or macro number.
+- **Opt-in, default-OFF, per user**, with explicit consent recorded before the
+  first send and revocable from settings.
+- Only the current message text is sent. History, logs, and user identity never
+  leave the host.
+- Deterministic rules run first; the model is consulted only for what §3.2 could
+  not resolve, and its output enters the same visible confirm-before-save draft.
+- Fail soft: on API error, quota exhaustion, timeout, or missing key, fall back
+  to §3.2 silently and log a sanitized category only.
+
+The free tier is a rate-limited external dependency. It must never be on a path
+that can block or break logging a meal.
+
+### Release 5 — local voice notes
+
+- Local transcription via `faster-whisper`. Audio never leaves the host — the
+  reason this is local while parsing may be remote.
+- Bounded background job, processed sequentially, with a visible in-progress
+  state and a hard duration cap on accepted audio.
+- The transcript enters the same §3.2 → §4 path and the same confirm-before-save
+  draft. Voice adds an input, not a second logging pipeline.
+- Model download and disk footprint are documented in the operations runbook.
+- Degrade honestly: if the model is unavailable, say so and offer typed entry.
+
+## Still deferred
+
+These remain out of scope until repeated household use proves otherwise:
+
+- combined provider/source infrastructure beyond what Release 4 needs;
+- USDA or Open Food Facts integrations;
+- shared-catalog local revisions, override reconciliation, and import audits;
+- catalog usuals and pins, and a full guided My Foods editor — revisit both after
+  the Release 1 live gate reports how obstructive current food setup actually is;
+- shared couple totals, comparison dashboards, or automatic data visibility;
+- roles, invitations, organizations, a web UI, cloud sync, microservices, and
+  high-availability infrastructure.
+
+Food/recipe reuse between users can remain separate until duplicate setup becomes
+frequent enough to justify one explicit Copy to spouse action.
+
+## Household trial
+
+Use the accepted app for a short normal-use period between releases. Keep a tiny
+friction log, without building telemetry:
 
 - missing foods searched for;
 - repeated amount/setup work;
@@ -679,80 +835,8 @@ without building telemetry:
 - reports actually opened; and
 - requests to reuse a food/recipe across the two private ledgers.
 
-Select **one** next slice by repeated frequency.
-
-Do not promote Candidate B merely because the current ledgers are empty. The
-Release 1 setup step deliberately creates the minimum saved-food state needed to
-test the product. If both users find that supported setup materially obstructive,
-record it and select Candidate B through the same evidence rule; otherwise keep
-it conditional with the other candidates.
-
-### Candidate A — catalog usuals and pins
-
-Choose this when both users repeatedly log the same curated catalog items and
-re-enter amounts.
-
-Implement one migration, v9:
-
-- rebuild `user_food_preferences` only to allow `source_type='catalog'`;
-- preserve every existing row and primary key;
-- validate catalog sources as active shared rows;
-- allow per-user pin/hide/usual values for catalog items;
-- keep preferences private even though the source definition is shared; and
-- show a small curated starter set when a user has no history.
-
-This does **not** require provider snapshots, revisions, online lookup, or a
-catalog edit/audit framework.
-
-### Candidate B — guided My Foods
-
-Choose this when `/food add` and `/recipe ...` syntax is the repeated problem.
-
-Add a bounded tap-and-text editor for:
-
-- name;
-- basis amount and unit;
-- known calories/macros;
-- common named portions; and
-- archive/duplicate.
-
-Use the existing v8 data model and database methods. Do not create a general
-admin panel.
-
-### Candidate C — deterministic typed meals
-
-Choose this when users repeatedly type comma-separated meals instead of using
-saved/catalog choices.
-
-- Parse only quantities/units already supported locally.
-- Match private exact names first, then known catalog aliases/search.
-- Never invent nutrition or select an ambiguous food.
-- Keep unresolved items in a visible draft with Search, Free-text snapshot, or
-  Remove, plus optional guidance to the existing `/food add` command.
-- Confirm the resolved draft before saving through the existing atomic
-  meal/item path.
-
-Keep this local and deterministic. No LLM, online provider, or schema migration
-is needed for the first useful version. Do not silently bundle Candidate B’s
-guided food editor into this slice.
-
-## Explicitly deferred
-
-Until repeated household use proves otherwise:
-
-- combined v9–v12 provider/source infrastructure;
-- USDA or Open Food Facts integrations;
-- shared-catalog local revisions, override reconciliation, and import audits;
-- Gemini/LLM parsing and consent infrastructure;
-- voice transcription and worker supervision;
-- supplement-specific tables and screens;
-- shared couple totals, comparison dashboards, or automatic data visibility;
-- roles, invitations, organizations, a web UI, cloud sync, microservices, and
-  high-availability infrastructure.
-
-Simple supplement adherence can remain a Habit. Food/recipe reuse between users
-can remain separate until duplicate setup becomes frequent enough to justify one
-explicit Copy to spouse action.
+This log decides what follows Release 5, and tunes the shape of Releases 3–5 as
+they are built. It does not decide whether they are built.
 
 ## Definition of done
 
@@ -771,6 +855,14 @@ The planned work is complete when:
 - user and operations documentation match the deployed build;
 - the mainline lives on `main`, with both Windows and Linux CI checks required
   before merge;
-- ordinary `python -m pytest -q` continues to pass without `.env` leakage; and
-- the next feature, if any, is one response to observed friction rather than a
-  revived speculative roadmap.
+- ordinary `python -m pytest -q` continues to pass without `.env` leakage;
+- supplements track adherence with dose and timing, and contribute nothing to any
+  nutrition total;
+- a meal can be logged by tapping, by typing, and by speaking, and every path
+  ends in the same confirm-before-save draft and the same atomic write;
+- no calorie or macro value in the database originated from a language model;
+- Gemini parsing is off until a user turns it on, sends only the current message,
+  and degrades to the local parser without blocking a log;
+- audio is transcribed on-host and never transmitted; and
+- anything proposed beyond this 1.0 set is one response to observed friction
+  rather than a revived speculative roadmap.

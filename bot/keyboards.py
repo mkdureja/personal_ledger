@@ -95,11 +95,14 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("✅ Habits", callback_data="menu_habits"),
             ],
             [
+                InlineKeyboardButton("💊 Supplements", callback_data="menu_supplements"),
                 InlineKeyboardButton("📖 Study", callback_data="menu_study"),
-                InlineKeyboardButton("🏋️ Workout", callback_data="menu_gym"),
             ],
             [
+                InlineKeyboardButton("🏋️ Workout", callback_data="menu_gym"),
                 InlineKeyboardButton("🗒️ Recent", callback_data="menu_recent"),
+            ],
+            [
                 InlineKeyboardButton("📊 Analytics", callback_data="menu_analytics"),
             ],
         ]
@@ -840,6 +843,176 @@ def habit_checklist_keyboard(
                 )
             )
         rows.append(navigation)
+
+    return InlineKeyboardMarkup(rows)
+
+
+def supplement_dose_label(supplement: dict) -> str:
+    """Render the dose/timing suffix for a supplement row, or an empty string.
+
+    Dose and timing are both optional, so this yields ``" · 2 capsules"``,
+    ``" · with dinner"``, ``" · 2 capsules, with dinner"``, or nothing at all.
+    The amount drops a redundant trailing ``.0`` so "2 capsules" never renders as
+    "2.0 capsules".
+    """
+    amount = supplement.get("dose_amount")
+    unit = (supplement.get("dose_unit") or "").strip()
+    timing = (supplement.get("timing") or "").strip()
+
+    parts: list[str] = []
+    if amount is not None:
+        rendered = f"{float(amount):g}"
+        parts.append(f"{rendered} {unit}".strip())
+    if timing:
+        parts.append(timing)
+    return f" · {', '.join(parts)}" if parts else ""
+
+
+def supplement_checklist_keyboard(
+    supplements: list[dict],
+    taken_ids: set[int],
+    showing_date: date,
+    user_id: int,
+    is_today: bool = True,
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    """Daily supplement adherence checklist.
+
+    Deliberately the same shape as :func:`habit_checklist_keyboard` — one
+    full-width button per row carrying the real toggle, an inert date label, a
+    yesterday/today switch, and pagination — because the two screens do the same
+    job and a user should not have to learn a second interaction model. The
+    callback prefix differs (``supp_*``) so a habit keyboard can never route into
+    supplement writes, or the reverse.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+
+    page_items, current_page, page_count = paginate_habits(supplements, page)
+    page_suffix = f"_p{current_page}" if page_count > 1 else ""
+
+    for supplement in page_items:
+        sid = supplement["id"]
+        date_str = showing_date.isoformat()
+        taken = sid in taken_ids
+        action = "supp_u" if taken else "supp_c"
+        label = f"{'✅' if taken else '⬜'} {supplement['name']}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{label}{supplement_dose_label(supplement)}",
+                    callback_data=f"{action}_{user_id}_{sid}_{date_str}{page_suffix}",
+                )
+            ]
+        )
+
+    date_label = showing_date.strftime("%b %d")
+    rows.append(
+        [
+            InlineKeyboardButton(
+                f"📅 {date_label} ({'Today' if is_today else 'Yesterday'})",
+                callback_data=f"supp_noop_{user_id}_date",
+            )
+        ]
+    )
+
+    if is_today:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "← Yesterday",
+                    callback_data=f"supp_toggle_{user_id}_yesterday{page_suffix}",
+                )
+            ]
+        )
+    else:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "→ Today",
+                    callback_data=f"supp_toggle_{user_id}_today{page_suffix}",
+                )
+            ]
+        )
+
+    if page_count > 1:
+        navigation: list[InlineKeyboardButton] = []
+        if current_page > 0:
+            navigation.append(
+                InlineKeyboardButton(
+                    "← Previous",
+                    callback_data=(
+                        f"supp_page_{user_id}_{showing_date.isoformat()}_"
+                        f"{current_page - 1}"
+                    ),
+                )
+            )
+        if current_page + 1 < page_count:
+            navigation.append(
+                InlineKeyboardButton(
+                    "Next →",
+                    callback_data=(
+                        f"supp_page_{user_id}_{showing_date.isoformat()}_"
+                        f"{current_page + 1}"
+                    ),
+                )
+            )
+        rows.append(navigation)
+
+    return InlineKeyboardMarkup(rows)
+
+
+def supplement_setup_keyboard(
+    supplements: list[dict],
+    user_id: int,
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    """Supplement setup view with remove buttons."""
+    rows: list[list[InlineKeyboardButton]] = []
+
+    page_items, current_page, page_count = paginate_habits(supplements, page)
+    page_suffix = f"_p{current_page}" if page_count > 1 else ""
+
+    for supplement in page_items:
+        sid = supplement["id"]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"💊 {supplement['name']}{supplement_dose_label(supplement)}",
+                    callback_data=f"supp_noop_{user_id}_{sid}",
+                ),
+                InlineKeyboardButton(
+                    "❌ Remove",
+                    callback_data=f"supp_remove_{user_id}_{sid}{page_suffix}",
+                ),
+            ]
+        )
+
+    if page_count > 1:
+        navigation: list[InlineKeyboardButton] = []
+        if current_page > 0:
+            navigation.append(
+                InlineKeyboardButton(
+                    "← Previous",
+                    callback_data=f"supp_setup_page_{user_id}_{current_page - 1}",
+                )
+            )
+        if current_page + 1 < page_count:
+            navigation.append(
+                InlineKeyboardButton(
+                    "Next →",
+                    callback_data=f"supp_setup_page_{user_id}_{current_page + 1}",
+                )
+            )
+        rows.append(navigation)
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 Back to Supplements",
+                callback_data=f"supp_setup_done_{user_id}",
+            )
+        ]
+    )
 
     return InlineKeyboardMarkup(rows)
 

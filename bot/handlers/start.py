@@ -108,6 +108,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>Habits</b>\n"
         "<code>/habits</code> — Check off today's habits\n"
         "<code>/habits setup</code> — Add/remove habits\n\n"
+        "<b>Supplements</b>\n"
+        "<code>/supplements</code> — Check off today's supplements\n"
+        "<code>/supplements setup</code> — Add/remove supplements\n\n"
         "<b>Analytics</b>\n"
         "<code>/summary</code> — Today's summary\n"
         "<code>/summary week</code> — Weekly summary\n"
@@ -165,7 +168,12 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.answer("Finish this flow or /cancel first.", show_alert=True)
         return
 
-    valid_actions = {"menu_habits", "menu_analytics", "menu_recent"}
+    valid_actions = {
+        "menu_habits",
+        "menu_supplements",
+        "menu_analytics",
+        "menu_recent",
+    }
     if data not in valid_actions:
         await query.answer("This menu is no longer valid.", show_alert=True)
         try:
@@ -186,6 +194,12 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Import here to avoid circular imports
         from .habits import show_habits_checklist
         await show_habits_checklist(query.message, context, update.effective_user.id)
+    elif data == "menu_supplements":
+        from .supplements import show_supplements_checklist
+
+        await show_supplements_checklist(
+            query.message, context, update.effective_user.id
+        )
     elif data == "menu_recent":
         from .recent import show_recent
 

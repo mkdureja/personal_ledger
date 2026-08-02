@@ -93,6 +93,10 @@ MAX_ACTIVE_RECIPES = 200
 MAX_INGREDIENTS_PER_RECIPE = 100
 MAX_CATALOG_AMOUNT = float(NUTRITION_MAX_CATALOG_AMOUNT)
 MAX_NUTRIENT_VALUE = float(NUTRITION_MAX_NUTRIENT_VALUE)
+MAX_SUPPLEMENT_NAME_LENGTH = 50
+MAX_DOSE_TEXT_LENGTH = 30
+MAX_DOSE_AMOUNT = 10_000.0
+MAX_ACTIVE_SUPPLEMENTS = 49
 
 # ---------------------------------------------------------------------------
 # Schema DDL and migrations now live in bot/migrations.py, keyed on
@@ -157,6 +161,60 @@ def _optional_nutrient(value: float | None, field_name: str) -> float | None:
             f"{field_name} must be between 0 and {MAX_NUTRIENT_VALUE:g}"
         )
     return nutrient
+
+
+def _validated_supplement_name(value: str) -> str:
+    """Validate a bounded, non-empty supplement name and return it trimmed."""
+    if not isinstance(value, str):
+        raise ValueError("supplement name must be text")
+    name = value.strip()
+    if not name:
+        raise ValueError("supplement name must not be empty")
+    if len(name) > MAX_SUPPLEMENT_NAME_LENGTH:
+        raise ValueError(
+            f"supplement name must be at most {MAX_SUPPLEMENT_NAME_LENGTH} characters"
+        )
+    return name
+
+
+def _validated_dose_amount(value: float | None) -> float | None:
+    """Validate an optional positive, finite dose amount.
+
+    Zero is rejected rather than stored: a supplement taken in no quantity is a
+    data-entry mistake, and the column's CHECK constraint enforces the same rule
+    against any future write path.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("dose amount must be a number")
+    try:
+        amount = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("dose amount must be a number") from exc
+    if not math.isfinite(amount):
+        raise ValueError("dose amount must be finite")
+    if amount <= 0 or amount > MAX_DOSE_AMOUNT:
+        raise ValueError(
+            f"dose amount must be greater than 0 and at most {MAX_DOSE_AMOUNT:g}"
+        )
+    return amount
+
+
+def _validated_dose_text(value: str | None, field_name: str) -> str | None:
+    """Validate an optional bounded free-text label, normalizing blank to None."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be text")
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > MAX_DOSE_TEXT_LENGTH:
+        raise ValueError(
+            f"{field_name} must be at most {MAX_DOSE_TEXT_LENGTH} characters"
+        )
+    return text
 
 
 def _habit_key(name: str) -> str:
@@ -3118,6 +3176,216 @@ class DatabaseManager:
             for row in rows:
                 if date.fromisoformat(row["log_date"]) != expected:
                     return streak  # first gap ends the streak
+                streak += 1
+                expected -= timedelta(days=1)
+            if len(rows) < self._STREAK_PAGE_SIZE:
+                break
+            offset += self._STREAK_PAGE_SIZE
+        return streak
+
+    # -------------------------------------------------------------------
+    # Supplements (adherence only — never nutrition)
+    # -------------------------------------------------------------------
+    # These methods deliberately mirror the habit ones. A supplement carries a
+    # dose and a timing label, but it has no nutrient columns and is never read
+    # by meal resolution or diet analytics, so adherence can never move a
+    # calorie or macro total.
+    async def add_supplement(
+        self,
+        user_id: int,
+        name: str,
+        *,
+        dose_amount: float | None = None,
+        dose_unit: str | None = None,
+        timing: str | None = None,
+    ) -> tuple[int, HabitAddStatus]:
+        """Add, reactivate, or find an active supplement.
+
+        Returns ``(supplement_id, status)`` with the same vocabulary as
+        :meth:`add_habit`. Reactivating refreshes dose and timing, because a user
+        restarting a supplement usually restarts it at a current dose; passing
+        ``None`` clears the stored value rather than silently keeping a stale one.
+        """
+        clean_name = _validated_supplement_name(name)
+        name_key = _habit_key(clean_name)
+        amount = _validated_dose_amount(dose_amount)
+        unit = _validated_dose_text(dose_unit, "dose unit")
+        when = _validated_dose_text(timing, "timing")
+
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "SELECT id, is_active FROM supplements "
+                "WHERE user_id = ? AND name_key = ? "
+                "ORDER BY is_active DESC, id LIMIT 1",
+                (user_id, name_key),
+            )
+            row = await cursor.fetchone()
+            if row is not None and row["is_active"]:
+                return row["id"], "already_active"
+
+            if row is not None:
+                cursor = await self.conn.execute(
+                    """
+                    UPDATE supplements
+                    SET is_active = 1, name = ?, dose_amount = ?,
+                        dose_unit = ?, timing = ?
+                    WHERE id = ?
+                      AND is_active = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM supplements
+                          WHERE user_id = ? AND name_key = ? AND is_active = 1
+                      )
+                    """,
+                    (
+                        clean_name, amount, unit, when,
+                        row["id"], user_id, name_key,
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    return row["id"], "reactivated"
+
+            cursor = await self.conn.execute(
+                "INSERT INTO supplements "
+                "(user_id, name, name_key, dose_amount, dose_unit, timing) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, clean_name, name_key, amount, unit, when),
+            )
+            return cursor.lastrowid, "added"
+
+    async def update_supplement(
+        self,
+        user_id: int,
+        supplement_id: int,
+        *,
+        dose_amount: float | None = None,
+        dose_unit: str | None = None,
+        timing: str | None = None,
+    ) -> bool:
+        """Replace an active supplement's dose and timing. True if a row changed.
+
+        Every field is written, so an omitted argument clears its column. Dose is
+        current state, not history: adherence rows record *that* a dose was taken
+        on a date, and are never rewritten by an edit here.
+        """
+        amount = _validated_dose_amount(dose_amount)
+        unit = _validated_dose_text(dose_unit, "dose unit")
+        when = _validated_dose_text(timing, "timing")
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "UPDATE supplements SET dose_amount = ?, dose_unit = ?, timing = ? "
+                "WHERE id = ? AND user_id = ? AND is_active = 1",
+                (amount, unit, when, supplement_id, user_id),
+            )
+            return cursor.rowcount > 0
+
+    async def deactivate_supplement(self, user_id: int, supplement_id: int) -> bool:
+        """Soft-delete a supplement. Returns True if a row was affected.
+
+        Adherence history is kept: the logs stay joined to this id, and the
+        partial unique index only covers active rows, so the same name can be
+        added again later without colliding.
+        """
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "UPDATE supplements SET is_active = 0 "
+                "WHERE id = ? AND user_id = ? AND is_active = 1",
+                (supplement_id, user_id),
+            )
+            return cursor.rowcount > 0
+
+    async def get_active_supplements(self, user_id: int) -> list[dict[str, Any]]:
+        """Get all active supplements for a user, in stable display order."""
+        rows = await self._query_all(
+            "SELECT * FROM supplements WHERE user_id = ? AND is_active = 1 "
+            "ORDER BY id",
+            (user_id,),
+        )
+        return [dict(row) for row in rows]
+
+    async def take_supplement(
+        self, user_id: int, supplement_id: int, log_date: date
+    ) -> bool:
+        """Record adherence for a local date. True only if a row was inserted.
+
+        The insert is conditional on the supplement being active and owned by
+        this user, so a stale keyboard from another ledger cannot write here.
+        A repeated tap conflicts and is a no-op rather than a second row.
+        """
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO supplement_logs (user_id, supplement_id, log_date)
+                SELECT ?, s.id, ?
+                FROM supplements AS s
+                WHERE s.id = ? AND s.user_id = ? AND s.is_active = 1
+                ON CONFLICT(user_id, supplement_id, log_date) DO NOTHING
+                """,
+                (user_id, log_date.isoformat(), supplement_id, user_id),
+            )
+            return cursor.rowcount > 0
+
+    async def untake_supplement(
+        self, user_id: int, supplement_id: int, log_date: date
+    ) -> bool:
+        """Remove an adherence row for a local date. True if one was deleted."""
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "DELETE FROM supplement_logs "
+                "WHERE user_id = ? AND supplement_id = ? AND log_date = ?",
+                (user_id, supplement_id, log_date.isoformat()),
+            )
+            return cursor.rowcount > 0
+
+    async def get_taken_supplements(self, user_id: int, log_date: date) -> set[int]:
+        """The set of supplement ids recorded as taken on a local date."""
+        rows = await self._query_all(
+            "SELECT supplement_id FROM supplement_logs "
+            "WHERE user_id = ? AND log_date = ?",
+            (user_id, log_date.isoformat()),
+        )
+        return {row["supplement_id"] for row in rows}
+
+    async def get_supplement_logs_range(
+        self, user_id: int, start_date: date, end_date: date
+    ) -> list[dict[str, Any]]:
+        """Get supplement adherence rows in an inclusive date range."""
+        rows = await self._query_all(
+            "SELECT * FROM supplement_logs "
+            "WHERE user_id = ? AND log_date >= ? AND log_date <= ? "
+            "ORDER BY log_date",
+            (user_id, start_date.isoformat(), end_date.isoformat()),
+        )
+        return [dict(row) for row in rows]
+
+    async def get_supplement_streak(
+        self, user_id: int, supplement_id: int, today: date
+    ) -> int:
+        """Consecutive adherence days ending today, 0 if today is unrecorded.
+
+        Paged like :meth:`get_streak` so a long history stays bounded in memory
+        without capping the reportable streak.
+        """
+        streak = 0
+        expected = today
+        offset = 0
+        while True:
+            rows = await self._query_all(
+                "SELECT log_date FROM supplement_logs "
+                "WHERE user_id = ? AND supplement_id = ? AND log_date <= ? "
+                "ORDER BY log_date DESC LIMIT ? OFFSET ?",
+                (
+                    user_id,
+                    supplement_id,
+                    today.isoformat(),
+                    self._STREAK_PAGE_SIZE,
+                    offset,
+                ),
+            )
+            if not rows:
+                break
+            for row in rows:
+                if date.fromisoformat(row["log_date"]) != expected:
+                    return streak
                 streak += 1
                 expected -= timedelta(days=1)
             if len(rows) < self._STREAK_PAGE_SIZE:

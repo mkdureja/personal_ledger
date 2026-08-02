@@ -622,6 +622,7 @@
             <li><a href="#diet">Logging Meals</a></li>
             <li><a href="#catalog">Saved Foods &amp; Recipes</a></li>
             <li><a href="#habits">Tracking Habits</a></li>
+            <li><a href="#supplements">Tracking Supplements</a></li>
             <li><a href="#analytics">Analytics &amp; Charts</a></li>
             <li><a href="#reminders">Reminders &amp; Routine</a></li>
             <li><a href="#utility">Utility Commands</a></li>
@@ -638,7 +639,7 @@
 
     <div class="box box-success no-break">
         <div class="box-title">✅ What you can use</div>
-        <p>Home, Study, Workout, Meals, Habits, Recent, Analytics, charts,
+        <p>Home, Study, Workout, Meals, Habits, Supplements, Recent, Analytics, charts,
         suggestions, <code>/cancel</code>, and <code>/undo</code> are ready for
         everyday use. Scheduled reminders work after each person opts in with
         <code>/reminders on</code> and while the household bot is running.</p>
@@ -654,7 +655,7 @@
             <div class="step-title">Open Home</div>
             <p>Send <code>/start</code>, <code>/home</code>, or <code>/menu</code>,
             or simply say <strong>hi</strong>. They all open today’s totals and
-            the same six action buttons.</p>
+            the same seven action buttons.</p>
         </div>
         <div class="step">
             <div class="step-title">Tap what you want to log</div>
@@ -782,11 +783,14 @@ DB_PATH=ledger.db</code></pre>
                         <span class="kb-btn">✅ Habits</span>
                     </div>
                     <div class="kb-row">
+                        <span class="kb-btn">💊 Supplements</span>
                         <span class="kb-btn">📖 Study</span>
-                        <span class="kb-btn">🏋️ Workout</span>
                     </div>
                     <div class="kb-row">
+                        <span class="kb-btn">🏋️ Workout</span>
                         <span class="kb-btn">🗒️ Recent</span>
+                    </div>
+                    <div class="kb-row">
                         <span class="kb-btn">📊 Analytics</span>
                     </div>
                 </div>
@@ -1110,9 +1114,102 @@ DB_PATH=ledger.db</code></pre>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════ -->
-    <!-- 7. ANALYTICS                                            -->
+    <!-- 7. SUPPLEMENTS                                          -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="analytics" class="page-break">7. Analytics &amp; Charts</h2>
+    <h2 id="supplements" class="page-break">7. Tracking Supplements</h2>
+
+    <p>Supplements work like habits — set them up once, then check them off each
+    day — but each one can also record a <strong>dose</strong> and a
+    <strong>timing</strong>, so the checklist shows what you actually take.</p>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💊 Supplements never affect calories or macros</div>
+        <p>This section tracks <strong>adherence only</strong>: whether you took
+        something on a given day. A supplement has no calorie or macro values, is
+        never part of a meal, and never changes any nutrition total or chart. If
+        you want something counted as food, log it as a meal instead.</p>
+    </div>
+
+    <h3>Setting Up Supplements</h3>
+    <p>Send <code>/supplements setup</code> to add or remove them. Type the name
+    on its own, or add a dose and a timing separated by commas. You can keep up
+    to <strong>49 active supplements</strong>.</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/supplements setup</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ⚙️ <strong>Supplement Setup</strong><br><br>
+                You have no supplements yet. Type one to add it:<br>
+                <em>Vitamin D3, 2 capsules, with breakfast</em><br><br>
+                Dose and timing are optional — <em>Magnesium</em> works too.<br>
+                Use /cancel when done.
+            </div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">Vitamin D3, 2 capsules, with breakfast</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">✅ Added: <strong>Vitamin D3</strong> · 2 capsules, with breakfast</div></div>
+        <div class="msg msg-user"><div class="msg-bubble">Magnesium</div></div>
+        <div class="msg msg-bot"><div class="msg-bubble">✅ Added: <strong>Magnesium</strong></div></div>
+    </div>
+
+    <table class="no-break">
+        <thead>
+            <tr><th>What you type</th><th>What gets stored</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><code>Magnesium</code></td><td>Name only</td></tr>
+            <tr><td><code>Omega 3, 1000 mg</code></td><td>Name and dose</td></tr>
+            <tr><td><code>Creatine, evening</code></td><td>Name and timing — a second part without a number is read as timing</td></tr>
+            <tr><td><code>Iron, 1 tablet, after lunch</code></td><td>Name, dose, and timing</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Daily Check-Off</h3>
+    <p>Send <code>/supplements</code> (or tap <strong>💊 Supplements</strong> on
+    Home) to see today's list. Tap a name to record it, tap again to undo. The
+    dose and timing appear on the button so you can tell two similar entries
+    apart:</p>
+
+    <div class="chat no-break" style="max-width: 380px;">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble" style="width: 100%;">
+                💊 <strong>Supplements</strong> — 1/2 taken<br>Tap to check off:
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn" style="flex: 1; text-align: left;">✅ Vitamin D3 · 2 capsules, with breakfast</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn" style="flex: 1; text-align: left;">⬜ Magnesium</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">📅 Aug 02 (Today)</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">← Yesterday</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <p>The <strong>← Yesterday</strong> toggle and the streak rules work exactly
+    as they do for habits, including the rule that an unrecorded today means a
+    streak of 0. Removing a supplement keeps its history, and re-adding the same
+    name brings the original back rather than creating a duplicate — the new dose
+    and timing you type replace the old ones.</p>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 8. ANALYTICS                                            -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="analytics" class="page-break">8. Analytics &amp; Charts</h2>
 
     <h3>Text Summaries</h3>
 
@@ -1203,7 +1300,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 8. REMINDERS                                            -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="reminders">8. Reminders &amp; Routine</h2>
+    <h2 id="reminders">9. Reminders &amp; Routine</h2>
 
     <p>Ledger can nudge you, not just record you. Reminders are opt-in for each
     person; once enabled, Ledger can send one evening habit reminder. Add an
@@ -1311,7 +1408,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 9. UTILITY                                              -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="utility" class="page-break">9. Utility Commands</h2>
+    <h2 id="utility" class="page-break">10. Utility Commands</h2>
 
     <h3>/undo — Undo Last Entry</h3>
     <p>Made a mistake? Send <code>/undo</code> to review your most recent log entry (study, gym, or diet). The bot shows it and waits for you to confirm — <strong>nothing is deleted until you tap “Yes, undo.”</strong> Only works within <strong>24 hours</strong> of the entry.</p>
@@ -1509,7 +1606,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 10. QUICK REFERENCE                                     -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="quick-ref" class="page-break">10. Quick Reference Card</h2>
+    <h2 id="quick-ref" class="page-break">11. Quick Reference Card</h2>
 
     <h3>Logging Commands</h3>
     <table>
@@ -1569,6 +1666,8 @@ DB_PATH=ledger.db</code></pre>
         <tbody>
             <tr><td><code>/habits</code></td><td>Today's habit checklist (with yesterday toggle)</td></tr>
             <tr><td><code>/habits setup</code></td><td>Add or remove habit definitions</td></tr>
+            <tr><td><code>/supplements</code></td><td>Today's supplement checklist (adherence only)</td></tr>
+            <tr><td><code>/supplements setup</code></td><td>Add or remove supplements, with optional dose and timing</td></tr>
         </tbody>
     </table>
 
@@ -1607,7 +1706,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 11. TIPS                                                -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="tips" class="page-break">11. Tips &amp; Best Practices</h2>
+    <h2 id="tips" class="page-break">12. Tips &amp; Best Practices</h2>
 
     <div class="feature-grid">
         <div class="feature-card no-break">
@@ -1656,7 +1755,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 12. TROUBLESHOOTING                                     -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="troubleshooting" class="page-break">12. Troubleshooting</h2>
+    <h2 id="troubleshooting" class="page-break">13. Troubleshooting</h2>
 
     <table>
         <thead><tr><th style="width: 35%;">Problem</th><th>Solution</th></tr></thead>
