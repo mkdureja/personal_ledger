@@ -43,7 +43,7 @@ from .common import (
     parse_int,
     reply_html,
     timeout_handler,
-    voice_not_enabled_interceptor,
+    voice_mid_flow_interceptor,
 )
 from ..keyboards import yes_no_keyboard
 from ..config import CONVERSATION_TIMEOUT
@@ -400,7 +400,7 @@ async def more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # Reject voice mid-flow (no download) and nudge on any Home control word before
 # it can be captured as an exercise name (plan §8.5/§8.6). MORE is callback-only,
 # so it also gets a text catchall so arbitrary text never reaches the Home router.
-_voice_guard = MessageHandler(filters.VOICE, voice_not_enabled_interceptor)
+_voice_guard = MessageHandler(filters.VOICE, voice_mid_flow_interceptor)
 _control_guard = MessageHandler(
     ACTIVE_CONTROL_FILTER, active_flow_control_interceptor
 )

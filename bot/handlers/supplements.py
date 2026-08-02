@@ -48,7 +48,7 @@ from .common import (
     finish_conversation,
     reply_html,
     timeout_handler,
-    voice_not_enabled_interceptor,
+    voice_mid_flow_interceptor,
 )
 from ..keyboards import (
     paginate_habits,
@@ -730,7 +730,7 @@ async def supplement_setup_done_callback(
 # ---------------------------------------------------------------------------
 # ConversationHandler for setup
 # ---------------------------------------------------------------------------
-_voice_guard = MessageHandler(filters.VOICE, voice_not_enabled_interceptor)
+_voice_guard = MessageHandler(filters.VOICE, voice_mid_flow_interceptor)
 _control_guard = MessageHandler(ACTIVE_CONTROL_FILTER, active_flow_control_interceptor)
 
 supplements_setup_conv_handler = ConversationHandler(

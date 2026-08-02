@@ -38,7 +38,7 @@ from .common import (
     parse_int,
     reply_html,
     timeout_handler,
-    voice_not_enabled_interceptor,
+    voice_mid_flow_interceptor,
 )
 from ..config import CONVERSATION_TIMEOUT
 
@@ -311,7 +311,7 @@ async def skip_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ---------------------------------------------------------------------------
 # Reject voice mid-flow (no download) and nudge on any Home control word before
 # it can be captured as a subject/note (plan §8.5/§8.6).
-_voice_guard = MessageHandler(filters.VOICE, voice_not_enabled_interceptor)
+_voice_guard = MessageHandler(filters.VOICE, voice_mid_flow_interceptor)
 _control_guard = MessageHandler(
     ACTIVE_CONTROL_FILTER, active_flow_control_interceptor
 )

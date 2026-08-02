@@ -324,14 +324,37 @@ async def test_control_interceptor_nudges_and_preserves_state():
     assert "Finish this flow" in update.effective_message.reply_text.call_args.args[0]
 
 
-async def test_voice_interceptor_does_not_download():
-    from bot.handlers.common import voice_not_enabled_interceptor
+async def test_voice_interceptor_does_not_download(monkeypatch):
+    from bot import config
+    from bot.handlers.common import voice_mid_flow_interceptor
 
+    monkeypatch.setattr(config, "VOICE_ENABLED", False)
     # No get_file on the update object: a download attempt would AttributeError.
     update = _update()
-    result = await voice_not_enabled_interceptor(update, _context())
+    result = await voice_mid_flow_interceptor(update, _context())
     assert result is None
-    assert "Voice logging isn't enabled" in update.effective_message.reply_text.call_args.args[0]
+    assert "Voice logging is off" in update.effective_message.reply_text.call_args.args[0]
+
+
+async def test_voice_interceptor_says_where_voice_works_when_it_is_on(monkeypatch):
+    """With voice enabled, "isn't enabled yet" was simply untrue.
+
+    The note is still refused mid-flow — that part is by design — but the reason
+    is that this is the wrong place, not that the feature is missing. Telling the
+    user it is missing sends them to fix something that isn't broken.
+    """
+    from bot import config
+    from bot.handlers.common import voice_mid_flow_interceptor
+
+    monkeypatch.setattr(config, "VOICE_ENABLED", True)
+    update = _update()
+
+    result = await voice_mid_flow_interceptor(update, _context())
+
+    assert result is None
+    text = update.effective_message.reply_text.call_args.args[0]
+    assert "from Home" in text
+    assert "isn't enabled" not in text
 
 
 async def test_text_catchall_absorbs_arbitrary_text():

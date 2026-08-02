@@ -21,6 +21,7 @@ from telegram.ext import (
     filters,
 )
 
+from .. import config
 from ..config import ALLOWED_USER_IDS
 from ..database import MutationSource
 from ..keyboards import (
@@ -447,18 +448,34 @@ async def active_flow_control_interceptor(
     return None
 
 
-async def voice_not_enabled_interceptor(
+async def voice_mid_flow_interceptor(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Reject a voice note mid-flow without downloading it (plan §8.6).
+    """Refuse a voice note *during* a guided flow, without downloading it.
 
-    Never calls ``get_file`` or downloads content. Returns ``None`` to preserve
-    the current state.
+    Transcribing here would either overwrite a live draft or discard the
+    recording, so the note is refused whatever the deployment's voice setting is.
+    Never calls ``get_file``. Returns ``None`` to preserve the current state.
+
+    The wording depends on that setting, because the two situations need
+    different advice. This previously always said "voice logging isn't enabled
+    yet", which became a lie the moment voice was turned on: the user was told
+    the feature was missing when it was in fact working and simply unavailable
+    *here*.
     """
-    await _safe_reply(
-        update, "🎤 Voice logging isn't enabled yet. Use the buttons or /cancel."
-    )
+    # Read through the module, not a bound constant, so the value is current.
+    if config.VOICE_ENABLED:
+        message = (
+            "🎤 Finish this first, or send /cancel — voice notes work from Home."
+        )
+    else:
+        message = "🎤 Voice logging is off. Use the buttons, or /cancel."
+    await _safe_reply(update, message)
     return None
+
+
+#: Kept so an older import keeps working during the rename.
+voice_not_enabled_interceptor = voice_mid_flow_interceptor
 
 
 async def buttons_or_cancel_catchall(

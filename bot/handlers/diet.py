@@ -43,7 +43,7 @@ from .common import (
     parse_int,
     reply_html,
     timeout_handler,
-    voice_not_enabled_interceptor,
+    voice_mid_flow_interceptor,
 )
 from .receipts import (
     RECEIPT_CURRENT_PATTERN,
@@ -3474,7 +3474,7 @@ def _diet_meal_guard(state: int) -> MessageHandler:
 # Shared, stateless per-state guards. Voice is rejected without a download;
 # non-meal control words nudge; arbitrary text in a callback-only state is
 # absorbed so it never falls through to the Home router.
-_diet_voice_guard = MessageHandler(filters.VOICE, voice_not_enabled_interceptor)
+_diet_voice_guard = MessageHandler(filters.VOICE, voice_mid_flow_interceptor)
 _diet_control_guard = MessageHandler(
     DIET_NONMEAL_CONTROL_FILTER, active_flow_control_interceptor
 )

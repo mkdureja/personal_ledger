@@ -37,7 +37,7 @@ from .common import (
     finish_conversation,
     reply_html,
     timeout_handler,
-    voice_not_enabled_interceptor,
+    voice_mid_flow_interceptor,
 )
 from ..keyboards import (
     MAX_ACTIVE_HABITS,
@@ -618,7 +618,7 @@ async def habit_setup_done_callback(
 # Reject voice mid-setup (no download) and nudge on any Home control word before
 # it can be captured as a habit name (plan §8.5/§8.6). Ordinary text remains a
 # valid habit name, so the control guard sits just before add_habit_text.
-_voice_guard = MessageHandler(filters.VOICE, voice_not_enabled_interceptor)
+_voice_guard = MessageHandler(filters.VOICE, voice_mid_flow_interceptor)
 _control_guard = MessageHandler(
     ACTIVE_CONTROL_FILTER, active_flow_control_interceptor
 )
