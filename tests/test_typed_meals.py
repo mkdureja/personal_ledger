@@ -306,14 +306,40 @@ async def test_a_mixed_line_keeps_the_good_items_and_reports_the_rest():
     assert {u.name for u in plan.unresolved} == {"quinoa", "coffee"}
 
 
-async def test_totals_treat_unknown_calories_as_unknown_not_zero():
+async def test_a_food_with_incomplete_nutrition_is_refused_not_totalled():
+    """A definition saved before nutrition was mandatory must not be logged.
+
+    It used to resolve and contribute an unknown to the total. Now it is listed
+    under "Not logged" with its own reason, so the total below is always real.
+    """
     unknown = dict(_OATS, id=2, name="tea", calories=None)
     db = _db(foods=[_OATS, unknown])
 
     plan = await plan_typed_meal(db, UID, parse_meal_text("100g oats, 100g tea"))
 
+    assert [entry.display_text for entry in plan.resolved] == ["100 g oats"]
     assert plan.total_calories == 380
-    assert plan.has_unknown_calories is True
+    assert plan.has_unknown_calories is False
+    assert [(item.name, item.reason) for item in plan.unresolved] == [
+        ("tea", "incomplete_nutrition")
+    ]
+
+
+async def test_the_incomplete_reason_tells_the_user_what_to_do():
+    from bot.services.typed_meal import REASON_TEXT
+
+    assert "nutrition" in REASON_TEXT["incomplete_nutrition"]
+
+
+async def test_totals_cover_every_macro_not_just_calories():
+    db = _db(foods=[_OATS])
+
+    plan = await plan_typed_meal(db, UID, parse_meal_text("100g oats, 100g oats"))
+
+    assert plan.total_calories == 760
+    assert plan.total_protein_g == pytest.approx(26.0)
+    assert plan.total_carbs_g == pytest.approx(134.0)
+    assert plan.total_fat_g == pytest.approx(14.0)
 
 
 async def test_the_planner_reads_the_users_lists_once_for_the_whole_line():
@@ -481,6 +507,32 @@ async def test_cancel_discards_without_writing():
 
     db.log_diet_with_items.assert_not_awaited()
     assert "describe_pending" not in context.user_data
+
+
+async def test_a_stale_cancel_does_not_discard_the_newest_draft():
+    """Cancel must check its token, exactly as Save does.
+
+    It used to pop whatever draft was pending, so tapping Cancel on a superseded
+    preview threw away the *newer* meal still on screen — a silent data loss
+    triggered by a button that promises to change nothing.
+    """
+    context, db, _call = await _preview("50g oats", foods=[_OATS])
+    from bot.callback_data import to_base36
+
+    stale = context.user_data["describe_pending"]["token"]
+    # A newer preview supersedes the first.
+    context.user_data["describe_pending"]["token"] = stale + 1
+    context.user_data["describe_pending"]["items"] = [{"display_name": "newer"}]
+
+    query = _query(f"desc_cancel_{to_base36(UID)}_{to_base36(stale)}")
+    await describe.describe_cancel_callback(_callback_update(query), context)
+
+    pending = context.user_data.get("describe_pending")
+    assert pending is not None, "the newer draft was discarded by a stale Cancel"
+    assert pending["token"] == stale + 1
+    assert pending["items"] == [{"display_name": "newer"}]
+    assert query.answer.await_args.kwargs["show_alert"] is True
+    db.log_diet_with_items.assert_not_awaited()
 
 
 async def test_a_failed_save_keeps_the_draft_for_a_retry():

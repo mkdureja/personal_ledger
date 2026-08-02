@@ -4,7 +4,7 @@ message composition, the scheduled job, and startup wiring."""
 from __future__ import annotations
 
 import logging
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -12,7 +12,7 @@ import pytest
 from telegram.ext import ApplicationBuilder
 
 from bot import main as main_module
-from bot.config import today_local
+from bot.config import LOCAL_TZ, today_local
 from bot.handlers.reminders import anchor_job, build_anchor_message
 from bot.routine import (
     WEEKDAYS,
@@ -22,6 +22,22 @@ from bot.routine import (
     load_routine,
     pick_quote,
 )
+
+
+def _pin_clock_before_every_slot(monkeypatch):
+    """Make startup see a time earlier than any scheduled job.
+
+    ``post_init`` replays a job whose slot has already passed today, so a test
+    asserting the exact job list would otherwise pass in the morning and fail
+    after the first anchor — the frozen-date/real-clock trap. Pinning the seam
+    keeps these tests about *daily* scheduling; the catch-up path has its own
+    tests below.
+    """
+    monkeypatch.setattr(
+        main_module,
+        "_local_now",
+        lambda: datetime.now(LOCAL_TZ).replace(hour=0, minute=1, second=0),
+    )
 
 VALID_YAML = """\
 quotes:
@@ -266,16 +282,28 @@ async def test_diet_line_states(db_with_user, user_id):
     msg, _ = await build_anchor_message(anchor, db_with_user, user_id, today, Targets(), ())
     assert "nothing logged" in msg
 
-    await db_with_user.log_diet(user_id, "lunch", "Dal rice", calories=500)
-    await db_with_user.log_diet(user_id, "snack", "Apple", calories=95)
+    await db_with_user.log_diet(user_id, "lunch", "Dal rice", calories=500, protein_g=1, carbs_g=2, fat_g=3)
+    await db_with_user.log_diet(user_id, "snack", "Apple", calories=95, protein_g=1, carbs_g=2, fat_g=3)
     msg, _ = await build_anchor_message(anchor, db_with_user, user_id, today, Targets(), ())
     assert "2 meals" in msg and "595 kcal" in msg
 
 
 @pytest.mark.asyncio
-async def test_diet_line_incomplete_calories(db_with_user, user_id):
+async def test_diet_line_flags_a_legacy_row_with_no_calories(db_with_user, user_id):
+    """Rows predating mandatory nutrition still have to be reported honestly.
+
+    The app can no longer *write* such a row, so the row is inserted directly —
+    which is exactly how one exists in reality: it was logged before the rule.
+    Keeping the flag means an old ledger is not silently mis-totalled.
+    """
     anchor = _anchor(checks=["diet"])
-    await db_with_user.log_diet(user_id, "lunch", "Mystery", calories=None)
+    await db_with_user.conn.execute(
+        "INSERT INTO diet_logs (user_id, meal_type, food_items, calories, logged_at) "
+        "VALUES (?, 'lunch', 'Mystery', NULL, ?)",
+        (user_id, f"{today_local().isoformat()} 06:30:00"),
+    )
+    await db_with_user.conn.commit()
+
     msg, _ = await build_anchor_message(
         anchor, db_with_user, user_id, today_local(), Targets(), ()
     )
@@ -399,6 +427,7 @@ async def test_post_init_schedules_anchors(tmp_path, monkeypatch):
     routine_file.write_text(VALID_YAML, encoding="utf-8")
     monkeypatch.setattr(main_module, "DB_PATH", str(tmp_path / "ledger.db"))
     monkeypatch.setattr(main_module, "ROUTINE_PATH", str(routine_file))
+    _pin_clock_before_every_slot(monkeypatch)
 
     application = ApplicationBuilder().token("123456:TEST_TOKEN").build()
     await main_module.post_init(application)
@@ -418,6 +447,7 @@ async def test_post_init_schedules_anchors(tmp_path, monkeypatch):
 async def test_post_init_falls_back_without_routine(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "DB_PATH", str(tmp_path / "ledger.db"))
     monkeypatch.setattr(main_module, "ROUTINE_PATH", str(tmp_path / "none.yaml"))
+    _pin_clock_before_every_slot(monkeypatch)
 
     application = ApplicationBuilder().token("123456:TEST_TOKEN").build()
     await main_module.post_init(application)

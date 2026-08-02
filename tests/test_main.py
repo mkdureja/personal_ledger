@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from telegram.ext import ApplicationBuilder
 
 from bot import main as main_module
+from bot.config import LOCAL_TZ
 
 
 @pytest.mark.asyncio
@@ -14,6 +17,13 @@ async def test_post_init_sets_up_database_and_reminder(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "DB_PATH", str(tmp_path / "ledger-test.db"))
     # Isolate from any real routine.yaml so the legacy reminder path is tested.
     monkeypatch.setattr(main_module, "ROUTINE_PATH", str(tmp_path / "no-routine.yaml"))
+    # Before the reminder slot, so no catch-up job is added and the assertion
+    # below means the same thing at every hour of the day.
+    monkeypatch.setattr(
+        main_module,
+        "_local_now",
+        lambda: datetime.now(LOCAL_TZ).replace(hour=0, minute=1, second=0),
+    )
     application = ApplicationBuilder().token("123456:TEST_TOKEN").build()
 
     assert application.job_queue is not None

@@ -16,6 +16,10 @@ There is exactly one source of truth here:
   version must contain. Both the startup verifier and the backup verifier call
   this, so a copy can never be certified against a different table list than the
   one the bot enforces.
+* :data:`VERIFIED_COLUMNS` / :func:`required_columns_for` — the columns those
+  tables must carry. A table can gain columns in a later migration, so each
+  table maps to *groups* keyed by the version that introduced them; a database
+  is only asked for a group its stamped version has reached.
 
 A version number is an *input* to verification, not proof of correctness: a
 corrupt, partially restored, or mis-stamped database must fail closed rather
@@ -64,6 +68,103 @@ TABLE_INTRODUCED: dict[str, int] = {
     "supplements": 9,
     "supplement_logs": 9,
 }
+
+# The columns each table must carry, grouped by the version that introduced
+# them. Existence of a *table* is not proof of its shape: ``CREATE TABLE IF NOT
+# EXISTS`` never adds a column to a table that already exists, and a column-only
+# migration (v10) changes no table list at all — so a database can hold every
+# required table, carry a current version stamp, and still be missing a column
+# the runtime depends on.
+#
+# Grouping by version is what makes a column-only migration verifiable. A table
+# appears once per version that changed its shape, and ``required_columns_for``
+# unions every group at or below the version being checked, so a v9 rollback
+# point is never asked for v10's columns.
+#
+# Listing a column that a valid database might legitimately lack would fail a
+# *good* backup, so this map stays conservative: it names the columns the runtime
+# reads, not every column in the DDL.
+VERIFIED_COLUMNS: dict[str, tuple[tuple[int, tuple[str, ...]], ...]] = {
+    "users": ((1, ("user_id", "username", "first_name")),),
+    "study_logs": (
+        (1, ("user_id", "subject", "duration_min", "notes", "logged_at")),
+    ),
+    "gym_logs": (
+        (1, ("user_id", "exercise", "sets", "reps", "weight_kg", "logged_at")),
+    ),
+    "diet_logs": (
+        (
+            1,
+            (
+                "user_id", "meal_type", "food_items", "calories",
+                "protein_g", "carbs_g", "fat_g", "logged_at",
+            ),
+        ),
+    ),
+    "habits": ((1, ("user_id", "habit_name", "name_key", "is_active", "created_at")),),
+    "habit_logs": ((1, ("user_id", "habit_id", "log_date")),),
+    "user_settings": (
+        (3, ("user_id", "reminders_enabled", "routine_profile")),
+        # v10 is column-only: without this group a database that lost both
+        # consent columns would still verify as a sound v10.
+        (10, ("ai_parsing_enabled", "ai_parsing_consented_at")),
+    ),
+    "diet_log_items": (
+        (
+            8,
+            (
+                "id", "user_id", "diet_log_id", "item_order", "source_type",
+                "source_id", "source_provider", "source_revision", "display_name",
+                "calories", "protein_g", "carbs_g", "fat_g",
+            ),
+        ),
+    ),
+    "catalog_foods": (
+        (8, ("id", "provider", "provider_food_id", "name_key", "base_unit", "is_active")),
+    ),
+    "catalog_portions": ((8, ("id", "catalog_food_id", "name_key", "base_amount")),),
+    "catalog_aliases": ((8, ("id", "catalog_food_id", "alias_key")),),
+    "supplements": (
+        (
+            9,
+            (
+                "id", "user_id", "name", "name_key", "dose_amount",
+                "dose_unit", "timing", "is_active", "created_at",
+            ),
+        ),
+    ),
+    "supplement_logs": ((9, ("id", "user_id", "supplement_id", "log_date")),),
+}
+
+
+def required_columns_for(version: int) -> dict[str, frozenset[str]]:
+    """The columns each table must carry in a database stamped at ``version``.
+
+    Only tables whose shape is confirmed in :data:`VERIFIED_COLUMNS` appear;
+    every other required table is existence-checked by the caller. Raises
+    ``ValueError`` for an undescribable version, for the same reason
+    :func:`required_tables_for` does.
+    """
+    version = int(version)
+    if not is_known_schema_version(version):
+        raise ValueError(
+            f"Cannot describe schema version {version}: this checkout knows "
+            f"versions 1 through {LATEST_SCHEMA_VERSION}."
+        )
+    required: dict[str, frozenset[str]] = {}
+    for table, groups in VERIFIED_COLUMNS.items():
+        if TABLE_INTRODUCED.get(table, LATEST_SCHEMA_VERSION + 1) > version:
+            continue
+        columns = {
+            column
+            for introduced, names in groups
+            if introduced <= version
+            for column in names
+        }
+        if columns:
+            required[table] = frozenset(columns)
+    return required
+
 
 # Tables holding shared, non-personal reference data. Their totals are optional
 # diagnostics — useful for spotting an unseeded catalog, but never a substitute

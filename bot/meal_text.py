@@ -34,7 +34,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-__all__ = ["ParsedSegment", "parse_meal_text", "MAX_SEGMENTS", "MAX_SEGMENT_LENGTH"]
+__all__ = [
+    "MealTextParse",
+    "ParsedSegment",
+    "parse_meal",
+    "parse_meal_text",
+    "MAX_SEGMENTS",
+    "MAX_SEGMENT_LENGTH",
+]
 
 #: A meal is a handful of items. The cap matches ``nutrition.MAX_MEAL_ITEMS`` in
 #: spirit — refuse absurd input early rather than build a draft nobody wants.
@@ -112,6 +119,46 @@ class ParsedSegment:
         return bool(self.quantity_tokens)
 
 
+@dataclass(frozen=True)
+class MealTextParse:
+    """The segments, plus anything the caps removed on the way.
+
+    Both caps exist to refuse absurd input, but silently discarding part of a
+    meal is worse than refusing it: the confirm screen would look complete while
+    the tail of what the user typed had been dropped. Recording what was removed
+    lets the caller say so.
+    """
+
+    segments: tuple[ParsedSegment, ...] = ()
+    #: Items past :data:`MAX_SEGMENTS` that were never parsed.
+    dropped_items: int = 0
+    #: Segments cut down to :data:`MAX_SEGMENT_LENGTH`.
+    shortened_items: int = 0
+
+    @property
+    def truncated(self) -> bool:
+        return bool(self.dropped_items or self.shortened_items)
+
+    @property
+    def notice(self) -> str | None:
+        """One sentence naming what was left out, or ``None`` if nothing was."""
+        parts: list[str] = []
+        if self.dropped_items:
+            parts.append(
+                f"only the first {MAX_SEGMENTS} items were read "
+                f"({self.dropped_items} more were not)"
+            )
+        if self.shortened_items:
+            noun = "item" if self.shortened_items == 1 else "items"
+            parts.append(
+                f"{self.shortened_items} {noun} went over "
+                f"{MAX_SEGMENT_LENGTH} characters and got shortened"
+            )
+        if not parts:
+            return None
+        return " and ".join(parts).capitalize() + "."
+
+
 def _quantity_tokens(amount: str, unit: str | None) -> tuple[str, ...]:
     return (amount, unit) if unit else (amount,)
 
@@ -166,12 +213,16 @@ def _match_quantity(text: str) -> tuple[str, tuple[str, ...]] | None:
     return None
 
 
-def _parse_segment(raw: str) -> ParsedSegment | None:
-    """Split one segment into a name and optional quantity tokens."""
+def _parse_segment(raw: str) -> tuple[ParsedSegment, bool] | None:
+    """Split one segment into a name and optional quantity tokens.
+
+    Returns the segment and whether it had to be shortened to fit the cap.
+    """
     original = " ".join(raw.split())
     if not original:
         return None
-    if len(original) > MAX_SEGMENT_LENGTH:
+    shortened = len(original) > MAX_SEGMENT_LENGTH
+    if shortened:
         original = original[:MAX_SEGMENT_LENGTH].rstrip()
 
     # Parse from the filler-stripped form, but keep ``raw`` as what the user
@@ -203,26 +254,43 @@ def _parse_segment(raw: str) -> ParsedSegment | None:
 
     if found is not None:
         name, tokens = found
-        return ParsedSegment(raw=original, name=name, quantity_tokens=tokens)
+        return ParsedSegment(raw=original, name=name, quantity_tokens=tokens), shortened
 
     cleaned = _clean_name(text)
-    return ParsedSegment(raw=original, name=cleaned or original)
+    return ParsedSegment(raw=original, name=cleaned or original), shortened
+
+
+def parse_meal(text: str) -> MealTextParse:
+    """Split a typed meal into segments, reporting anything the caps removed.
+
+    Segments come back in the order the user wrote them. Never raises for
+    ordinary text: an unparseable segment becomes a name with no quantity, which
+    the caller surfaces as unresolved rather than discarding silently.
+    """
+    if not isinstance(text, str):
+        return MealTextParse()
+
+    segments: list[ParsedSegment] = []
+    shortened = 0
+    dropped = 0
+    for chunk in _SPLIT_RE.split(text):
+        parsed = _parse_segment(chunk)
+        if parsed is None:
+            continue
+        if len(segments) >= MAX_SEGMENTS:
+            # Keep counting past the cap rather than stopping: the user is told
+            # how many items were left out, not merely that some were.
+            dropped += 1
+            continue
+        segment, was_shortened = parsed
+        segments.append(segment)
+        shortened += int(was_shortened)
+
+    return MealTextParse(
+        segments=tuple(segments), dropped_items=dropped, shortened_items=shortened
+    )
 
 
 def parse_meal_text(text: str) -> list[ParsedSegment]:
-    """Split a typed meal into segments, in the order the user wrote them.
-
-    Returns an empty list for empty input. Never raises for ordinary text: an
-    unparseable segment becomes a name with no quantity, which the caller
-    surfaces as unresolved rather than discarding silently.
-    """
-    if not isinstance(text, str):
-        return []
-    segments: list[ParsedSegment] = []
-    for chunk in _SPLIT_RE.split(text):
-        parsed = _parse_segment(chunk)
-        if parsed is not None:
-            segments.append(parsed)
-        if len(segments) >= MAX_SEGMENTS:
-            break
-    return segments
+    """Segments only, for callers that do not report on the caps."""
+    return list(parse_meal(text).segments)

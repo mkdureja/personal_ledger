@@ -204,9 +204,16 @@ pip install -r requirements-voice.txt   # then set VOICE_ENABLED=true and restar
 
 ## Phase 1 rollout flags (Home / fast logging)
 
-Phase 1 adds no schema migration (SQLite stays at `user_version = 8`); it is
-gated entirely by three startup env vars, read once — **changing them requires a
-supervised restart.**
+> **Schema note.** This section was written when the database was at
+> `user_version = 8`. Releases 2–4 have since migrated it to **10** (supplements
+> at v9, AI-parsing consent columns at v10; `ledger_schema.LATEST_SCHEMA_VERSION`
+> is the source of truth). Phase 1 itself still adds no migration and its flags
+> are unchanged — but **any binary predating v9 will refuse to start against the
+> current database**, by design, so the Release A rollback target below is no
+> longer usable. See "Binary rollback" before rolling anything back.
+
+Phase 1 is gated entirely by three startup env vars, read once — **changing them
+requires a supervised restart.**
 
 | Var | Meaning |
 |---|---|
@@ -217,11 +224,13 @@ supervised restart.**
 Startup fails closed on a malformed ID, a duplicate, an unknown mode, or a
 non-subset ID.
 
-### Release A — dark production configuration (rollback target)
+### Release A — dark production configuration (historical)
 
 Release A installs all Home routing, disabled-label compatibility, and keyboard
-removal, but keeps every fast mutation dark. **This is the only Phase 1 binary
-rollback target.** Ship it with:
+removal, but keeps every fast mutation dark. It was the Phase 1 binary rollback
+target **while the database was at v8**; it is a v8 binary and will now refuse to
+start against the v10 database (see "Binary rollback"). The configuration below
+still describes what "Phase 1 dark" means on a current binary. Ship it with:
 
 ```text
 PHASE1_ENABLED_USER_IDS=
@@ -264,16 +273,47 @@ legacy label until both users have received a Home response from this build.
    HOME_KEYBOARD_PILOT_USER_IDS=
    ```
 
-2. Restart the current compatible binary (or roll the binary back **only** to
-   Release A — it still carries the label/removal handlers).
+2. Restart the **current** binary. Do not roll the binary back: every build that
+   predates v9 refuses to start against this database, so an incident rollback to
+   Release A would fail startup rather than disable Phase 1. The flags above do
+   the whole job on the current build.
 3. Have each previously enabled user send a greeting or `/keyboard hide` and
    confirm the client keyboard disappears. Rollback is **not** accepted until
    every known user has confirmed this synchronization; no proactive Telegram
    message is implied.
 4. Never restore an older DB merely to disable Phase 1 — Phase 1 adds no schema
    and accepted ledger rows must be preserved. Verify `/start`, `/diet`,
-   `/recent`, reminders, schema `user_version = 8`, and `PRAGMA foreign_key_check`
+   `/recent`, reminders, schema `user_version = 10`, and `PRAGMA foreign_key_check`
    afterward.
+
+### Binary rollback (when the code, not the config, is at fault)
+
+Older binaries fail closed against newer schemas — `migration_preflight` raises
+`UnsupportedSchemaError` when `user_version` exceeds what the build knows. That
+is a safety property, not a bug: a v8 build has no idea what v9/v10 rows mean.
+It also means **a binary rollback below the database's version is not available
+without a database restore**, and a restore discards every row accepted since.
+
+1. Prefer a fix-forward commit. It is almost always faster than a restore.
+2. If you must go back, roll back to a build at or above `user_version = 10`.
+   Confirm before restarting:
+
+   ```powershell
+   .\.venv\Scripts\python.exe -c "from ledger_schema import LATEST_SCHEMA_VERSION as v; print(v)"
+   ```
+
+   A number below the live `user_version` means that build will not start.
+3. Only if no such build exists: restore the matching pre-migration backup from
+   `BACKUP_DEST_DIR`, verify it first, and accept the data loss explicitly.
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m scripts.backup_db --verify-only E:\ledger-backups\<file>.db
+   ```
+
+   Verification checks integrity, foreign keys, and the required tables **and
+   columns** for the stamped version. It does not compare row counts against the
+   live database — read the sanitized counts it prints and confirm they match
+   what you expect to lose.
 
 ### Pilot expansion (enabling Release B fast logging)
 
@@ -285,12 +325,12 @@ legacy label until both users have received a Home response from this build.
    restart, and verify both users.
 
 `/keyboard hide` is momentary: the bar may reappear on the next eligible Home
-response. There is no durable per-user hide preference on v8.
+response. There is still no durable per-user hide preference.
 
 ### Release B fast mutations
 
 Enabling `PHASE1_ENABLED_USER_IDS` turns on the whole fast-logging surface.
-Schema stays at `user_version = 8` throughout. What to check when smoke-testing:
+These flags trigger no migration of their own. What to check when smoke-testing:
 
 **Repeat and receipts**
 

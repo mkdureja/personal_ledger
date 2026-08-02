@@ -89,13 +89,22 @@ The study duration must be unambiguous: a single bare number
 token marked with `m`, e.g. `/study physics 60m reviewed chapter 2`. Two bare
 numbers are rejected with a hint rather than guessed.
 
-Diet macros are optional decimal grams. For example,
-`/diet lunch dal+rice 650 p=25 c=80 f=15` records 25 g protein,
-80 g carbs, and 15 g fat; quick logs may include any subset of those labels.
-In the guided flow, enter all three values in
-protein/carbs/fat order (for example, `25 80 15`) or use `/skip`. Daily and
-weekly summaries total the known values and clearly flag meals whose macros
-were not recorded.
+**Nutrition is mandatory.** Every meal records calories *and* all three macros —
+tracking macros is the point of the ledger, and a meal saved without them
+silently under-reports every total it feeds, with no way to tell an unknown from
+a genuine zero afterwards. There is no `/skip`.
+
+The numbers come from one of two places, and the app never estimates them:
+
+- **From your data.** Log a saved food, a recipe, or a shared-catalog item and
+  the nutrition is calculated from that stored definition. This is the fast path
+  — `/food add oats per=100g kcal=389 p=16.9 c=66 f=6.9` once, then
+  `/describe 100g oats` forever after.
+- **Typed in.** A one-off meal takes all four: `/diet lunch dal+rice 650 p=25
+  c=80 f=15`, or the guided flow's calorie and macro prompts (`25 80 15`).
+
+A definition saved before this rule that is still missing a macro is reported as
+"not logged" with the reason, rather than being logged with a hole in it.
 
 ### Saved foods and recipes
 
@@ -322,7 +331,7 @@ docs/
 - **SQLite hardening**: WAL mode, foreign keys ON, busy_timeout, composite indexes; reads and writes share one connection lock so a read never sees an uncommitted, later-rolled-back write
 - **Reversible undo**: `/undo` previews the exact entry and deletes only on confirm, via an idempotent delete-by-id — a failed retry can't delete a newer entry
 - **Replay-safe mutations**: Pending updates survive restarts (`drop_pending_updates=False`); study/gym/diet writes record a per-update receipt so a replayed Telegram update produces exactly one row, and `/recent` lets a user reconcile a save
-- **Durable reminders**: Reminders are opt-in per user; scheduled nudges retry transient failures with bounded backoff and persist per-chunk delivery state, so a restart resumes at the first recorded undelivered chunk. Operate exactly one bot process; the current code does not yet enforce that invariant, and a crash after send but before recording can still duplicate a chunk.
+- **Durable reminders**: Reminders are opt-in per user; scheduled nudges retry transient failures with bounded backoff and persist per-chunk delivery state, so the next run of a job resumes at the first recorded undelivered chunk instead of re-sending. Because `run_daily` only ever schedules the *next* occurrence, a process that was down at the scheduled minute would otherwise skip that day entirely — so startup replays a job whose slot has passed and which recorded nothing today, once, after a short delay. A crash after send but before recording can still duplicate a chunk.
 - **Habit semantics**: Row presence = done (no "completed" column); streaks = consecutive days with rows, scanned in pages with no fixed cap; case/format-insensitive `name_key` keeps a renamed-case habit's streak intact. Activity periods record when each habit was live, so weekly adherence counts only the days a habit actually existed — deactivating mid-week keeps its earlier completions
 - **Per-exercise persistence**: Gym loop saves each exercise immediately; abandoning loses only the current one
 - **Conversation safety**: `/cancel` fallback, 15-minute timeout, input validation with re-prompt

@@ -98,12 +98,12 @@ async def test_repeat_keeps_original_meal_type_not_the_current_hour(db_with_user
 async def test_repeat_does_not_reresolve_after_the_food_changes(db_with_user):
     """The whole point of "exact": editing the source cannot rewrite history."""
     db = db_with_user
-    saved = await db.save_food(UID, "Dal", "g", 100, calories=120)
+    saved = await db.save_food(UID, "Dal", "g", 100, calories=120, protein_g=1, carbs_g=2, fat_g=3)
     food_id = saved["food"]["id"]
     await db.log_diet_with_items(
         UID, "lunch", [_item("Dal", source_id=food_id, calories=250)]
     )
-    await db.save_food(UID, "Dal", "g", 100, calories=999)
+    await db.save_food(UID, "Dal", "g", 100, calories=999, protein_g=1, carbs_g=2, fat_g=3)
 
     result = await db.repeat_last_meal(UID)
 
@@ -113,7 +113,7 @@ async def test_repeat_does_not_reresolve_after_the_food_changes(db_with_user):
 
 async def test_repeat_of_a_headerless_meal_copies_the_description(db_with_user):
     db = db_with_user
-    await db.log_diet(UID, "snack", "Two rotis", 300)
+    await db.log_diet(UID, "snack", "Two rotis", 300, protein_g=1, carbs_g=2, fat_g=3)
     result = await db.repeat_last_meal(UID)
     assert result.status is RepeatStatus.CREATED
     assert result.receipt.items == ()
@@ -639,12 +639,23 @@ async def test_receipt_text_collapses_a_long_item_list(db_with_user):
     assert "…and 3 more" in text
 
 
-async def test_receipt_text_omits_unknown_nutrients(db_with_user):
+async def test_a_meal_with_unknown_nutrients_can_no_longer_be_created(db_with_user):
+    """The receipt formatter still tolerates gaps; nothing can create one.
+
+    This used to assert that a repeated meal's receipt omitted its unknown
+    calories. Nutrition is mandatory now, so the meal that test depended on
+    cannot be logged in the first place — which is the stronger guarantee.
+    """
+    from bot.nutrition import NutritionError
+
+    with pytest.raises(NutritionError, match="Mystery"):
+        await _log_meal(db_with_user, items=[_item("Mystery", calories=None)])
+
+
+async def test_a_repeated_meal_carries_every_macro(db_with_user):
     db = db_with_user
-    await _log_meal(
-        db, items=[_item("Mystery", calories=None, protein_g=None)]
-    )
+    await _log_meal(db, items=[_item("Dal")])
     receipt = (await db.repeat_last_meal(UID)).receipt
     text = receipts.format_meal_receipt(receipt, "🔁 <b>Repeated</b>")
-    assert "cal" not in text
+    assert "250" in text
     assert "C 40 g" in text

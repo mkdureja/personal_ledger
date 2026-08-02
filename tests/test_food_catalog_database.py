@@ -114,12 +114,16 @@ class TestFoods:
         assert food["basis_amount"] == pytest.approx(100)
 
         updated = await db_with_user.save_food(
-            user_id, "RED APPLE", "g", 150, calories=80
+            user_id, "RED APPLE", "g", 150, calories=80, protein_g=1, carbs_g=2, fat_g=3
         )
         assert updated["status"] == "updated"
         assert updated["food"]["id"] == food["id"]
         assert updated["food"]["basis_amount"] == pytest.approx(150)
-        assert updated["food"]["protein_g"] is None
+        # A re-save replaces the whole definition; every nutrient comes with it,
+        # so an update can no longer blank out a macro by omitting it.
+        assert updated["food"]["protein_g"] == pytest.approx(1)
+        assert updated["food"]["carbs_g"] == pytest.approx(2)
+        assert updated["food"]["fat_g"] == pytest.approx(3)
 
         found = await db_with_user.get_food_by_key(user_id, " red apple ")
         assert found == updated["food"]
@@ -134,7 +138,7 @@ class TestFoods:
         assert await db_with_user.get_food_by_key(user_id, "Red Apple") is None
         assert await db_with_user.list_foods(user_id) == []
 
-        recreated = await db_with_user.save_food(user_id, "red apple", "g", 100)
+        recreated = await db_with_user.save_food(user_id, "red apple", "g", 100, calories=100, protein_g=1, carbs_g=2, fat_g=3)
         assert recreated["status"] == "added"
         assert recreated["food"]["id"] != food["id"]
 
@@ -156,7 +160,7 @@ class TestFoods:
         assert len(portions) == 0
         
         # Ensure re-creating the food gives a clean slate
-        recreated = await db_with_user.save_food(user_id, "Apple", "g", 100)
+        recreated = await db_with_user.save_food(user_id, "Apple", "g", 100, calories=100, protein_g=1, carbs_g=2, fat_g=3)
         assert recreated["status"] == "added"
         new_food_id = recreated["food"]["id"]
         
@@ -171,7 +175,7 @@ class TestFoods:
         await db_with_user.ensure_user(other_user, "other", "Other")
 
         mismatch = await db_with_user.save_food(
-            user_id, "apple", "piece", 1, calories=80
+            user_id, "apple", "piece", 1, calories=80, protein_g=1, carbs_g=2, fat_g=3
         )
         assert mismatch == {
             "status": "unit_mismatch",
@@ -190,7 +194,7 @@ class TestFoods:
 
     @pytest.mark.parametrize("unit", ["g", "ml", "piece"])
     async def test_all_food_base_units(self, db_with_user, user_id, unit):
-        result = await db_with_user.save_food(user_id, f"Food {unit}", unit, 1)
+        result = await db_with_user.save_food(user_id, f"Food {unit}", unit, 1, calories=100, protein_g=1, carbs_g=2, fat_g=3)
         assert result["status"] == "added"
         assert result["food"]["base_unit"] == unit
 
@@ -199,14 +203,14 @@ class TestFoods:
         self, db_with_user, user_id, bad_value
     ):
         with pytest.raises(ValueError):
-            await db_with_user.save_food(user_id, "Bad", "g", bad_value)
+            await db_with_user.save_food(user_id, "Bad", "g", bad_value, calories=100, protein_g=1, carbs_g=2, fat_g=3)
 
     async def test_catalog_text_rejects_embedded_control_characters(
         self, db_with_user, user_id
     ):
         for invalid in ("apple\x00hidden", "apple\nadmin", "apple\tadmin"):
             with pytest.raises(ValueError, match="control"):
-                await db_with_user.save_food(user_id, invalid, "g", 100)
+                await db_with_user.save_food(user_id, invalid, "g", 100, calories=100, protein_g=1, carbs_g=2, fat_g=3)
 
     async def test_food_limit_status_does_not_block_updates(
         self, db_with_user, user_id, monkeypatch
@@ -214,9 +218,9 @@ class TestFoods:
         monkeypatch.setattr(database_module, "MAX_ACTIVE_FOODS", 1)
         await _food(db_with_user, user_id)
 
-        limited = await db_with_user.save_food(user_id, "Banana", "g", 100)
+        limited = await db_with_user.save_food(user_id, "Banana", "g", 100, calories=100, protein_g=1, carbs_g=2, fat_g=3)
         assert limited == {"status": "limit", "food": None, "limit": 1}
-        updated = await db_with_user.save_food(user_id, "Apple", "g", 120)
+        updated = await db_with_user.save_food(user_id, "Apple", "g", 120, calories=100, protein_g=1, carbs_g=2, fat_g=3)
         assert updated["status"] == "updated"
 
 
@@ -277,7 +281,7 @@ class TestFoodPortions:
     ):
         soup = (
             await db_with_user.save_food(
-                user_id, "Soup", "ml", 100, calories=50
+                user_id, "Soup", "ml", 100, calories=50, protein_g=1, carbs_g=2, fat_g=3
             )
         )["food"]
 
@@ -466,7 +470,7 @@ class TestRecipeIngredients:
         await db_with_user.archive_food(user_id, old_food["id"])
         new_food = (
             await db_with_user.save_food(
-                user_id, "apple", "piece", 1, calories=80
+                user_id, "apple", "piece", 1, calories=80, protein_g=1, carbs_g=2, fat_g=3
             )
         )["food"]
 
@@ -497,10 +501,10 @@ class TestRecipeIngredients:
         await db_with_user.conn.commit()
 
         with pytest.raises(sqlite3.IntegrityError, match="forced catalog failure"):
-            await db_with_user.save_food(user_id, "Apple", "g", 100)
+            await db_with_user.save_food(user_id, "Apple", "g", 100, calories=100, protein_g=1, carbs_g=2, fat_g=3)
         assert db_with_user.conn.in_transaction is False
 
         await db_with_user.conn.execute("DROP TRIGGER fail_food_insert")
         await db_with_user.conn.commit()
-        result = await db_with_user.save_food(user_id, "Apple", "g", 100)
+        result = await db_with_user.save_food(user_id, "Apple", "g", 100, calories=100, protein_g=1, carbs_g=2, fat_g=3)
         assert result["status"] == "added"

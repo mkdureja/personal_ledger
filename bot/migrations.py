@@ -27,7 +27,11 @@ from collections.abc import Awaitable, Callable
 
 import aiosqlite
 
-from ledger_schema import LATEST_SCHEMA_VERSION, required_tables_for
+from ledger_schema import (
+    LATEST_SCHEMA_VERSION,
+    required_columns_for,
+    required_tables_for,
+)
 
 from .database import _habit_key
 
@@ -308,33 +312,11 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
 # point, or a test pinning an older effective latest) is never asked for objects
 # a later migration will add.
 
-# table -> (version at which these exact columns must all exist, column names).
-# Only tables whose shape is confirmed here are column-checked; every other
-# required table is existence-checked. Listing a wrong column would fail a
-# *valid* database, so this map stays conservative. ``diet_log_items`` is checked
-# with its provenance columns only from v8, when the rebuild adds them.
-_VERIFIED_COLUMNS: dict[str, tuple[int, tuple[str, ...]]] = {
-    "users": (1, _REQUIRED_COLUMNS["users"]),
-    "study_logs": (1, _REQUIRED_COLUMNS["study_logs"]),
-    "gym_logs": (1, _REQUIRED_COLUMNS["gym_logs"]),
-    "diet_logs": (1, _REQUIRED_COLUMNS["diet_logs"]),
-    "habits": (1, _REQUIRED_COLUMNS["habits"]),
-    "habit_logs": (1, _REQUIRED_COLUMNS["habit_logs"]),
-    "diet_log_items": (
-        8,
-        (
-            "id", "user_id", "diet_log_id", "item_order", "source_type",
-            "source_id", "source_provider", "source_revision", "display_name",
-            "calories", "protein_g", "carbs_g", "fat_g",
-        ),
-    ),
-    "catalog_foods": (
-        8,
-        ("id", "provider", "provider_food_id", "name_key", "base_unit", "is_active"),
-    ),
-    "catalog_portions": (8, ("id", "catalog_food_id", "name_key", "base_amount")),
-    "catalog_aliases": (8, ("id", "catalog_food_id", "alias_key")),
-}
+# The per-version column manifest lives alongside the table map in
+# ``ledger_schema`` so the standalone backup tool certifies a copy against
+# exactly the columns the bot enforces at startup. It used to live here and
+# stopped at v8, which let a v10 database that had lost both AI-consent columns
+# verify as sound — a table list alone cannot detect a column-only migration.
 
 
 async def verify_current_schema(conn: aiosqlite.Connection) -> None:
@@ -358,12 +340,10 @@ async def verify_current_schema(conn: aiosqlite.Connection) -> None:
             f"{', '.join(sorted(missing))}."
         )
 
-    for table, (introduced, columns) in _VERIFIED_COLUMNS.items():
-        if introduced > target:
-            continue
+    for table, columns in required_columns_for(target).items():
         cursor = await conn.execute(f"PRAGMA table_info({table})")  # noqa: S608
         actual = {row["name"] for row in await cursor.fetchall()}
-        absent = [column for column in columns if column not in actual]
+        absent = sorted(column for column in columns if column not in actual)
         if absent:
             raise SchemaVerificationError(
                 f"Table '{table}' is missing column(s): {', '.join(absent)}."

@@ -20,11 +20,15 @@ the existing atomic meal path performs the single write.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 from ..meal_text import ParsedSegment
-from ..nutrition import NutritionError, normalize_catalog_name
+from ..nutrition import (
+    NutritionError,
+    normalize_catalog_name,
+    require_complete_nutrients,
+)
 from ..nutrition_resolution import (
     ResolvedCatalogDietEntry,
     resolve_catalog_food_entry,
@@ -49,6 +53,7 @@ REASON_TEXT = {
     "no_quantity": "needs an amount",
     "bad_quantity": "that amount or unit isn't supported",
     "ambiguous": "matches more than one item",
+    "incomplete_nutrition": "its saved nutrition is incomplete",
 }
 
 
@@ -83,16 +88,35 @@ class TypedMealPlan:
 
     @property
     def total_calories(self) -> int | None:
-        """Sum of known calories, or ``None`` if every item is unknown.
+        """Sum of the resolved items' calories, or ``None`` when there are none.
 
-        An unknown item contributes nothing rather than zero, and the caller is
-        expected to say the total is partial when ``has_unknown_calories``.
+        No item can reach ``resolved`` with a missing value — the planner refuses
+        an incomplete definition outright — so this total is never partial.
         """
-        known = [e.calories for e in self.resolved if e.calories is not None]
-        return sum(known) if known else None
+        return self._total("calories")
+
+    @property
+    def total_protein_g(self) -> float | None:
+        return self._total("protein_g")
+
+    @property
+    def total_carbs_g(self) -> float | None:
+        return self._total("carbs_g")
+
+    @property
+    def total_fat_g(self) -> float | None:
+        return self._total("fat_g")
+
+    def _total(self, field: str):
+        values = [getattr(entry, field) for entry in self.resolved]
+        if not values or any(value is None for value in values):
+            return None
+        total = sum(values)
+        return total if field == "calories" else round(float(total), 1)
 
     @property
     def has_unknown_calories(self) -> bool:
+        """Retained for callers; always ``False`` now that gaps are refused."""
         return any(e.calories is None for e in self.resolved)
 
 
@@ -180,14 +204,129 @@ async def augment_plan_with_parser(
         # unresolved list, whose reasons describe what the user actually typed.
         return plan
 
+    # The model is under no obligation to answer about everything it was sent,
+    # and a partial answer used to erase the rest: the leftovers went in as one
+    # joined string, so anything the model did not mention simply vanished from
+    # "Not logged" and the user was never told an item had been dropped.
+    #
+    # An original is therefore surrendered to the model's account of it only when
+    # the model visibly spoke about it. Anything unclaimed is carried through
+    # unchanged, still carrying the reason that describes what the user typed.
+    claimed = _claimed_originals(plan.unresolved, segments)
+    carried = tuple(item for item in plan.unresolved if item not in claimed)
+
     return TypedMealPlan(
         resolved=(*plan.resolved, *retry.resolved),
-        unresolved=retry.unresolved,
+        unresolved=(*carried, *retry.unresolved),
         model_assisted=True,
     )
 
 
+def _significant_tokens(value: str) -> frozenset[str]:
+    """Word tokens worth matching on, ignoring amounts and one-letter noise."""
+    return frozenset(
+        token
+        for token in _name_key(value).replace("-", " ").split()
+        if len(token) > 1 and not token.replace(".", "").isdigit()
+    )
+
+
+def _claimed_originals(
+    originals: Sequence[UnresolvedSegment],
+    proposed: Sequence[ParsedSegment],
+) -> set[UnresolvedSegment]:
+    """Which original segments the model's re-segmentation actually addressed.
+
+    The model returns names drawn from the very text it was given, so a shared
+    word is good evidence it is talking about that item. Matching is deliberately
+    biased towards *not* claiming: an unclaimed original is merely listed again,
+    while a wrongly claimed one disappears without trace.
+    """
+    proposed_tokens = [_significant_tokens(segment.name) for segment in proposed]
+    claimed: set[UnresolvedSegment] = set()
+    for original in originals:
+        tokens = _significant_tokens(original.name) | _significant_tokens(original.raw)
+        if any(tokens & candidate for candidate in proposed_tokens):
+            claimed.add(original)
+    return claimed
+
+
+def _singular_forms(name: str) -> tuple[str, ...]:
+    """Naive singular readings of a plural name, best first.
+
+    People type what they eat — "2 eggs" — while a catalog stores the food
+    itself, "Egg". The lookup is substring-based, so the singular finds the
+    plural entry but never the reverse, and the advertised example could not
+    resolve. Rules are deliberately crude because they are only ever a *second*
+    attempt, used when the name as typed matched nothing at all.
+    """
+    stripped = name.strip()
+    lowered = stripped.casefold()
+    if len(stripped) < 4 or not lowered.endswith("s") or lowered.endswith("ss"):
+        return ()
+    forms = [stripped[:-1]]
+    if lowered.endswith(("oes", "ches", "shes", "xes", "zes")):
+        forms.insert(0, stripped[:-2])
+    return tuple(form for form in forms if form)
+
+
 async def _resolve_one(
+    db: Any,
+    user_id: int,
+    segment: ParsedSegment,
+    foods: Sequence[dict[str, Any]],
+    recipes: Sequence[dict[str, Any]],
+) -> ResolvedCatalogDietEntry | UnresolvedSegment:
+    """Resolve one segment as typed, then — only if nothing matched — singular.
+
+    The retry is confined to ``unknown``: an ambiguous match or a rejected
+    quantity is a real answer about a food that *was* found, and re-running the
+    lookup under a different name could only replace it with a worse one.
+    """
+    outcome = await _resolve_as_named(db, user_id, segment, foods, recipes)
+    if not isinstance(outcome, UnresolvedSegment) or outcome.reason != "unknown":
+        return outcome
+
+    for candidate in _singular_forms(segment.name):
+        retried = await _resolve_as_named(
+            db, user_id, replace(segment, name=candidate), foods, recipes
+        )
+        if not isinstance(retried, UnresolvedSegment):
+            return retried
+        if retried.reason != "unknown":
+            # The singular found the food but could not use it (no amount, or an
+            # unsupported one). That reason is about a real match, so it is more
+            # useful than "not in your foods or the catalog" — but it is reported
+            # against the name the user actually typed.
+            return replace(retried, raw=segment.raw, name=segment.name)
+
+    return outcome
+
+
+def _reject_incomplete(
+    segment: ParsedSegment, entry: ResolvedCatalogDietEntry
+) -> ResolvedCatalogDietEntry | UnresolvedSegment:
+    """Turn a resolved-but-nutritionally-incomplete entry into a refusal.
+
+    Resolving proves the *food* was found, not that its numbers are usable. A
+    definition saved before nutrition was mandatory can still be missing macros,
+    and logging it would put a hole straight into the day's totals. Refusing here
+    means the preview says so, with the food named, instead of the save failing
+    later at the write path.
+    """
+    try:
+        require_complete_nutrients(entry.as_item(), what=entry.display_text)
+    except NutritionError as exc:
+        return UnresolvedSegment(
+            raw=segment.raw,
+            name=segment.name,
+            reason="incomplete_nutrition",
+            detail=str(exc),
+        )
+    return entry
+
+
+async def _resolve_as_named(
     db: Any,
     user_id: int,
     segment: ParsedSegment,
@@ -240,9 +379,10 @@ async def _resolve_food(db, user_id, segment, food):
         return missing
     portions = await db.get_food_portions(user_id, food["id"])
     try:
-        return resolve_food_diet_entry(food, portions, list(segment.quantity_tokens))
+        entry = resolve_food_diet_entry(food, portions, list(segment.quantity_tokens))
     except NutritionError as exc:
         return _bad_quantity(segment, exc)
+    return _reject_incomplete(segment, entry)
 
 
 async def _resolve_recipe(db, user_id, segment, recipe):
@@ -251,11 +391,12 @@ async def _resolve_recipe(db, user_id, segment, recipe):
         return missing
     ingredients = await db.get_recipe_ingredients(user_id, recipe["id"])
     try:
-        return resolve_recipe_diet_entry(
+        entry = resolve_recipe_diet_entry(
             recipe, ingredients, list(segment.quantity_tokens)
         )
     except NutritionError as exc:
         return _bad_quantity(segment, exc)
+    return _reject_incomplete(segment, entry)
 
 
 async def _resolve_from_catalog(db, segment):
@@ -300,8 +441,9 @@ async def _resolve_from_catalog(db, segment):
 
     portions = await db.get_catalog_portions(chosen["id"])
     try:
-        return resolve_catalog_food_entry(
+        entry = resolve_catalog_food_entry(
             chosen, portions, list(segment.quantity_tokens)
         )
     except NutritionError as exc:
         return _bad_quantity(segment, exc)
+    return _reject_incomplete(segment, entry)

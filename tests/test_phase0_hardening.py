@@ -150,7 +150,7 @@ async def test_cross_owner_food_reference_is_rejected(db, user_id):
     other = user_id + 1
     await db.ensure_user(user_id, "a", "A")
     await db.ensure_user(other, "b", "B")
-    food = (await db.save_food(other, "apple", "g", 100, calories=52))["food"]
+    food = (await db.save_food(other, "apple", "g", 100, calories=52, protein_g=1, carbs_g=2, fat_g=3))["food"]
     item = _item("apple", 52, 0.3, 14.0, 0.2, source_type="food", source_id=food["id"])
 
     with pytest.raises(ValueError):
@@ -163,7 +163,7 @@ async def test_cross_owner_preference_is_rejected(db, user_id):
     other = user_id + 1
     await db.ensure_user(user_id, "a", "A")
     await db.ensure_user(other, "b", "B")
-    food = (await db.save_food(other, "apple", "g", 100, calories=52))["food"]
+    food = (await db.save_food(other, "apple", "g", 100, calories=52, protein_g=1, carbs_g=2, fat_g=3))["food"]
 
     with pytest.raises(ValueError):
         await db.set_food_preference(user_id, "food", food["id"], is_pinned=True)
@@ -171,7 +171,7 @@ async def test_cross_owner_preference_is_rejected(db, user_id):
 
 async def test_own_food_reference_is_allowed(db_with_user, user_id):
     food = (
-        await db_with_user.save_food(user_id, "apple", "g", 100, calories=52)
+        await db_with_user.save_food(user_id, "apple", "g", 100, calories=52, protein_g=1, carbs_g=2, fat_g=3)
     )["food"]
     item = _item("apple", 52, 0.3, 14.0, 0.2, source_type="food", source_id=food["id"])
     header_id = await db_with_user.log_diet_with_items(user_id, "lunch", [item])
@@ -184,7 +184,7 @@ async def test_suggestions_reset_clears_prefs_but_keeps_learned_history(
     db_with_user, user_id
 ):
     food = (
-        await db_with_user.save_food(user_id, "apple", "g", 100, calories=52)
+        await db_with_user.save_food(user_id, "apple", "g", 100, calories=52, protein_g=1, carbs_g=2, fat_g=3)
     )["food"]
     await db_with_user.set_food_preference(user_id, "food", food["id"], is_pinned=True)
     item = _item("apple", 52, 0.3, 14.0, 0.2, source_type="food", source_id=food["id"])
@@ -337,7 +337,7 @@ async def test_guided_food_reference_writes_structured_child(db_with_user, user_
     from bot.config import today_local
 
     food = (
-        await db_with_user.save_food(user_id, "apple", "g", 100, calories=52)
+        await db_with_user.save_food(user_id, "apple", "g", 100, calories=52, protein_g=1, carbs_g=2, fat_g=3)
     )["food"]
     context = _context(db_with_user, {"diet_meal_type": "snack"})
     update = _msg_update("food:apple 100g")

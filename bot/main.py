@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import datetime
 from functools import partial
 
 from telegram import BotCommand
@@ -24,6 +25,7 @@ from telegram.ext import (
     filters,
 )
 
+from . import config
 from .config import (
     BACKUP_DEST_DIR,
     BOT_TOKEN,
@@ -32,6 +34,7 @@ from .config import (
     ROUTINE_PATH,
     LOCAL_TZ,
     LOG_FORMAT,
+    today_local,
 )
 from .database import DatabaseManager
 from .instance_lock import AlreadyRunningError, SingleInstanceLock, lock_path_for
@@ -267,6 +270,8 @@ async def post_init(application, *, register_commands: bool = False) -> None:
         # failed" and then continued into polling. Those must propagate.
         logger.warning("Catalog seeding failed; search may be empty", exc_info=True)
 
+    await _preload_voice_model(application)
+
     # Schedule routine anchors when a routine file is present; otherwise fall
     # back to the single legacy habit reminder (backward compatible).
     routine = load_routine(ROUTINE_PATH)
@@ -285,6 +290,13 @@ async def post_init(application, *, register_commands: bool = False) -> None:
             len(routine.anchors),
             ", ".join(f"{a.id}@{a.at:%H:%M}" for a in routine.anchors),
         )
+        await _catch_up_missed_jobs(
+            application,
+            [
+                (anchor_job, f"anchor_{anchor.id}", anchor.at, anchor)
+                for anchor in routine.anchors
+            ],
+        )
     else:
         application.job_queue.run_daily(
             daily_reminder,
@@ -292,6 +304,86 @@ async def post_init(application, *, register_commands: bool = False) -> None:
             name="daily_habit_reminder",
         )
         logger.info("Daily reminder scheduled at %s (no routine file)", REMINDER_TIME)
+        await _catch_up_missed_jobs(
+            application,
+            [(daily_reminder, "daily_habit_reminder", REMINDER_TIME, None)],
+        )
+
+
+#: How long after startup a missed job runs. Long enough for polling to settle,
+#: short enough that a restart at 20:05 still feels like the 20:00 reminder.
+_CATCH_UP_DELAY_SECONDS = 30
+
+
+def _local_now() -> datetime:
+    """Current local time, as a seam tests can pin.
+
+    Whether a slot was missed is a question about the wall clock, so a test that
+    did not control it would pass or fail depending on the hour it ran.
+    """
+    return datetime.now(LOCAL_TZ)
+
+
+async def _catch_up_missed_jobs(application, entries) -> None:
+    """Run today's scheduled jobs that were missed while the process was down.
+
+    ``run_daily`` only ever schedules the *next* occurrence, so a process that
+    was not running at the scheduled minute skips that day entirely — the job
+    never fires, and the per-chunk resume state it would have used is never
+    consulted. Durable delivery made a restart *mid-send* recoverable; this makes
+    a restart *after the slot* recoverable, which is the more common case.
+
+    A job is only replayed when nothing was recorded for it today, so a normal
+    restart after a completed run schedules nothing. Even if it did, every send
+    goes through the chunk-idempotent path and would be skipped.
+    """
+    db = application.bot_data["db"]
+    local_date = today_local().isoformat()
+    now = _local_now().time()
+
+    for callback, job_key, scheduled, data in entries:
+        if now <= scheduled.replace(tzinfo=None):
+            continue  # still ahead of us today; the daily job will fire normally
+        try:
+            if await db.reminder_job_ran(job_key, local_date):
+                continue
+        except Exception:
+            # A catch-up is a convenience; never let it block startup.
+            logger.warning(
+                "Could not check delivery history for '%s'", job_key, exc_info=False
+            )
+            continue
+        application.job_queue.run_once(
+            callback,
+            when=_CATCH_UP_DELAY_SECONDS,
+            name=f"{job_key}_catchup",
+            data=data,
+        )
+        logger.info(
+            "Missed '%s' at %s while down; running it in %ds",
+            job_key,
+            scheduled.strftime("%H:%M"),
+            _CATCH_UP_DELAY_SECONDS,
+        )
+
+
+async def _preload_voice_model(application) -> None:
+    """Load the speech model during startup rather than in a user's request.
+
+    The first load is the expensive one — it may download the model — and until
+    now it happened inside whoever sent the first voice note, blocking every
+    update behind it. Paying it here makes a slow start visible in the log
+    instead of invisible to a user. Failure only means voice degrades: the
+    transcriber reports the same typed reason it would have reported later.
+    """
+    if not config.VOICE_ENABLED or not config.VOICE_PRELOAD:
+        return
+    from .handlers.voice import preload_transcriber
+
+    try:
+        await preload_transcriber(application.bot_data)
+    except Exception:
+        logger.warning("Voice model preload failed; voice may be slow", exc_info=False)
 
 
 async def post_shutdown(application) -> None:
@@ -490,6 +582,18 @@ def main() -> None:
     the whole ``run_polling()`` lifetime and releases it in ``finally``; the OS
     releases it anyway if the process dies.
     """
+    # An in-memory database is a legitimate *test* fixture and a catastrophic
+    # deployment: every meal, habit, and streak would exist only until the
+    # process exits, and nothing downstream could tell the difference — the
+    # schema verifies, migrations run, writes succeed. Refuse it here rather than
+    # in config, which the test suite imports.
+    if DB_PATH == ":memory:":
+        logger.error(
+            "DB_PATH is ':memory:', which keeps no data past this process. "
+            "Set DB_PATH to a file before starting the bot."
+        )
+        raise SystemExit(1)
+
     lock = SingleInstanceLock(lock_path_for(DB_PATH))
     try:
         lock.acquire()

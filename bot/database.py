@@ -56,6 +56,7 @@ from .nutrition import (
     finalize_log_nutrients,
     format_decimal,
     normalize_catalog_name,
+    require_complete_nutrients,
 )
 # A plain module-level import: these resolvers are pure and live in the
 # application layer, not the handler package, so the data layer no longer has to
@@ -656,17 +657,33 @@ class DatabaseManager:
         user_id: int,
         meal_type: str,
         food_items: str,
-        calories: int | None = None,
-        protein_g: float | None = None,
-        carbs_g: float | None = None,
-        fat_g: float | None = None,
+        calories: int,
+        protein_g: float,
+        carbs_g: float,
+        fat_g: float,
         *,
         source: MutationSource | None = None,
     ) -> int:
         """Log a diet entry. Returns the row ID.
 
         Idempotent when ``source`` is supplied (see :meth:`log_study`).
+
+        All four nutrients are required. They used to default to ``None``, which
+        made an incomplete meal the *easiest* thing to write — and the ledger
+        filled up with rows carrying calories but no macros, which no later
+        analysis can distinguish from a meal that genuinely had none. Validation
+        lives here, at the single write path, rather than only in the handlers,
+        so a new caller cannot reintroduce the gap by omitting an argument.
         """
+        require_complete_nutrients(
+            {
+                "calories": calories,
+                "protein_g": protein_g,
+                "carbs_g": carbs_g,
+                "fat_g": fat_g,
+            },
+            what="This meal",
+        )
         async with self._write_operation():
             replayed = await self._replayed_entity_id(source, user_id, "diet_log")
             if replayed is not None:
@@ -726,13 +743,16 @@ class DatabaseManager:
         """Log a meal as a header row plus one structured child per item.
 
         The ``diet_logs`` header keeps the meal totals so existing analytics and
-        summaries are unaffected (one row per meal). A header nutrient field is
-        the sum of the items' snapshots, or ``None`` (unknown) if any item's
-        value is unknown — the same conservative propagation the recipe
-        aggregator uses, so an unknown item never masquerades as a numeric zero.
-        Each item is snapshotted into ``diet_log_items`` at save time, so a later
-        catalog edit never rewrites a completed meal. Idempotent when ``source``
-        is supplied (a replayed final tap returns the existing meal id).
+        summaries are unaffected (one row per meal). Each item is snapshotted into
+        ``diet_log_items`` at save time, so a later catalog edit never rewrites a
+        completed meal. Idempotent when ``source`` is supplied (a replayed final
+        tap returns the existing meal id).
+
+        Every item must carry calories and all three macros. Previously an item
+        with an unknown value propagated ``None`` up into the header total, which
+        kept the arithmetic honest but let the meal be saved at all — so the
+        ledger accumulated meals it could never total. The refusal happens before
+        anything is written, and names the offending item.
         """
         async with self._write_operation():
             replayed = await self._replayed_entity_id(source, user_id, "diet_log")
@@ -767,11 +787,13 @@ class DatabaseManager:
         if len(items) > MAX_MEAL_ITEMS:
             raise ValueError(f"A meal can have at most {MAX_MEAL_ITEMS} items.")
 
-        def _raw_total(field: str) -> float | None:
-            values = [item.get(field) for item in items]
-            if any(value is None for value in values):
-                return None
-            return sum(float(value) for value in values)
+        for item in items:
+            require_complete_nutrients(
+                item, what=f"'{item.get('display_name', 'This item')}'"
+            )
+
+        def _raw_total(field: str) -> float:
+            return sum(float(item[field]) for item in items)
 
         # Route the aggregate through the same finalizer a single meal uses, so a
         # multi-item meal cannot bypass the per-meal calorie/macro bounds. This is
@@ -2170,6 +2192,22 @@ class DatabaseManager:
     # -------------------------------------------------------------------
     # Durable reminder delivery (resumable chunk state)
     # -------------------------------------------------------------------
+    async def reminder_job_ran(self, job_key: str, local_date: str) -> bool:
+        """Whether this job recorded any delivery attempt on this local date.
+
+        Not owner-scoped on purpose: the question is about the *job*, not a user
+        — "did this scheduled run happen at all today". Startup uses it to decide
+        whether a slot was missed while the process was down, so a reminder is
+        never both skipped (nobody was running) and never retried (the daily job
+        has already moved on to tomorrow).
+        """
+        row = await self._query_one(
+            "SELECT 1 FROM reminder_deliveries "
+            "WHERE job_key = ? AND local_date = ? LIMIT 1",
+            (job_key, local_date),
+        )
+        return row is not None
+
     async def get_delivered_chunk_indices(
         self, user_id: int, job_key: str, local_date: str
     ) -> set[int]:
@@ -2247,12 +2285,26 @@ class DatabaseManager:
         name: str,
         base_unit: str,
         basis_amount: float,
-        calories: float | None = None,
-        protein_g: float | None = None,
-        carbs_g: float | None = None,
-        fat_g: float | None = None,
+        calories: float,
+        protein_g: float,
+        carbs_g: float,
+        fat_g: float,
     ) -> dict[str, Any]:
-        """Add or update an active food, keyed by normalized name."""
+        """Add or update an active food, keyed by normalized name.
+
+        All four nutrients are required: a saved food is a definition every
+        future log inherits, so a hole here quietly spreads to every meal that
+        uses it.
+        """
+        require_complete_nutrients(
+            {
+                "calories": calories,
+                "protein_g": protein_g,
+                "carbs_g": carbs_g,
+                "fat_g": fat_g,
+            },
+            what="A saved food",
+        )
         normalized_name = _normalize_catalog_text(
             name, "Food name", MAX_CATALOG_NAME_LENGTH
         )

@@ -37,7 +37,11 @@ from ledger_backup import (
     verify_backup_file,
     verify_created_backup,
 )
-from ledger_schema import LATEST_SCHEMA_VERSION, required_tables_for
+from ledger_schema import (
+    LATEST_SCHEMA_VERSION,
+    required_columns_for,
+    required_tables_for,
+)
 from scripts import backup_db
 
 # ---------------------------------------------------------------------------
@@ -52,23 +56,34 @@ def _make_versioned_db(
 ) -> Path:
     """Create a database stamped at ``version`` with its required tables.
 
-    Only table existence matters to the backup contract, so the shapes are
-    minimal — but ``users`` and its children carry a real foreign key so an
-    orphan row can exercise ``foreign_key_check``.
+    Shapes are minimal but *complete*: every column the version's manifest
+    requires is present, because the backup contract checks columns as well as
+    tables. ``users`` and its children carry a real foreign key so an orphan row
+    can exercise ``foreign_key_check``.
     """
     tables = set(required_tables_for(version))
     if drop:
         tables.discard(drop)
+    required = required_columns_for(version)
+
+    def _extra(table: str, already: tuple[str, ...]) -> str:
+        missing = sorted(required.get(table, frozenset()) - set(already))
+        return "".join(f", {name} TEXT" for name in missing)
+
     conn = sqlite3.connect(str(path))
     try:
         conn.execute("PRAGMA foreign_keys=OFF")
         if "users" in tables:
-            conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE users (user_id INTEGER PRIMARY KEY"
+                f"{_extra('users', ('user_id',))})"
+            )
             conn.execute("INSERT INTO users (user_id) VALUES (1)")
         for table in sorted(tables - {"users"}):
             conn.execute(
                 f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, "
-                "user_id INTEGER REFERENCES users(user_id))"
+                "user_id INTEGER REFERENCES users(user_id)"
+                f"{_extra(table, ('id', 'user_id'))})"
             )
         if orphan:
             conn.execute("INSERT INTO study_logs (id, user_id) VALUES (1, 999)")

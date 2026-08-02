@@ -68,17 +68,38 @@ def _update(message: SimpleNamespace | None = None) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("args", "food_items", "calories"),
+    ("args", "missing"),
     [
-        (["lunch", "dal+rice", "650"], "dal, rice", 650),
-        (["snack", "apple"], "apple", None),
+        (["lunch", "dal+rice", "650"], "p="),          # calories only
+        (["snack", "apple"], "calories"),               # nothing at all
+        (["breakfast", "eggs", "P=30", "f=12"], "c="),  # partial macros
     ],
 )
-async def test_shortcut_without_macros_remains_backward_compatible(
-    args: list[str], food_items: str, calories: int | None
+async def test_the_shortcut_refuses_an_incomplete_meal(
+    args: list[str], missing: str
 ) -> None:
+    """The fastest way to log is not allowed to be the sloppiest.
+
+    ``/diet lunch dal+rice 650`` used to write a row with calories and no
+    macros. Now it explains what is missing and writes nothing.
+    """
     db = SimpleNamespace(ensure_user=AsyncMock(), log_diet_with_items=AsyncMock())
+    message = _message()
     context = _context(db, args=args)
+
+    result = await diet.diet_command(_update(message), context)
+
+    assert result == ConversationHandler.END
+    db.log_diet_with_items.assert_not_awaited()
+    said = message.reply_text.await_args.args[0]
+    assert missing in said
+    assert "/food add" in said, "the reply must point at the way to avoid retyping"
+
+
+@pytest.mark.asyncio
+async def test_the_shortcut_saves_when_every_nutrient_is_present() -> None:
+    db = SimpleNamespace(ensure_user=AsyncMock(), log_diet_with_items=AsyncMock())
+    context = _context(db, args=["lunch", "dal+rice", "650", "p=25", "c=80", "f=15"])
 
     result = await diet.diet_command(_update(), context)
 
@@ -86,12 +107,12 @@ async def test_shortcut_without_macros_remains_backward_compatible(
     assert_log_diet(
         db,
         _user().id,
-        args[0],
-        food_items,
-        calories,
-        protein_g=None,
-        carbs_g=None,
-        fat_g=None,
+        "lunch",
+        "dal, rice",
+        650,
+        protein_g=25.0,
+        carbs_g=80.0,
+        fat_g=15.0,
         source=None,
     )
 
@@ -125,23 +146,21 @@ async def test_shortcut_accepts_case_insensitive_decimal_macro_suffix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shortcut_allows_partial_macros_without_calories() -> None:
+async def test_the_shortcut_names_every_missing_nutrient_at_once() -> None:
+    """One reply listing all the gaps beats four rounds of trial and error."""
     db = SimpleNamespace(ensure_user=AsyncMock(), log_diet_with_items=AsyncMock())
-    context = _context(db, args=["breakfast", "eggs", "P=30", "f=12"])
+    message = _message()
+    context = _context(db, args=["breakfast", "eggs", "P=30"])
 
-    await diet.diet_command(_update(), context)
+    await diet.diet_command(_update(message), context)
 
-    assert_log_diet(
-        db,
-        _user().id,
-        "breakfast",
-        "eggs",
-        None,
-        protein_g=30.0,
-        carbs_g=None,
-        fat_g=12.0,
-        source=None,
-    )
+    # Only the "Missing …" line lists the gaps; the rest of the reply is a
+    # worked example, which naturally contains every label.
+    missing_line = message.reply_text.await_args.args[0].splitlines()[0]
+    assert "calories" in missing_line
+    assert "c=" in missing_line and "f=" in missing_line
+    assert "p=" not in missing_line, "protein was supplied; don't ask for it again"
+    db.log_diet_with_items.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -225,17 +244,41 @@ async def test_guided_calories_advance_to_macro_prompt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_guided_skip_calories_still_offers_macros() -> None:
+async def test_skip_is_answered_and_the_calorie_step_is_kept() -> None:
+    """``/skip`` is retired, but both users have it in their fingers.
+
+    Left unhandled the command filter would swallow it and the bot would look
+    frozen, so it explains itself and stays on the same step.
+    """
     db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {"diet_meal_type": "lunch", "diet_food_items": "dal"}
     context = _context(db, user_data=state)
     message = _message("/skip")
 
-    result = await diet.skip_calories(_update(message), context)
+    handler = diet._skip_retired(diet.CALORIES)
+    result = await handler(_update(message), context)
 
-    assert result == diet.MACROS
+    assert result == diet.CALORIES
     assert context.user_data["diet_food_items"] == "dal"
-    assert context.user_data["diet_calories"] is None
+    assert "diet_calories" not in context.user_data
+    db.log_diet_with_items.assert_not_awaited()
+    said = message.reply_text.await_args.args[0]
+    assert "/skip" in said and "required" in said.lower()
+
+
+@pytest.mark.asyncio
+async def test_a_non_numeric_calorie_answer_re_prompts_without_skip() -> None:
+    """The retry guidance must not advertise an escape hatch that no longer exists."""
+    db = SimpleNamespace(log_diet_with_items=AsyncMock())
+    state = {"diet_meal_type": "lunch", "diet_food_items": "dal"}
+    context = _context(db, user_data=state)
+    message = _message("lots")
+
+    result = await diet.receive_calories(_update(message), context)
+
+    assert result == diet.CALORIES
+    said = message.reply_text.await_args.args[0]
+    assert "/skip if unsure" not in said
     db.log_diet_with_items.assert_not_awaited()
 
 
@@ -307,35 +350,36 @@ async def test_guided_invalid_macros_stay_in_macro_state(text: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_guided_skip_macros_saves_null_macro_values() -> None:
+async def test_skip_cannot_save_a_meal_without_macros() -> None:
+    """The route that used to write NULL macros no longer exists.
+
+    ``skip_macros`` is gone rather than merely discouraged: while it existed, the
+    fastest path through the flow was also the one that produced an untotalable
+    row, which is how six of the nine meals in the real ledger ended up with
+    calories and nothing else.
+    """
+    assert not hasattr(diet, "skip_macros")
+    assert not hasattr(diet, "skip_calories")
+
     db = SimpleNamespace(log_diet_with_items=AsyncMock())
     state = {
         "diet_meal_type": "snack",
         "diet_food_items": "apple",
-        "diet_calories": None,
+        "diet_calories": 95,
     }
     context = _context(db, user_data=state)
-    update = _update(_message("/skip"))
+    message = _message("/skip")
+    update = _update(message)
     activate_conversation(update, context, "diet")
 
-    result = await diet.skip_macros(update, context)
+    handler = diet._skip_retired(diet.MACROS)
+    result = await handler(update, context)
 
-    assert result == diet.LOG_ANOTHER
-    assert_log_diet(
-        db,
-        _user().id,
-        "snack",
-        "apple",
-        None,
-        protein_g=None,
-        carbs_g=None,
-        fat_g=None,
-        source=None,
-    )
-    # Working data is cleared, but the conversation remains open to log another.
-    assert "diet_meal_type" not in context.user_data
-    assert "diet_food_items" not in context.user_data
-    assert "diet_calories" not in context.user_data
+    assert result == diet.MACROS
+    db.log_diet_with_items.assert_not_awaited()
+    # The draft survives, so answering properly still saves the same meal.
+    assert context.user_data["diet_food_items"] == "apple"
+    assert context.user_data["diet_calories"] == 95
     assert active_conversation_flow(context) == "diet"
 
 

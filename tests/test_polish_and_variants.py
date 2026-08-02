@@ -170,7 +170,7 @@ async def test_help_shows_fast_logging_only_when_enabled(monkeypatch):
 async def test_settings_reports_phase1_and_usual_count(db_with_user, monkeypatch):
     _enable(monkeypatch)
     db = db_with_user
-    saved = await db.save_food(UID, "Dal", "g", 100, calories=120)
+    saved = await db.save_food(UID, "Dal", "g", 100, calories=120, protein_g=1, carbs_g=2, fat_g=3)
     from bot.meal_models import DefaultQuantity
 
     await db.set_default_quantity(
@@ -199,7 +199,7 @@ async def test_usual_count_is_per_user(db):
 
     await db.ensure_user(UID, "a", "A")
     await db.ensure_user(OTHER_UID, "b", "B")
-    saved = await db.save_food(UID, "Dal", "g", 100, calories=120)
+    saved = await db.save_food(UID, "Dal", "g", 100, calories=120, protein_g=1, carbs_g=2, fat_g=3)
     await db.set_default_quantity(
         UID, "food", saved["food"]["id"], DefaultQuantity(amount=1, unit="g")
     )
@@ -214,8 +214,8 @@ async def test_usual_count_is_per_user(db):
 async def recipe(db_with_user):
     """A two-ingredient recipe yielding 2 servings."""
     db = db_with_user
-    dal = (await db.save_food(UID, "dal", "g", 100, calories=120))["food"]["id"]
-    rice = (await db.save_food(UID, "rice", "g", 100, calories=130))["food"]["id"]
+    dal = (await db.save_food(UID, "dal", "g", 100, calories=120, protein_g=1, carbs_g=2, fat_g=3))["food"]["id"]
+    rice = (await db.save_food(UID, "rice", "g", 100, calories=130, protein_g=1, carbs_g=2, fat_g=3))["food"]["id"]
     await db.save_recipe(UID, "curry", 2, "serving")
     made = await db.get_recipe_by_key(UID, "curry")
     await db.save_recipe_ingredient(UID, made["id"], dal, 300, "g", 300, "g")
@@ -253,7 +253,7 @@ async def test_the_copy_is_independent(db_with_user, recipe):
     """Editing the variant must not touch the original — that is the point."""
     db = db_with_user
     copy = (await db.duplicate_recipe(UID, "curry", "curry-light"))["recipe"]
-    ghee = (await db.save_food(UID, "ghee", "g", 100, calories=900))["food"]["id"]
+    ghee = (await db.save_food(UID, "ghee", "g", 100, calories=900, protein_g=1, carbs_g=2, fat_g=3))["food"]["id"]
     await db.save_recipe_ingredient(UID, copy["id"], ghee, 20, "g", 20, "g")
 
     assert len(await db.get_recipe_ingredients(UID, copy["id"])) == 3

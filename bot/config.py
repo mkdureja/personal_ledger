@@ -14,8 +14,20 @@ from dotenv import load_dotenv
 # ---------------------------------------------------------------------------
 # Load .env from project root (one level up from bot/)
 # ---------------------------------------------------------------------------
+# ``load_dotenv`` does not override what is already in the environment, so an
+# explicit value always wins — but anything the caller *omits* still comes from
+# the deployment .env. For the test suite that is a leak in one direction only,
+# and a nasty one: every newly added setting silently becomes something the
+# suite reads from a real installation. It has already bitten twice (real
+# PHASE1_ENABLED_USER_IDS failing collection; a real GEMINI_API_KEY able to send
+# test meal text to Google), and pinning each setting as it appears only ever
+# fixes the settings someone remembered.
+#
+# ``LEDGER_SKIP_DOTENV`` closes the class instead: tests declare every value they
+# depend on and read no deployment file at all. It is never set in production.
 _env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(_env_path)
+if os.getenv("LEDGER_SKIP_DOTENV", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    load_dotenv(_env_path)
 
 # ---------------------------------------------------------------------------
 # Core config
@@ -128,6 +140,35 @@ def _positive_int(name: str, default: int, *, maximum: int) -> int:
 # anything is downloaded. A meal description is a sentence; anything much longer
 # is a mistake, and transcription cost grows with length.
 VOICE_MAX_SECONDS: int = _positive_int("VOICE_MAX_SECONDS", 60, maximum=600)
+
+# Wall-clock ceilings on the two operations that can hang indefinitely. Updates
+# are processed sequentially (``concurrent_updates(False)``), so anything that
+# blocks in a handler blocks *both* users — an unreachable model download or a
+# wedged decoder would otherwise take the whole bot down with no diagnostic.
+#
+# The load budget is generous because a cold first load downloads the model
+# (~21s measured for "base", including the download); the transcribe budget is
+# per note, on audio already capped at VOICE_MAX_SECONDS.
+VOICE_LOAD_TIMEOUT_SECONDS: int = _positive_int(
+    "VOICE_LOAD_TIMEOUT_SECONDS", 300, maximum=1800
+)
+VOICE_TRANSCRIBE_TIMEOUT_SECONDS: int = _positive_int(
+    "VOICE_TRANSCRIBE_TIMEOUT_SECONDS", 120, maximum=900
+)
+
+# A voice note that passed the duration check can still be an enormous file if
+# the declared duration was wrong. Opus voice notes run well under 32 kB/s, so
+# this is roomy for a legitimate note of the maximum length.
+VOICE_MAX_FILE_BYTES: int = _positive_int(
+    "VOICE_MAX_FILE_BYTES", 8 * 1024 * 1024, maximum=64 * 1024 * 1024
+)
+
+# Load the speech model during startup instead of inside the first user's
+# request. Costs a slower start; keeps the first voice note from paying a
+# multi-second stall that looks like the bot ignoring them.
+VOICE_PRELOAD: bool = os.getenv("VOICE_PRELOAD", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 # Optional routine file (motivational anchors). When absent, the bot falls
 # back to the single legacy reminder configured by REMINDER_HOUR below.

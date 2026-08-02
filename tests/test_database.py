@@ -32,12 +32,34 @@ class TestSchema:
         assert row[0] == 1, "foreign_keys should be ON"
 
     async def test_journal_mode_wal(self, db):
-        """PRAGMA journal_mode is WAL."""
+        """PRAGMA journal_mode is WAL (or 'memory', which is all :memory: allows).
+
+        This alone does not prove the production contract — see
+        ``test_journal_mode_wal_on_a_real_file``, which does.
+        """
         cursor = await db.conn.execute("PRAGMA journal_mode")
         row = await cursor.fetchone()
-        # In-memory databases may report 'memory' instead of 'wal'
-        # This is expected behavior — WAL only applies to file-backed DBs
         assert row[0] in ("wal", "memory"), f"Unexpected journal_mode: {row[0]}"
+
+    async def test_journal_mode_wal_on_a_real_file(self, tmp_path):
+        """A file-backed database really is in WAL mode.
+
+        The fixture above runs on ``:memory:``, where SQLite reports ``memory``
+        and *cannot* report ``wal`` — so accepting both meant the assertion
+        passed no matter what ``connect()`` did with the pragma. Deployment is
+        always file-backed, so the contract is tested where it applies.
+        """
+        from bot.database import DatabaseManager
+
+        manager = DatabaseManager(str(tmp_path / "wal-check.db"))
+        await manager.connect()
+        try:
+            cursor = await manager.conn.execute("PRAGMA journal_mode")
+            assert (await cursor.fetchone())[0] == "wal"
+            cursor = await manager.conn.execute("PRAGMA foreign_keys")
+            assert (await cursor.fetchone())[0] == 1
+        finally:
+            await manager.close()
 
     async def test_indexes_exist(self, db):
         """Composite indexes were created."""
@@ -277,7 +299,7 @@ class TestDiet:
 
     async def test_log_with_calories(self, db_with_user, user_id):
         """Log a meal with calories."""
-        row_id = await db_with_user.log_diet(user_id, "lunch", "dal, rice", 650)
+        row_id = await db_with_user.log_diet(user_id, "lunch", "dal, rice", 650, protein_g=1, carbs_g=2, fat_g=3)
         assert row_id is not None
 
     async def test_log_and_retrieve_macros(self, db_with_user, user_id):
@@ -300,17 +322,30 @@ class TestDiet:
         assert row["carbs_g"] == pytest.approx(91.25)
         assert row["fat_g"] == pytest.approx(14.0)
 
-    async def test_log_without_calories(self, db_with_user, user_id):
-        """Log a meal without calories (skipped)."""
-        row_id = await db_with_user.log_diet(user_id, "dinner", "pasta", None)
+    async def test_log_without_nutrition_is_refused(self, db_with_user, user_id):
+        """Nutrition is mandatory: an incomplete meal is never written.
+
+        This used to be ``test_log_without_calories`` and asserted the opposite.
+        Tracking macros is the point of the ledger, and a row with calories but
+        no macros silently under-reports every total it feeds.
+        """
         from datetime import date
+
+        from bot.nutrition import NutritionError
+
+        for missing in ("calories", "protein_g", "carbs_g", "fat_g"):
+            values = {
+                "calories": 100,
+                "protein_g": 1.0,
+                "carbs_g": 2.0,
+                "fat_g": 3.0,
+            }
+            values[missing] = None
+            with pytest.raises(NutritionError, match="missing"):
+                await db_with_user.log_diet(user_id, "dinner", "pasta", **values)
+
         logs = await db_with_user.get_diet_logs(user_id, date.today(), date.today())
-        found = [r for r in logs if r["id"] == row_id]
-        assert len(found) == 1
-        assert found[0]["calories"] is None
-        assert found[0]["protein_g"] is None
-        assert found[0]["carbs_g"] is None
-        assert found[0]["fat_g"] is None
+        assert logs == [], "a refused meal must leave nothing behind"
 
     async def test_invalid_meal_type(self, db_with_user, user_id):
         """CHECK constraint rejects invalid meal types."""
@@ -334,7 +369,7 @@ class TestDiet:
 
         # The failed write must release the mutation lock and leave the
         # connection ready for the next operation.
-        row_id = await db_with_user.log_diet(user_id, "breakfast", "eggs", 300)
+        row_id = await db_with_user.log_diet(user_id, "breakfast", "eggs", 300, protein_g=1, carbs_g=2, fat_g=3)
         assert row_id is not None
 
 
@@ -581,7 +616,7 @@ class TestUndo:
 
         await db_with_user.log_study(user_id, "First", 10)
         await db_with_user.log_gym(user_id, "Second", 3, 5)
-        diet_id = await db_with_user.log_diet(user_id, "snack", "Third", 100)
+        diet_id = await db_with_user.log_diet(user_id, "snack", "Third", 100, protein_g=1, carbs_g=2, fat_g=3)
 
         entry = await db_with_user.undo_last(user_id)
 

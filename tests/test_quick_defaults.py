@@ -351,7 +351,7 @@ async def test_quick_and_guided_receipts_do_not_collide(db_with_user, food):
     db = db_with_user
     source = MutationSource(update_id=606)
     await db.log_diet_with_items(
-        UID, "lunch", [{"display_name": "Toast", "source_type": "freetext"}],
+        UID, "lunch", [{"display_name": "Toast", "source_type": "freetext", "calories": 100, "protein_g": 1, "carbs_g": 2, "fat_g": 3}],
         source=source,
     )
     quick = await db.create_quick_meal(

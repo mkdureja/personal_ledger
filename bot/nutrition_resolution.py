@@ -25,6 +25,7 @@ it fetches the rows, then calls the matching function here.
 from __future__ import annotations
 
 import dataclasses
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
@@ -33,6 +34,7 @@ from . import nutrition
 
 __all__ = [
     "ResolvedCatalogDietEntry",
+    "complete_bare_count",
     "quantity_display",
     "request_for_item",
     "resolve_catalog_food_entry",
@@ -83,6 +85,41 @@ class ResolvedCatalogDietEntry:
         }
 
 
+#: A lone number, with no unit attached.
+_BARE_COUNT_RE = re.compile(r"\d+(?:\.\d+)?")
+
+#: Units that make a bare count meaningful. A definition storing per-piece or
+#: per-serving values is *already* counting; "2" of it has exactly one reading.
+#: Anything measured in g or ml does not qualify — "2" of a per-100g food is far
+#: more likely to be a half-typed amount than two grams.
+_COUNTABLE_UNITS = frozenset({"piece", "serving"})
+
+
+def complete_bare_count(
+    quantity_tokens: Sequence[str], declared_unit: object
+) -> tuple[str, ...]:
+    """Supply the unit a countable definition already declares.
+
+    ``2 eggs`` carries its unit inside the food's *name*, so the text parser —
+    which deliberately does not know which words are units — hands over a lone
+    ``2``. The shared quantity parser then rejected it for having no unit, which
+    made a documented, advertised example fail against a catalog food that is
+    stored per piece and could only ever have meant two of them.
+
+    This adds no guess. The unit comes from the stored definition, and only when
+    that definition is counted rather than weighed; a bare count against a
+    per-100g food is still refused.
+    """
+    if len(quantity_tokens) != 1:
+        return tuple(quantity_tokens)
+    if str(declared_unit) not in _COUNTABLE_UNITS:
+        return tuple(quantity_tokens)
+    token = str(quantity_tokens[0]).strip()
+    if not _BARE_COUNT_RE.fullmatch(token):
+        return tuple(quantity_tokens)
+    return (token, str(declared_unit))
+
+
 def request_for_item(quantity_tokens: Sequence[str]):
     """Parse entered quantity tokens for a food-like item."""
     if not quantity_tokens:
@@ -122,7 +159,7 @@ def resolve_food_diet_entry(
     quantity_tokens: Sequence[str],
 ) -> ResolvedCatalogDietEntry:
     """Calculate a food's nutrition for an entered quantity (no DB access)."""
-    request = request_for_item(quantity_tokens)
+    request = request_for_item(complete_bare_count(quantity_tokens, food.get("base_unit")))
     resolved_amount = nutrition.resolve_food_base_amount(food, portions, request)
     nutrients = nutrition.scale_food_nutrients(food, resolved_amount)
     finalized = nutrition.finalize_log_nutrients(nutrients)
@@ -149,7 +186,7 @@ def resolve_recipe_diet_entry(
 ) -> ResolvedCatalogDietEntry:
     """Calculate a recipe's nutrition for an entered yield quantity (no DB)."""
     request = nutrition.parse_quantity(
-        quantity_tokens,
+        complete_bare_count(quantity_tokens, recipe.get("yield_unit")),
         allowed_base_units=nutrition.RECIPE_YIELD_UNITS,
         allow_named=False,
     )

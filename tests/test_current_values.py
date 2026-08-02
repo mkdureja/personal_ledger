@@ -58,7 +58,7 @@ async def _log_food_meal(db, food_id, amount="200", unit="g", meal_type="lunch")
 async def test_preview_reprices_from_the_edited_food(db_with_user, food):
     db = db_with_user
     meal_id = await _log_food_meal(db, food)  # 200 g at 100 kcal/100 g = 200
-    await db.save_food(UID, "Dal", "g", 100, calories=150)
+    await db.save_food(UID, "Dal", "g", 100, calories=150, protein_g=1, carbs_g=2, fat_g=3)
 
     preview = await db.get_current_value_preview(UID, meal_id)
 
@@ -75,7 +75,7 @@ async def test_preview_keeps_item_order_and_duplicates(db_with_user, food):
     meal_id = await db.log_diet_with_items(
         UID,
         "lunch",
-        [entry.as_item(), {"display_name": "Note", "source_type": "freetext"},
+        [entry.as_item(), {"display_name": "Note", "source_type": "freetext", "calories": 100, "protein_g": 1, "carbs_g": 2, "fat_g": 3},
          entry.as_item()],
     )
     preview = await db.get_current_value_preview(UID, meal_id)
@@ -92,7 +92,7 @@ async def test_freetext_items_carry_through_unchanged(db_with_user):
     meal_id = await db.log_diet_with_items(
         UID,
         "snack",
-        [{"display_name": "Two rotis", "source_type": "freetext", "calories": 180}],
+        [{"display_name": "Two rotis", "source_type": "freetext", "calories": 180, "protein_g": 1, "carbs_g": 2, "fat_g": 3}],
     )
     preview = await db.get_current_value_preview(UID, meal_id)
     assert preview.items[0].issue is None
@@ -158,20 +158,43 @@ async def test_an_item_with_no_recorded_amount_is_an_issue(db_with_user, food):
             "source_type": "food",
             "source_id": food,
             "calories": 90,
+            "protein_g": 1,
+            "carbs_g": 2,
+            "fat_g": 3,
         }],
     )
     preview = await db.get_current_value_preview(UID, meal_id)
     assert preview.items[0].issue.code is CurrentValueIssueCode.QUANTITY_MISSING
 
 
-async def test_unknown_nutrients_stay_unknown(db_with_user):
+async def test_preview_totals_cover_every_macro(db_with_user):
+    """A replay preview totals all four nutrients, not just calories.
+
+    This replaced ``test_unknown_nutrients_stay_unknown``, whose subject — a
+    stored ``None`` propagating into the proposed totals — can no longer exist
+    now that nutrition is mandatory. What is worth pinning instead is that the
+    numbers the user is asked to accept are complete.
+    """
     db = db_with_user
     meal_id = await db.log_diet_with_items(
-        UID, "snack", [{"display_name": "Mystery", "source_type": "freetext"}]
+        UID,
+        "snack",
+        [{
+            "display_name": "Mystery",
+            "source_type": "freetext",
+            "calories": 100,
+            "protein_g": 1,
+            "carbs_g": 2,
+            "fat_g": 3,
+        }],
     )
     preview = await db.get_current_value_preview(UID, meal_id)
-    assert preview.proposed_totals.calories is None
-    assert preview.delta.calories is None
+    assert preview.proposed_totals.calories == 100
+    assert preview.proposed_totals.protein_g == pytest.approx(1)
+    assert preview.proposed_totals.carbs_g == pytest.approx(2)
+    assert preview.proposed_totals.fat_g == pytest.approx(3)
+    # Nothing was re-resolved, so the replay is a no-op against the snapshot.
+    assert preview.delta.calories == 0
 
 
 async def test_preview_of_another_users_meal_is_none(db, food):
@@ -186,7 +209,7 @@ async def test_preview_of_another_users_meal_is_none(db, food):
 async def test_commit_writes_the_repriced_meal(db_with_user, food):
     db = db_with_user
     meal_id = await _log_food_meal(db, food)
-    await db.save_food(UID, "Dal", "g", 100, calories=150)
+    await db.save_food(UID, "Dal", "g", 100, calories=150, protein_g=1, carbs_g=2, fat_g=3)
     preview = await db.get_current_value_preview(UID, meal_id)
 
     result = await db.commit_current_value_meal(UID, meal_id, {}, preview.digest)
@@ -202,7 +225,7 @@ async def test_commit_refuses_a_preview_that_no_longer_matches(db_with_user, foo
     db = db_with_user
     meal_id = await _log_food_meal(db, food)
     preview = await db.get_current_value_preview(UID, meal_id)
-    await db.save_food(UID, "Dal", "g", 100, calories=999)
+    await db.save_food(UID, "Dal", "g", 100, calories=999, protein_g=1, carbs_g=2, fat_g=3)
 
     result = await db.commit_current_value_meal(UID, meal_id, {}, preview.digest)
 
@@ -226,7 +249,7 @@ async def test_commit_refuses_while_an_issue_is_unresolved(db_with_user, food):
 async def test_commit_applies_keep_and_remove_decisions(db_with_user, food):
     db = db_with_user
     entry = await db.resolve_quantity(UID, "food", food, ["100", "g"])
-    other = await db.save_food(UID, "Rice", "g", 100, calories=130)
+    other = await db.save_food(UID, "Rice", "g", 100, calories=130, protein_g=1, carbs_g=2, fat_g=3)
     other_entry = await db.resolve_quantity(
         UID, "food", other["food"]["id"], ["100", "g"]
     )
@@ -347,7 +370,7 @@ async def test_receipt_offers_current_values_only_for_structured_meals(
     db = db_with_user
     structured = await db._get_meal_receipt_locked(UID, await _log_food_meal(db, food))
     freetext_id = await db.log_diet_with_items(
-        UID, "snack", [{"display_name": "Toast", "source_type": "freetext"}]
+        UID, "snack", [{"display_name": "Toast", "source_type": "freetext", "calories": 100, "protein_g": 1, "carbs_g": 2, "fat_g": 3}]
     )
     freetext = await db._get_meal_receipt_locked(UID, freetext_id)
 
@@ -359,7 +382,7 @@ async def test_entry_opens_the_review_with_the_delta(db_with_user, food, monkeyp
     _enable(monkeypatch)
     db = db_with_user
     meal_id = await _log_food_meal(db, food)
-    await db.save_food(UID, "Dal", "g", 100, calories=150)
+    await db.save_food(UID, "Dal", "g", 100, calories=150, protein_g=1, carbs_g=2, fat_g=3)
     update = _callback(f"mr_current_{to_base36(UID)}_{to_base36(meal_id)}")
     context = _context(db)
 
@@ -460,7 +483,7 @@ async def test_save_reopens_the_review_when_values_moved(
     await diet.current_values_entry(entry_update, context)
 
     # Somebody edits the food after the preview was rendered.
-    await db.save_food(UID, "Dal", "g", 100, calories=400)
+    await db.save_food(UID, "Dal", "g", 100, calories=400, protein_g=1, carbs_g=2, fat_g=3)
 
     revision = context.user_data["diet_ui_revision"]
     context.user_data["diet_ui_message_id"] = 21

@@ -208,7 +208,7 @@ async def test_recipe_show_preserves_quantity_provenance_and_marks_archived_food
 ) -> None:
     food = (
         await db_with_user.save_food(
-            user_id, "apple", "g", 100, calories=52
+            user_id, "apple", "g", 100, calories=52, protein_g=1, carbs_g=2, fat_g=3
         )
     )["food"]
     await db_with_user.save_food_portion(user_id, food["id"], "medium", 182, "g")
@@ -231,7 +231,7 @@ async def test_recipe_show_preserves_quantity_provenance_and_marks_archived_food
     assert "archived food definition" not in active_rendered
 
     await db_with_user.archive_food(user_id, food["id"])
-    await db_with_user.save_food(user_id, "apple", "g", 100, calories=80)
+    await db_with_user.save_food(user_id, "apple", "g", 100, calories=80, protein_g=1, carbs_g=2, fat_g=3)
     archived_message = _message()
     await recipe_command(
         _update(user_id, archived_message),
@@ -290,7 +290,7 @@ async def test_catalog_validation_error_is_bounded_for_telegram(user_id: int) ->
 async def test_catalog_lookup_is_exact_and_rejects_reserved_portion(
     db_with_user, user_id: int
 ) -> None:
-    await db_with_user.save_food(user_id, "apple", "g", 100, calories=52)
+    await db_with_user.save_food(user_id, "apple", "g", 100, calories=52, protein_g=1, carbs_g=2, fat_g=3)
     missing_message = _message()
     await food_command(
         _update(user_id, missing_message),
@@ -328,7 +328,10 @@ async def test_cross_dimension_alias_command_normalizes_and_resolves(
 ) -> None:
     await food_command(
         _update(user_id),
-        _context(db_with_user, ["add", "soup", "per=100ml", "kcal=50"]),
+        _context(
+            db_with_user,
+            ["add", "soup", "per=100ml", "kcal=50", "p=2", "c=6", "f=1"],
+        ),
     )
     await food_command(
         _update(user_id),

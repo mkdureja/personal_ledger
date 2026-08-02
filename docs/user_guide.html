@@ -935,7 +935,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <h2 id="diet" class="page-break">5. Logging Meals</h2>
 
-    <p>Track what you eat across four meal types: breakfast, lunch, dinner, and snacks. Calories and protein/carbohydrate/fat macros are optional.</p>
+    <p>Track what you eat across four meal types: breakfast, lunch, dinner, and snacks. Calories and protein/carbohydrate/fat macros are required on every meal — usually supplied for you from a saved food, recipe, or the shared catalog.</p>
 
     <h3>Quick Log</h3>
     <pre><code><span class="cmd-prefix">/diet</span> <span class="cmd-arg">&lt;meal&gt;</span> <span class="cmd-arg">&lt;food&gt;</span> <span class="cmd-opt">[calories] [p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</span></code></pre>
@@ -961,8 +961,9 @@ DB_PATH=ledger.db</code></pre>
     structured item goes through quantity and nutrition preview before joining
     an editable multi-item draft; you can add, change, remove, and finally
     <strong>✅ Save meal</strong>. Calories and macros are asked only for a
-    free-text item. At the macro prompt, send protein, carbs, and fat in that
-    order (for example, <code>25 80 15</code>) or send <code>/skip</code>.</p>
+    free-text item — a food, recipe, or catalog item already carries them. At
+    the macro prompt, send protein, carbs, and fat in that order (for example,
+    <code>25 80 15</code>). All three are required.</p>
 
     <div class="chat no-break">
         <div class="chat-header">
@@ -988,13 +989,15 @@ DB_PATH=ledger.db</code></pre>
     </div>
 
     <div class="box box-info no-break">
-        <div class="box-title">💡 Calorie Tracking</div>
-        <p>Calories are optional. At the calorie prompt, <code>/skip</code> moves on without a calorie estimate; answer or skip the following macro prompt to finish the log. Days with skipped calories show a hatched pattern on the diet chart instead of a misleadingly low bar. Daily and weekly summaries label partial calorie totals as known values only, and show "not recorded" when no meal has calorie data.</p>
+        <div class="box-title">💡 Nutrition is required</div>
+        <p>Every meal needs calories <em>and</em> protein, carbs, and fat. There is no <code>/skip</code> — tracking macros is the whole point, and a meal saved without them quietly under-reports your day with no way to tell later whether a blank meant zero or unknown.</p>
+        <p>You rarely type them. Log a <strong>saved food</strong>, a <strong>recipe</strong>, or a <strong>catalog item</strong> and the app calculates all four from that stored definition. Add a food once — <code>/food add oats per=100g kcal=389 p=16.9 c=66 f=6.9</code> — and every future <code>100g oats</code> fills itself in. Only a genuine one-off needs the numbers typed.</p>
+        <p>The app never estimates nutrition. If a food isn't saved and isn't in the catalog, it is reported as <em>not logged</em> with the reason, rather than guessed at.</p>
     </div>
 
     <div class="box box-info no-break">
         <div class="box-title">⚖️ Macro Tracking</div>
-        <p>Macros are optional and measured in grams. Quick logs use any subset of the case-insensitive labels <code>p=</code>, <code>c=</code>, and <code>f=</code>; guided logs accept all three values in protein/carbs/fat order. Daily and weekly summaries add only known macro values. Partial data shows coverage and an exclusion warning; if no meal has macros, the summary says they were not recorded instead of counting them as zero.</p>
+        <p>Macros are required and measured in grams. Quick logs use all three case-insensitive labels <code>p=</code>, <code>c=</code>, and <code>f=</code> together with calories; guided logs take the three values in protein/carbs/fat order. Because every meal carries them, daily and weekly totals are complete rather than "known values only". Entries made before this rule may still be partial, and summaries continue to flag those honestly.</p>
     </div>
 
     <h3 id="catalog">Saved Foods &amp; Recipes</h3>
@@ -1726,7 +1729,7 @@ DB_PATH=ledger.db</code></pre>
             <tr>
                 <td><code>/diet &lt;meal&gt; &lt;food&gt; [cal] [p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</code></td>
                 <td>Quick meal log</td>
-                <td><span class="badge badge-required">meal, food</span> <span class="badge badge-optional">calories, macros</span></td>
+                <td><span class="badge badge-required">meal, food, calories, macros</span></td>
             </tr>
             <tr>
                 <td><code>/describe &lt;items&gt;</code></td>

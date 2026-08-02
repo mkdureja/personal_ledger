@@ -403,8 +403,8 @@ async def test_home_omits_the_last_meal_when_repeat_is_unavailable():
 async def test_last_meal_summary_matches_what_repeat_copies(db):
     """The Home label and the Repeat write must name the same row."""
     await db.ensure_user(UID, "t", "Test")
-    await db.log_diet(UID, "breakfast", "Toast", 200)
-    await db.log_diet(UID, "lunch", "Salad", 300)
+    await db.log_diet(UID, "breakfast", "Toast", 200, protein_g=1, carbs_g=2, fat_g=3)
+    await db.log_diet(UID, "lunch", "Salad", 300, protein_g=1, carbs_g=2, fat_g=3)
 
     summary = await db.get_last_meal_summary(UID)
     result = await db.repeat_last_meal(UID)

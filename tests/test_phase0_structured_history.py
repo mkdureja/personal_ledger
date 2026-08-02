@@ -50,7 +50,7 @@ async def test_a_fresh_database_is_stamped_at_the_current_schema_version(db):
     assert row["user_version"] == LATEST_SCHEMA_VERSION
 
 async def test_food_and_recipe_reference_write_structured_child(db_with_user, user_id):
-    await db_with_user.save_food(user_id, "apple", "g", 100.0, calories=52)
+    await db_with_user.save_food(user_id, "apple", "g", 100.0, calories=52, protein_g=1, carbs_g=2, fat_g=3)
     
     ctx = _context(db_with_user, args=["snack", "food:apple", "200", "g"])
     res = await diet.diet_command(_update(), ctx)
@@ -91,7 +91,7 @@ async def test_food_and_recipe_reference_write_structured_child(db_with_user, us
     assert child2["entered_unit"] == "serving"
 
 async def test_manual_command_writes_freetext_child(db_with_user, user_id):
-    ctx = _context(db_with_user, args=["lunch", "pizza", "slice", "300", "p=15"])
+    ctx = _context(db_with_user, args=["lunch", "pizza", "slice", "300", "p=15", "c=40", "f=12"])
     res = await diet.diet_command(_update(), ctx)
     assert res == ConversationHandler.END
 
@@ -135,7 +135,7 @@ async def test_guided_input_writes_freetext_child(db_with_user, user_id):
     assert child["fat_g"] == 10.0
 
 async def test_same_update_replay_creates_one_header_and_child(db_with_user, user_id):
-    ctx = _context(db_with_user, args=["snack", "cookie", "150"])
+    ctx = _context(db_with_user, args=["snack", "cookie", "150", "p=2", "c=20", "f=7"])
     upd = _update()
     
     # First delivery
@@ -152,7 +152,7 @@ async def test_cross_owner_private_reference_writes_nothing(db_with_user, user_i
     # Other user creates food
     other_user = 999
     await db_with_user.ensure_user(other_user, "other", "Other")
-    await db_with_user.save_food(other_user, "apple", "g", 100.0, calories=52)
+    await db_with_user.save_food(other_user, "apple", "g", 100.0, calories=52, protein_g=1, carbs_g=2, fat_g=3)
 
     ctx = _context(db_with_user, args=["snack", "food:apple", "1", "g"])
     upd = _update(user_id=user_id)
@@ -164,7 +164,7 @@ async def test_cross_owner_private_reference_writes_nothing(db_with_user, user_i
     assert len(rows) == 0
 
 async def test_confirmation_delivery_failure_followed_by_replay_creates_no_duplicate(db_with_user, user_id):
-    ctx = _context(db_with_user, args=["snack", "cookie", "150"])
+    ctx = _context(db_with_user, args=["snack", "cookie", "150", "p=2", "c=20", "f=7"])
     msg = _message()
     msg.reply_text.side_effect = [NetworkError("timeout"), AsyncMock()]
     upd = _update(msg)

@@ -49,25 +49,43 @@ async def test_meal_header_totals_are_the_sum_of_items(db_with_user, user_id):
     assert children[0]["source_id"] == 1
 
 
-async def test_unknown_item_nutrient_makes_the_meal_total_unknown(
-    db_with_user, user_id
-):
-    """An unknown item value must not masquerade as a numeric zero in the total."""
+async def test_an_item_with_unknown_nutrients_is_refused(db_with_user, user_id):
+    """The whole meal is rejected, and the offending item is named.
+
+    Previously an unknown value propagated ``None`` into the header total, which
+    kept the arithmetic honest but still let the meal be saved — so the ledger
+    accumulated meals it could never total. Now nothing is written at all.
+    """
+    from bot.nutrition import NutritionError
+
     items = [
         _item("apple", 95, 0.5, 25.0, 0.3, source_id=1),
         _item("mystery", None, 4.0, None, 0.4, source_id=2),
+    ]
+    with pytest.raises(NutritionError, match="mystery"):
+        await db_with_user.log_diet_with_items(user_id, "dinner", items)
+
+    rows = await db_with_user.get_diet_logs(user_id, today_local(), today_local())
+    assert rows == [], "a refused meal must not leave a header behind"
+
+
+async def test_a_complete_multi_item_meal_sums_every_macro(db_with_user, user_id):
+    """The totals the refusal above protects: all four fields add up."""
+    items = [
+        _item("apple", 95, 0.5, 25.0, 0.3, source_id=1),
+        _item("rice", 200, 4.0, 44.0, 0.4, source_id=2),
     ]
     header_id = await db_with_user.log_diet_with_items(user_id, "dinner", items)
 
     header = (
         await db_with_user.get_diet_logs(user_id, today_local(), today_local())
     )[-1]
-    assert header["calories"] is None  # one item's calories unknown
-    assert header["carbs_g"] is None  # one item's carbs unknown
-    assert header["protein_g"] == pytest.approx(4.5)  # both known -> summed
-    # Items keep their own snapshots, unknowns preserved.
+    assert header["calories"] == 295
+    assert header["protein_g"] == pytest.approx(4.5)
+    assert header["carbs_g"] == pytest.approx(69.0)
+    assert header["fat_g"] == pytest.approx(0.7)
     children = await db_with_user.get_diet_log_items(user_id, header_id)
-    assert children[1]["calories"] is None
+    assert [c["calories"] for c in children] == [95, 200]
 
 
 async def test_log_diet_with_items_is_idempotent_on_replay(db_with_user, user_id):

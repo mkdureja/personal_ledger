@@ -154,8 +154,8 @@ async def test_identical_names_coexist_per_user(two_user_db):
     assert m_status == "added" and r_status == "added"
     assert m_hid != r_hid
 
-    await two_user_db.save_food(MANOJ, "Oats", "g", 100.0, calories=350)
-    await two_user_db.save_food(RATIKA, "Oats", "g", 100.0, calories=350)
+    await two_user_db.save_food(MANOJ, "Oats", "g", 100.0, calories=350, protein_g=1, carbs_g=2, fat_g=3)
+    await two_user_db.save_food(RATIKA, "Oats", "g", 100.0, calories=350, protein_g=1, carbs_g=2, fat_g=3)
     m_foods = await two_user_db.list_foods(MANOJ)
     r_foods = await two_user_db.list_foods(RATIKA)
     assert len(m_foods) == 1 and len(r_foods) == 1
@@ -205,7 +205,7 @@ async def test_cross_owner_delete_log_is_noop(two_user_db):
 
 
 async def test_cross_owner_archive_food_is_noop(two_user_db):
-    await two_user_db.save_food(RATIKA, "Rice", "g", 100.0)
+    await two_user_db.save_food(RATIKA, "Rice", "g", 100.0, calories=100, protein_g=1, carbs_g=2, fat_g=3)
     ratika_food = (await two_user_db.list_foods(RATIKA))[0]
 
     result = await two_user_db.archive_food(MANOJ, ratika_food["id"])

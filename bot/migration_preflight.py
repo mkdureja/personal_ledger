@@ -92,8 +92,20 @@ async def prepare_database_for_startup(
         return PreflightOutcome("current", source, target)
 
     if source == LEGACY_UNVERSIONED and not await _has_application_tables(conn, target):
-        # A genuinely new database. Backing up an empty file before creating its
-        # schema protects nothing, and would leave a meaningless rollback point.
+        # "Unversioned and none of our tables" is not the same as "new". A
+        # mistyped or stale DB_PATH can point at somebody else's SQLite file,
+        # which also stamps version 0 and also holds no Ledger table — and the
+        # old check waved it through as new, adding Ledger tables to it with no
+        # backup taken. A genuinely new database has no tables at all.
+        occupied = await _unrelated_tables(conn, target)
+        if occupied:
+            raise MigrationPreflightError(
+                f"{db_path} is not a Ledger database: it holds {len(occupied)} "
+                f"unrelated table(s) ({', '.join(occupied[:5])}"
+                f"{', …' if len(occupied) > 5 else ''}) and no Ledger table, but "
+                "carries no schema version. Refusing to create Ledger tables in "
+                "it. Check DB_PATH, or point it at a new file."
+            )
         logger.info("New database detected; creating schema without a backup")
         return PreflightOutcome("new-database", source, target)
 
@@ -123,9 +135,27 @@ async def prepare_database_for_startup(
 
 async def _has_application_tables(conn: aiosqlite.Connection, target: int) -> bool:
     """Whether any table the target version requires already exists."""
+    return bool(await _table_names(conn) & required_tables_for(target))
+
+
+async def _unrelated_tables(conn: aiosqlite.Connection, target: int) -> list[str]:
+    """Non-Ledger tables present, sorted. Empty for a genuinely new database.
+
+    SQLite's own bookkeeping tables (``sqlite_sequence`` and friends) are not
+    evidence of foreign data — they appear as a side effect of ordinary schema
+    features — so they never make a database look occupied.
+    """
+    present = await _table_names(conn)
+    return sorted(
+        name
+        for name in present - required_tables_for(target)
+        if not name.startswith("sqlite_")
+    )
+
+
+async def _table_names(conn: aiosqlite.Connection) -> set[str]:
     cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    present = {row[0] for row in await cursor.fetchall()}
-    return bool(present & required_tables_for(target))
+    return {row[0] for row in await cursor.fetchall()}
 
 
 def _require_destination(

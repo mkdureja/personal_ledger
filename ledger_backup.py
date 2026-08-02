@@ -47,7 +47,7 @@ import shutil
 import sqlite3
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +56,7 @@ from ledger_schema import (
     LEGACY_UNVERSIONED,
     TABLE_INTRODUCED,
     is_known_schema_version,
+    required_columns_for,
     required_tables_for,
     shared_tables_for,
     user_tables_for,
@@ -92,6 +93,10 @@ class DatabaseFacts:
     tables: frozenset[str]
     user_counts: Mapping[str, int]
     shared_counts: Mapping[str, int]
+    #: table name -> its column names, for every table present. Only tables in
+    #: the shared manifest are ever checked against it; the rest are carried so a
+    #: diagnostic never has to reopen the file.
+    columns: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     @property
     def sound(self) -> bool:
@@ -158,7 +163,21 @@ def _facts_from_connection(conn: sqlite3.Connection, path: Path) -> DatabaseFact
         tables=tables,
         user_counts=_count_rows(conn, user_names, tables),
         shared_counts=_count_rows(conn, shared_names, tables),
+        columns=_read_columns(conn, tables),
     )
+
+
+def _read_columns(
+    conn: sqlite3.Connection, present: frozenset[str]
+) -> dict[str, frozenset[str]]:
+    """Column names for each present table, read once per inspection."""
+    columns: dict[str, frozenset[str]] = {}
+    for table in sorted(present):
+        # Table names come from sqlite_master, never from user input; PRAGMA
+        # does not accept a bound parameter here.
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()  # noqa: S608
+        columns[table] = frozenset(str(row[1]) for row in rows)
+    return columns
 
 
 def _count_rows(
@@ -240,7 +259,14 @@ def resolve_expect_version(raw: str | int | None) -> int | None:
 
 
 def _shape_problems(facts: DatabaseFacts) -> list[str]:
-    """Version-independent soundness problems, plus required-table gaps."""
+    """Version-independent soundness problems, plus required table/column gaps.
+
+    Columns are checked, not just tables. A table list alone cannot see a
+    column-only migration — a v10 database stripped of both AI-consent columns
+    holds every required table and would otherwise certify as a sound rollback
+    point. The manifest is the same one the bot enforces at startup, so a copy
+    can never pass here and fail there.
+    """
     problems: list[str] = []
     if facts.integrity != "ok":
         problems.append(f"integrity_check returned {facts.integrity!r}, not 'ok'")
@@ -253,7 +279,26 @@ def _shape_problems(facts: DatabaseFacts) -> list[str]:
                 f"missing {len(missing)} table(s) required at version "
                 f"{facts.user_version}: {', '.join(missing)}"
             )
+        for table, absent in sorted(_column_gaps(facts).items()):
+            problems.append(
+                f"table {table!r} is missing column(s) required at version "
+                f"{facts.user_version}: {', '.join(absent)}"
+            )
     return problems
+
+
+def _column_gaps(facts: DatabaseFacts) -> dict[str, list[str]]:
+    """Required columns absent from each present table, by table name."""
+    gaps: dict[str, list[str]] = {}
+    for table, required in required_columns_for(facts.user_version).items():
+        if table not in facts.tables:
+            # Already reported as a missing table; naming every column too would
+            # bury the one fact the operator needs.
+            continue
+        absent = sorted(required - facts.columns.get(table, frozenset()))
+        if absent:
+            gaps[table] = absent
+    return gaps
 
 
 def verify_backup_file(

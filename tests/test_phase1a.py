@@ -257,7 +257,7 @@ async def test_set_pin_fails_closed_on_malformed_token():
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_reset_preserves_default_but_clears_pin(db_with_user, user_id):
-    food = (await db_with_user.save_food(user_id, "apple", "g", 100, calories=52))[
+    food = (await db_with_user.save_food(user_id, "apple", "g", 100, calories=52, protein_g=1, carbs_g=2, fat_g=3))[
         "food"
     ]
     await db_with_user.set_food_preference(user_id, "food", food["id"], is_pinned=True)
@@ -283,7 +283,7 @@ async def test_reset_preserves_default_but_clears_pin(db_with_user, user_id):
 
 @pytest.mark.asyncio
 async def test_reset_deletes_pin_only_row(db_with_user, user_id):
-    food = (await db_with_user.save_food(user_id, "rice", "g", 100, calories=130))[
+    food = (await db_with_user.save_food(user_id, "rice", "g", 100, calories=130, protein_g=1, carbs_g=2, fat_g=3))[
         "food"
     ]
     await db_with_user.set_food_preference(user_id, "food", food["id"], hidden=True)

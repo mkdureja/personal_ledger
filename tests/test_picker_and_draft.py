@@ -405,7 +405,7 @@ async def test_catalog_history_is_hidden_when_personalization_is_off(db_with_use
 
 async def test_hidden_private_sources_stay_hidden(db_with_user):
     db = db_with_user
-    saved = await db.save_food(UID, "Dal", "g", 100, calories=100)
+    saved = await db.save_food(UID, "Dal", "g", 100, calories=100, protein_g=1, carbs_g=2, fat_g=3)
     food_id = saved["food"]["id"]
     await db.set_food_preference(UID, "food", food_id, hidden=True)
     context = SimpleNamespace(bot_data={"db": db}, user_data={})

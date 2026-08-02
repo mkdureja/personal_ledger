@@ -124,6 +124,21 @@ _MEAL_CALLBACK_RE = re.compile(
 )
 _MEAL_EMOJI = {"breakfast": "🌅", "lunch": "🌞", "dinner": "🌙", "snack": "🍿"}
 
+# Calories and all three macros are required on every log. Nutrition is the
+# point of the ledger: a meal saved without it silently under-reports the day's
+# totals, and no later analysis can tell an unknown from a zero. When the numbers
+# are not to hand, save the food once with /food add (or use one from the shared
+# catalog) and the app supplies them from then on — it never estimates them.
+_REQUIRED_HINT = (
+    "Nutrition is required. If you don't have the numbers, /cancel and save the "
+    "food first with /food add — then logging it fills these in for you."
+)
+_CALORIE_PROMPT = f"🔥 How many calories?\n{_REQUIRED_HINT}"
+_MACRO_PROMPT = (
+    "🥩 Macros in grams? Send protein carbs fat (e.g. 25 80 15).\n"
+    f"{_REQUIRED_HINT}"
+)
+
 # Tap-flow callback shapes (owner id is always re-validated before any lookup).
 _DFOOD_RE = re.compile(r"^dfood_(\d+)_(\d+)$")
 _DRECIPE_RE = re.compile(r"^drecipe_(\d+)_(\d+)$")
@@ -465,6 +480,33 @@ async def diet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 f"❌ Food description too long (max {MAX_FOOD_ITEMS_LENGTH} characters)."
             )
             return ConversationHandler.END
+
+        # The one-shot form is the fastest way to log, which is exactly why it
+        # has to carry complete nutrition: a shortcut that quietly writes a
+        # partial row is worse than one that refuses. Caught here so the user
+        # gets the syntax back, rather than the write path's generic refusal.
+        missing = [
+            label
+            for label, value in (
+                ("calories", calories),
+                ("p=", macros["protein_g"]),
+                ("c=", macros["carbs_g"]),
+                ("f=", macros["fat_g"]),
+            )
+            if value is None
+        ]
+        if missing:
+            await reply_html(
+                update.message,
+                f"❌ Missing {escape_html(', '.join(missing))}.\n"
+                "Every meal needs calories and all three macros:\n"
+                f"<code>/diet {escape_html(meal_type)} "
+                f"{escape_html(food_items[:40])} 450 p=25 c=80 f=15</code>\n\n"
+                "Or save the food once and let the app fill them in:\n"
+                "<code>/food add oats per=100g kcal=389 p=16.9 c=66 f=6.9</code>",
+            )
+            return ConversationHandler.END
+
         freetext_child = {
             "source_type": "freetext",
             "source_id": None,
@@ -651,7 +693,7 @@ async def receive_food_items(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["diet_food_items"] = food
     try:
-        await update.message.reply_text("🔥 Estimated calories? (/skip if unsure)")
+        await update.message.reply_text(_CALORIE_PROMPT)
     except TelegramError:
         logger.warning("Could not deliver diet calorie prompt", exc_info=True)
         finish_conversation(update, context, "diet")
@@ -660,40 +702,30 @@ async def receive_food_items(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def receive_calories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive calorie count."""
+    """Receive calorie count. Required — there is no way past this step."""
     text = update.message.text.strip()
 
-    calories = None
-    if text.lower() != "/skip":
-        calories, err = parse_int(
-            text,
-            "Calories",
-            max_value=MAX_MEAL_CALORIES,
-        )
-        if err:
-            await update.message.reply_text(err + "\nOr /skip if unsure.")
-            return CALORIES
+    calories, err = parse_int(
+        text,
+        "Calories",
+        max_value=MAX_MEAL_CALORIES,
+    )
+    if err:
+        await update.message.reply_text(f"{err}\n{_REQUIRED_HINT}")
+        return CALORIES
 
     return await _prompt_for_macros(update, context, calories)
-
-
-async def skip_calories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /skip for calories."""
-    return await _prompt_for_macros(update, context, None)
 
 
 async def _prompt_for_macros(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    calories: int | None,
+    calories: int,
 ) -> int:
-    """Store pending calories and ask for optional protein/carbs/fat grams."""
+    """Store pending calories and ask for the required protein/carbs/fat grams."""
     context.user_data["diet_calories"] = calories
     try:
-        await update.message.reply_text(
-            "🥩 Macros in grams? Send protein carbs fat (e.g. 25 80 15), "
-            "or /skip if unsure."
-        )
+        await update.message.reply_text(_MACRO_PROMPT)
     except TelegramError:
         logger.warning("Could not deliver diet macro prompt", exc_info=True)
         finish_conversation(update, context, "diet")
@@ -709,7 +741,7 @@ async def receive_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             update,
             context,
             "❌ Send exactly three values: protein carbs fat (e.g. 25 80 15).\n"
-            "Or /skip if unsure.",
+            f"{_REQUIRED_HINT}",
         )
 
     values: list[float] = []
@@ -719,7 +751,7 @@ async def receive_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return await _macro_validation_error(
                 update,
                 context,
-                error + "\nOr /skip if unsure.",
+                f"{error}\n{_REQUIRED_HINT}",
             )
         assert value is not None
         values.append(value)
@@ -751,26 +783,40 @@ async def _macro_validation_error(
     return MACROS
 
 
-async def skip_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Save a guided diet entry without macro estimates."""
-    food_items, calories = _pending_diet(context)
-    return await _save_diet(
-        update,
-        context,
-        calories,
-        food_items=food_items,
-    )
+def _skip_retired(state: int):
+    """Answer a habitual ``/skip`` instead of letting it fall through silently.
+
+    ``/skip`` used to be the documented way past both nutrition steps, so both
+    users have it in their fingers. Left unhandled it would be swallowed by the
+    command filter and look like the bot had frozen; this says plainly that the
+    step is now required and keeps the conversation where it is.
+    """
+
+    async def _handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        try:
+            await update.message.reply_text(
+                "ℹ️ /skip is gone — nutrition is required now, so the ledger can "
+                f"total your macros.\n{_REQUIRED_HINT}"
+            )
+        except TelegramError:
+            logger.warning("Could not deliver the retired-skip notice", exc_info=True)
+            finish_conversation(update, context, "diet")
+            return ConversationHandler.END
+        return state
+
+    return _handler
 
 
-def _pending_diet(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, int | None]:
+def _pending_diet(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, int]:
     """Return the guided food and calories stored before the macro state."""
     food_items = context.user_data["diet_food_items"]
     if "diet_calories" not in context.user_data:
         raise RuntimeError("Diet macro state is missing its pending meal data")
     calories = context.user_data["diet_calories"]
-    if not isinstance(food_items, str) or (
-        calories is not None
-        and (not isinstance(calories, int) or isinstance(calories, bool))
+    if (
+        not isinstance(food_items, str)
+        or not isinstance(calories, int)
+        or isinstance(calories, bool)
     ):
         raise RuntimeError("Diet macro state contains invalid pending meal data")
     return food_items, calories
@@ -3444,7 +3490,7 @@ async def _rerender_diet_state(
 
     if state == CALORIES:
         try:
-            await reply_html(message, "🔢 How many calories? (or /skip)")
+            await reply_html(message, f"🔢 How many calories?\n{_REQUIRED_HINT}")
         except TelegramError:
             return await _diet_draft_expired(update, context)
         return CALORIES
@@ -3453,7 +3499,8 @@ async def _rerender_diet_state(
         try:
             await reply_html(
                 message,
-                "⚖️ Protein, carbs, fat in grams? e.g. <code>30 80 15</code> (or /skip)",
+                "⚖️ Protein, carbs, fat in grams? e.g. <code>30 80 15</code>\n"
+                f"{_REQUIRED_HINT}",
             )
         except TelegramError:
             return await _diet_draft_expired(update, context)
@@ -3691,14 +3738,14 @@ diet_conv_handler = ConversationHandler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_food_items),
         ],
         CALORIES: [
-            CommandHandler("skip", skip_calories),
+            CommandHandler("skip", _skip_retired(CALORIES)),
             _diet_voice_guard,
             _diet_meal_guard(CALORIES),
             _diet_control_guard,
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_calories),
         ],
         MACROS: [
-            CommandHandler("skip", skip_macros),
+            CommandHandler("skip", _skip_retired(MACROS)),
             _diet_voice_guard,
             _diet_meal_guard(MACROS),
             _diet_control_guard,

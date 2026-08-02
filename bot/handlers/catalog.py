@@ -47,14 +47,17 @@ _MAX_ERROR_TEXT = 500
 _FOOD_USAGE = (
     "🥗 <b>Saved foods</b>\n"
     "<code>/food add &lt;key&gt; per=&lt;qtyunit&gt; "
-    "[kcal=&lt;n&gt; p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</code>\n"
+    "kcal=&lt;n&gt; p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;</code>\n"
     "<code>/food portion &lt;key&gt; &lt;portion&gt;=&lt;qtyunit&gt;</code>\n"
     "<code>/food unportion &lt;key&gt; &lt;portion&gt;</code>\n"
     "<code>/food list</code> · <code>/food show &lt;key&gt;</code> · "
     "<code>/food remove &lt;key&gt;</code>\n\n"
-    "Use one-token ASCII keys; kebab-case is recommended. At least one "
-    "nutrient is required. Saving an existing key replaces its profile; "
-    "omitted nutrients become unknown."
+    "Example:\n"
+    "<code>/food add oats per=100g kcal=389 p=16.9 c=66 f=6.9</code>\n\n"
+    "Use one-token ASCII keys; kebab-case is recommended. <b>All four "
+    "nutrients are required</b> — everything you log from this food inherits "
+    "them, so a gap here would spread to every meal. Use 0 for a nutrient the "
+    "label really shows as zero. Saving an existing key replaces its profile."
 )
 
 _RECIPE_USAGE = (

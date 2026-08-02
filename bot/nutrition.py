@@ -212,7 +212,15 @@ def parse_quantity(
 
 
 def parse_nutrient_labels(tokens: Sequence[str]) -> dict[str, float | None]:
-    """Parse any non-empty subset of kcal/cal, p, c, and f labels."""
+    """Parse all four of kcal/cal, p, c, and f. Every one is required.
+
+    A saved food is a *definition*: everything logged from it inherits these
+    numbers, so a gap here becomes a gap in every meal that uses it — and in the
+    macro totals those meals feed. Accepting a partial definition is how a
+    tracker ends up unable to answer the question it exists to answer.
+
+    Read the four values off the label together; the app never estimates them.
+    """
     values: dict[str, float | None] = {
         "calories": None,
         "protein_g": None,
@@ -229,7 +237,7 @@ def parse_nutrient_labels(tokens: Sequence[str]) -> dict[str, float | None]:
     seen: set[str] = set()
     if not tokens:
         raise NutritionError(
-            "Provide at least one nutrient label: kcal=, p=, c=, or f=."
+            "Give all four nutrients: kcal=, p=, c=, and f="
         )
 
     for token in tokens:
@@ -262,7 +270,50 @@ def parse_nutrient_labels(tokens: Sequence[str]) -> dict[str, float | None]:
         if value > 0 and float(value) == 0:
             raise NutritionError(f"{display_name} is too small to store reliably.")
         values[field] = float(value)
+
+    absent = [
+        label
+        for label, field in (
+            ("kcal=", "calories"),
+            ("p=", "protein_g"),
+            ("c=", "carbs_g"),
+            ("f=", "fat_g"),
+        )
+        if values[field] is None
+    ]
+    if absent:
+        raise NutritionError(
+            f"Missing {', '.join(absent)} — a saved food needs all four "
+            "(kcal=, p=, c=, f=). Use 0 for a nutrient the label really shows "
+            "as zero."
+        )
     return values
+
+
+def require_complete_nutrients(
+    nutrients: Mapping[str, object | None], *, what: str = "This entry"
+) -> None:
+    """Raise unless calories and all three macros are present.
+
+    The single definition of "complete" for the whole app, so a handler, the
+    resolver, and the write path cannot disagree about what may be stored. Zero
+    is a legitimate value — absence is not.
+    """
+    absent = [
+        display
+        for field, display in (
+            ("calories", "calories"),
+            ("protein_g", "protein"),
+            ("carbs_g", "carbs"),
+            ("fat_g", "fat"),
+        )
+        if nutrients.get(field) is None
+    ]
+    if absent:
+        raise NutritionError(
+            f"{what} is missing {', '.join(absent)}. Every log needs calories "
+            "and all three macros."
+        )
 
 
 def _decimal_value(value: object, field_name: str, *, positive: bool) -> Decimal:

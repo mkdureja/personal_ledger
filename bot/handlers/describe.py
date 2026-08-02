@@ -29,7 +29,7 @@ from telegram.ext import ContextTypes
 
 from .. import config
 from ..callback_data import parse_base36, to_base36
-from ..meal_text import MAX_SEGMENTS, parse_meal_text
+from ..meal_text import parse_meal
 from ..services.llm_parser import build_parser
 from ..services.typed_meal import (
     TypedMealPlan,
@@ -95,23 +95,37 @@ def _confirm_keyboard(user_id: int, token: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def render_plan(plan: TypedMealPlan) -> str:
-    """Compose the confirmation text for a resolved plan."""
+def _grams(value: float | None) -> str:
+    """Render a macro compactly: whole numbers stay whole, decimals keep one."""
+    if value is None:  # Unreachable for a resolved item; rendered safely anyway.
+        return "?"
+    return f"{value:.0f}g" if float(value).is_integer() else f"{value:.1f}g"
+
+
+def render_plan(plan: TypedMealPlan, notice: str | None = None) -> str:
+    """Compose the confirmation text for a resolved plan.
+
+    ``notice`` reports anything the input caps removed. It is shown even on a
+    successful preview, because a screen that lists four items and stays silent
+    about the fifth reads as complete.
+    """
     lines = ["📝 <b>Ready to log</b>\n"]
 
     for entry in plan.resolved:
-        calories = (
-            f"{entry.calories} cal" if entry.calories is not None else "calories unknown"
+        # Every resolved item carries complete nutrition — anything incomplete is
+        # refused during planning — so the totals below are always real numbers.
+        lines.append(
+            f"• {escape_html(entry.display_text)} — {entry.calories} cal "
+            f"<i>(P{_grams(entry.protein_g)} · C{_grams(entry.carbs_g)} "
+            f"· F{_grams(entry.fat_g)})</i>"
         )
-        lines.append(f"• {escape_html(entry.display_text)} — {escape_html(calories)}")
 
     if plan.resolved:
-        total = plan.total_calories
-        if total is None:
-            lines.append("\n<b>Total:</b> unknown")
-        else:
-            suffix = " (partial — some items unknown)" if plan.has_unknown_calories else ""
-            lines.append(f"\n<b>Total:</b> {total} cal{escape_html(suffix)}")
+        lines.append(
+            f"\n<b>Total:</b> {plan.total_calories} cal · "
+            f"P{_grams(plan.total_protein_g)} · C{_grams(plan.total_carbs_g)} "
+            f"· F{_grams(plan.total_fat_g)}"
+        )
 
     if plan.unresolved:
         lines.append("\n⚠️ <b>Not logged</b>")
@@ -133,6 +147,9 @@ def render_plan(plan: TypedMealPlan) -> str:
             "\n<i>🤖 AI helped read this. Amounts and nutrition still come from "
             "your saved foods — check the items above.</i>"
         )
+
+    if notice:
+        lines.append(f"\n✂️ <i>{escape_html(notice)}</i>")
 
     if plan.resolved:
         lines.append("\nPick a meal type to save:")
@@ -172,19 +189,19 @@ async def start_describe(
         )
         return
 
-    segments = parse_meal_text(text)
-    if not segments:
+    parsed = parse_meal(text)
+    if not parsed.segments:
         await reply_html(message, _USAGE)
         return
 
     db = context.bot_data["db"]
     await db.ensure_user(user_id, None, None)
-    plan = await plan_typed_meal(db, user_id, segments)
+    plan = await plan_typed_meal(db, user_id, list(parsed.segments))
     plan = await _maybe_assist(db, user_id, plan)
 
     if not plan.has_items:
         context.user_data.pop(_PENDING_KEY, None)
-        await reply_html(message, _nothing_resolved_text(plan))
+        await reply_html(message, _nothing_resolved_text(plan, parsed.notice))
         return
 
     # A monotonic token per presentation: an older preview's buttons stop working
@@ -197,7 +214,9 @@ async def start_describe(
     }
 
     await reply_html(
-        message, render_plan(plan), reply_markup=_confirm_keyboard(user_id, token)
+        message,
+        render_plan(plan, parsed.notice),
+        reply_markup=_confirm_keyboard(user_id, token),
     )
 
 
@@ -223,7 +242,7 @@ async def _maybe_assist(db, user_id: int, plan: TypedMealPlan) -> TypedMealPlan:
     return await augment_plan_with_parser(db, user_id, plan, parser)
 
 
-def _nothing_resolved_text(plan: TypedMealPlan) -> str:
+def _nothing_resolved_text(plan: TypedMealPlan, notice: str | None = None) -> str:
     lines = ["📝 I couldn't match anything you typed.\n"]
     for item in plan.unresolved:
         lines.append(f"• {escape_html(item.name)} — {escape_html(item.explanation)}")
@@ -234,8 +253,8 @@ def _nothing_resolved_text(plan: TypedMealPlan) -> str:
         "\nSave it first with <code>/food add</code>, or use 🍽️ Log meal to "
         "build the meal step by step."
     )
-    if len(plan.unresolved) >= MAX_SEGMENTS:
-        lines.append(f"\n<i>Only the first {MAX_SEGMENTS} items were read.</i>")
+    if notice:
+        lines.append(f"\n✂️ <i>{escape_html(notice)}</i>")
     return "\n".join(lines)
 
 
@@ -307,6 +326,15 @@ async def describe_cancel_callback(
     token = _validate_tap(query, update.effective_user.id, 4)
     if token is None:
         await _reject(query, "This meal preview is no longer valid.")
+        return
+
+    # Cancel has to check its token for the same reason Save does. It used to
+    # discard whatever draft was pending, so tapping the Cancel button on a
+    # superseded preview threw away the *newest* meal — the one still on screen
+    # waiting to be saved. A stale tap retires its own keyboard and nothing else.
+    pending = context.user_data.get(_PENDING_KEY)
+    if isinstance(pending, dict) and pending.get("token") != token:
+        await _reject(query, "A newer preview replaced this one.")
         return
 
     context.user_data.pop(_PENDING_KEY, None)

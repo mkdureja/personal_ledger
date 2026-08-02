@@ -125,15 +125,29 @@ def test_food_quantity_rejects_recipe_servings() -> None:
         parse_quantity(["1serving"], allowed_base_units=FOOD_BASE_UNITS)
 
 
-def test_nutrient_labels_allow_partial_values_and_zero() -> None:
-    values = parse_nutrient_labels(["KCAL=52", "p=0", "C=13.8"])
+def test_nutrient_labels_require_all_four_and_accept_zero() -> None:
+    """Zero is a value; absent is not. Labels are case-insensitive."""
+    values = parse_nutrient_labels(["KCAL=52", "p=0", "C=13.8", "f=0.2"])
 
     assert values == {
         "calories": 52.0,
         "protein_g": 0.0,
         "carbs_g": 13.8,
-        "fat_g": None,
+        "fat_g": 0.2,
     }
+
+
+def test_nutrient_labels_reject_a_partial_definition() -> None:
+    """A saved food is inherited by every log made from it, so it must be whole."""
+    with pytest.raises(NutritionError, match="f="):
+        parse_nutrient_labels(["KCAL=52", "p=0", "C=13.8"])
+
+
+def test_nutrient_labels_name_every_missing_label() -> None:
+    with pytest.raises(NutritionError) as excinfo:
+        parse_nutrient_labels(["KCAL=52"])
+    message = str(excinfo.value)
+    assert "p=" in message and "c=" in message and "f=" in message
 
 
 @pytest.mark.parametrize(

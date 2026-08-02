@@ -57,11 +57,11 @@ async def test_same_message_id_different_users_both_persist(two_user_db):
     # Message IDs are only unique per chat; both must persist under distinct,
     # globally-unique update_ids.
     m = await two_user_db.log_diet(
-        MANOJ, "lunch", "Manoj-meal",
+        MANOJ, "lunch", "Manoj-meal", 100, protein_g=1, carbs_g=2, fat_g=3,
         source=MutationSource(update_id=10, chat_id=MANOJ, message_id=42),
     )
     r = await two_user_db.log_diet(
-        RATIKA, "lunch", "Ratika-meal",
+        RATIKA, "lunch", "Ratika-meal", 100, protein_g=1, carbs_g=2, fat_g=3,
         source=MutationSource(update_id=11, chat_id=RATIKA, message_id=42),
     )
 
@@ -134,7 +134,7 @@ async def test_study_command_replay_is_idempotent(two_user_db):
 async def test_get_recent_entries_is_owner_scoped_and_newest_first(two_user_db):
     await two_user_db.log_study(MANOJ, "Manoj-Study", 30)
     await two_user_db.log_gym(MANOJ, "Manoj-Gym", 3, 8, 50.0)
-    await two_user_db.log_diet(MANOJ, "lunch", "Manoj-Food", 500)
+    await two_user_db.log_diet(MANOJ, "lunch", "Manoj-Food", 500, protein_g=1, carbs_g=2, fat_g=3)
     await two_user_db.log_study(RATIKA, "Ratika-Study", 20)
 
     entries = await two_user_db.get_recent_entries(MANOJ, limit=10)

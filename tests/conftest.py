@@ -13,12 +13,19 @@ import pytest_asyncio
 
 # Keep tests independent from a developer's real .env and usable in CI.
 #
-# bot.config calls load_dotenv() without override, so anything already in the
-# environment wins but anything *absent* is read from .env. Every setting the
-# config validates must therefore be pinned here — otherwise a real .env leaks
-# in. That bit us once: enabling Phase 1 for two real user IDs locally made the
-# whole suite fail collection, because those IDs are not a subset of the test
-# ALLOWED_USER_IDS. Tests that need Phase 1 on monkeypatch bot.config directly.
+# This flag makes bot.config skip the deployment .env entirely, so the suite
+# reads only what is declared below. Without it, config's load_dotenv() supplies
+# any setting the tests do not pin — which meant every *new* setting became a
+# leak until someone remembered to add it here. It had already broken collection
+# once (real PHASE1_ENABLED_USER_IDS are not a subset of the test
+# ALLOWED_USER_IDS) and a malformed real REMINDER_HOUR would do the same.
+#
+# Must be set before bot.config is imported for the first time.
+os.environ["LEDGER_SKIP_DOTENV"] = "1"
+
+# Everything config validates at import still needs a value, because there is no
+# .env to fall back on now. Tests that need a different value monkeypatch
+# bot.config directly.
 os.environ["BOT_TOKEN"] = "123456:TEST_TOKEN"
 os.environ["ALLOWED_USER_IDS"] = "123456789"
 os.environ["TZ"] = "Asia/Kolkata"

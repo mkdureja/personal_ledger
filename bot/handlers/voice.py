@@ -40,17 +40,37 @@ _DISABLED_TEXT = (
 
 
 def get_transcriber(context: ContextTypes.DEFAULT_TYPE) -> VoiceTranscriber:
+    """The transcriber for this application, creating it on first use."""
+    return transcriber_for(context.bot_data)
+
+
+def transcriber_for(bot_data) -> VoiceTranscriber:
     """One transcriber per process, so the model is loaded at most once.
 
     Stored on ``bot_data`` rather than a module global: a module global would
     leak the loaded model between tests and, worse, between an application that
-    was torn down and one that replaced it.
+    was torn down and one that replaced it. Takes the mapping rather than a
+    ``Context`` so startup, which has no update to build a context from, shares
+    exactly one instance with the handlers.
     """
-    transcriber = context.bot_data.get(_TRANSCRIBER_KEY)
+    transcriber = bot_data.get(_TRANSCRIBER_KEY)
     if transcriber is None:
-        transcriber = VoiceTranscriber(config.VOICE_MODEL_SIZE)
-        context.bot_data[_TRANSCRIBER_KEY] = transcriber
+        transcriber = VoiceTranscriber(
+            config.VOICE_MODEL_SIZE,
+            load_timeout=config.VOICE_LOAD_TIMEOUT_SECONDS,
+            transcribe_timeout=config.VOICE_TRANSCRIBE_TIMEOUT_SECONDS,
+        )
+        bot_data[_TRANSCRIBER_KEY] = transcriber
     return transcriber
+
+
+async def preload_transcriber(bot_data) -> None:
+    """Load the speech model now, so no user's request pays for it."""
+    failure = await transcriber_for(bot_data).ensure_loaded()
+    if failure is None:
+        logger.info("Speech model ready")
+    else:
+        logger.warning("Speech model unavailable at startup (%s)", failure.reason)
 
 
 async def handle_voice_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -72,6 +92,19 @@ async def handle_voice_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             message,
             f"🎤 That note is {int(duration)}s; the limit is "
             f"{config.VOICE_MAX_SECONDS}s. Record a shorter one, or type the meal.",
+        )
+        return
+
+    # Duration is what Telegram *declares*; size is what actually gets written to
+    # disk and fed to the decoder. Checking both means a wrong or hostile
+    # duration cannot turn into an unbounded download.
+    size = getattr(voice, "file_size", None) or 0
+    if size > config.VOICE_MAX_FILE_BYTES:
+        await reply_html(
+            message,
+            f"🎤 That recording is {size // (1024 * 1024)} MB; the limit is "
+            f"{config.VOICE_MAX_FILE_BYTES // (1024 * 1024)} MB. "
+            "Record a shorter one, or type the meal.",
         )
         return
 
