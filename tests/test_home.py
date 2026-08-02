@@ -200,13 +200,25 @@ async def test_voice_router_disabled_removes_keyboard():
     assert isinstance(reply.call_args.kwargs.get("reply_markup"), ReplyKeyboardRemove)
 
 
-async def test_voice_router_enabled_says_not_enabled(monkeypatch):
+async def test_voice_router_with_voice_off_explains_and_downloads_nothing(monkeypatch):
+    """Release 5 replaced the "not enabled yet" stub with real handling.
+
+    With ``VOICE_ENABLED`` false — the default, and what conftest pins — the
+    router must still refuse without touching the file, and point at the typed
+    route instead of leaving the user stuck.
+    """
     _enable_phase1(monkeypatch)
     update = _update()
-    await home.home_voice_router(update, _context())
+    context = _context()
+    context.bot = SimpleNamespace(get_file=AsyncMock())
+
+    await home.home_voice_router(update, context)
+
     reply = update.effective_message.reply_text
     reply.assert_awaited_once()
-    assert "Voice logging isn't enabled" in reply.call_args.args[0]
+    assert "Voice logging is off" in reply.call_args.args[0]
+    assert "/describe" in reply.call_args.args[0]
+    context.bot.get_file.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,23 @@
+# Optional: local voice-note transcription (Release 5).
+#
+# Deliberately NOT in requirements.txt. The bot runs fine without it — voice
+# notes simply reply with a short "type it instead" message — and installing it
+# pulls a large inference runtime plus a model download on first use. Keeping it
+# out means the ordinary install, and CI, stay small and fast.
+#
+# Install only on a host that will actually transcribe:
+#     pip install -r requirements-voice.txt
+# then set VOICE_ENABLED=true in .env and restart.
+#
+# Audio never leaves the host. This package is what makes that possible, and it
+# is the reason transcription is local while meal-text parsing may be remote.
+#
+# faster-whisper bundles its own audio decoding via PyAV, so no separate ffmpeg
+# binary is required.
+#
+# NOTE: this depends on ctranslate2, which ships as compiled wheels. On a very
+# new Python (this project targets 3.14) a wheel may not exist yet, and the
+# install will fail rather than degrade. That is survivable by design: without
+# the package the bot keeps working and voice notes reply "type it instead". If
+# the install fails, either wait for a wheel or run the bot on 3.12/3.13.
+faster-whisper==1.2.1

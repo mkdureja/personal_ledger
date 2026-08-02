@@ -33,6 +33,10 @@ os.environ["BACKUP_DEST_DIR"] = ""
 # picked up by the suite and could send test meal text to Google. Tests that
 # exercise the Gemini path monkeypatch bot.config and stub the transport.
 os.environ["GEMINI_API_KEY"] = ""
+# Same leak rule. A developer with VOICE_ENABLED=true in .env would otherwise
+# have the suite take the transcription path and try to load a speech model.
+os.environ["VOICE_ENABLED"] = "false"
+os.environ["VOICE_MAX_SECONDS"] = "60"
 
 from bot.database import DatabaseManager
 

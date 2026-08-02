@@ -334,7 +334,12 @@ async def home_text_router(
 async def home_voice_router(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Reject a voice note at Home without downloading it (plan §8.6)."""
+    """Handle a voice note at Home, or explain why it cannot be handled.
+
+    A note arriving *during* a guided flow is still refused without downloading
+    anything (plan §8.6) — transcribing it would either disturb a live draft or
+    silently discard the recording. Only idle Home accepts one.
+    """
     if active_conversation_flow(context) is not None:
         await update.effective_message.reply_text(_ACTIVE_FLOW_HINT)
         return
@@ -343,9 +348,10 @@ async def home_voice_router(
     if not phase1_enabled_for(uid):
         await _remove_keyboard(update, _MENU_GUIDANCE)
         return
-    await _sync_keyboard(
-        update, "🎤 Voice logging isn't enabled yet.", uid
-    )
+
+    from .voice import handle_voice_meal
+
+    await handle_voice_meal(update, context)
 
 
 # ---------------------------------------------------------------------------

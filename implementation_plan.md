@@ -893,6 +893,49 @@ no handler change.
 - Model download and disk footprint are documented in the operations runbook.
 - Degrade honestly: if the model is unavailable, say so and offer typed entry.
 
+#### Release 5 status — implemented 2026-08-02
+
+Implemented on `hardening/review-fixes`. **1258 tests pass** (1235 before, 23
+added). No schema change. Not yet exercised with real audio — that needs the
+optional package installed and a live client.
+
+- `bot/services/voice.py` — `VoiceTranscriber` loads one Whisper model lazily
+  and holds a lock across both the load and every transcription, so the model is
+  built once and two notes queue rather than competing for CPU. Failures are
+  typed reasons, never exceptions, because "install the package", "the model
+  wouldn't load", "I heard no words" and "that failed" each need a different
+  sentence.
+- `bot/handlers/voice.py` — the duration cap is enforced from Telegram's declared
+  metadata **before** any download, so an over-long note costs nothing. The audio
+  goes to a `TemporaryDirectory` that is removed whatever happens; it is never
+  stored and never attached to a log row. The transcript is echoed back before
+  resolution, because a mis-hearing is the likeliest failure and the user has to
+  see it to trust the preview.
+- The transcript then enters the **same** §3.2 → §4 path and the same
+  confirm-before-save draft. Voice adds an input, not a second pipeline, so there
+  is still exactly one place a meal is written.
+- `home_voice_router` handles idle notes; a note arriving *during* a guided flow
+  is still refused without downloading, since transcribing it would either
+  disturb a live draft or discard the recording.
+
+**`faster-whisper` is deliberately not a hard dependency.** It lives in
+`requirements-voice.txt`, is imported inside the call rather than at module
+scope, and `VOICE_ENABLED` defaults to false. The suite never needs it — and
+because it is genuinely absent from this development environment, the
+"not installed" path is tested un-mocked rather than simulated. Note it depends
+on `ctranslate2`, whose compiled wheels may lag a very new Python; the project
+targets 3.14, so the install may need 3.12/3.13 until a wheel exists. That is
+survivable precisely because absence degrades instead of breaking.
+
+Two defects the new tests caught: a whitespace-only transcript counted as
+success (silence is not speech), and the handler HTML-escaped its own static
+error copy, turning apostrophes into entities. Transcribed speech is still
+escaped — it is user-supplied.
+
+**Deliberately not done:** no persisted job queue, so a note in flight when the
+process dies is simply lost rather than resumed — correct for a household bot,
+and a queue was ruled out during planning. No voice for anything but meals.
+
 ## Still deferred
 
 These remain out of scope until repeated household use proves otherwise:

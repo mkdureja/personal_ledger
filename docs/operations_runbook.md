@@ -110,6 +110,68 @@ python -m pip install pip-audit && pip-audit -r requirements.txt   # vulnerabili
 finding on its own current merits — do not copy stale vulnerability claims from
 prior reviews. Upgrade only to compatible versions with the full suite still green.
 
+## Optional external parsing (Gemini)
+
+`GEMINI_API_KEY` is unset by default and unset is fully supported: meal parsing
+stays local and deterministic. The key is a live credential — treat it exactly
+like `BOT_TOKEN`. It belongs only in the gitignored `.env`, travels in an HTTP
+header rather than a URL, and is never logged. **If it is ever pasted into a
+chat, an issue, or a terminal transcript, revoke it and issue a new one;
+generating a second key does not disable the first.**
+
+Configuring a key only makes the capability available. Each user must still opt
+in with `/aiparse on`, stored per user and defaulting to off, and only the part
+of a `/describe` message the local parser could not resolve is ever sent.
+
+`GEMINI_MODEL` defaults to `gemini-flash-lite-latest`, chosen by measuring the
+live free tier rather than by reputation:
+
+| Model | Result |
+| --- | --- |
+| `gemini-flash-lite-latest` | 1.6 s, correct, has free quota — **default** |
+| `gemini-flash-latest` | 2.9 s, correct, but 5 requests/minute free |
+| `gemini-2.0-flash` | free-tier quota of zero — unusable |
+| `gemini-2.5-flash`, `-lite` | HTTP 404 on this tier |
+
+`thinkingConfig: {thinkingBudget: 0}` is rejected with HTTP 400 by the newer
+Flash models, so reasoning cost is avoided by choosing a non-thinking tier. A
+Google One AI Premium ("Gemini Plus") subscription does **not** raise API limits;
+the 429s name `generate_content_free_tier_requests`. Higher limits require
+billing on the key's Cloud project.
+
+Quota exhaustion is not an incident: the call fails soft and the deterministic
+result stands.
+
+## Optional local voice notes
+
+`VOICE_ENABLED` defaults to false and `faster-whisper` is **not** installed by
+`requirements.txt`. Enable it only on a host that should transcribe:
+
+```bash
+pip install -r requirements-voice.txt   # then set VOICE_ENABLED=true and restart
+```
+
+- **Disk:** the model is downloaded on first use into the Hugging Face cache
+  (`~/.cache/huggingface`, or `%USERPROFILE%\.cache\huggingface` on Windows).
+  `base` is the default and the smallest that handles ordinary meal dictation;
+  larger sizes cost proportionally more disk, memory, and time per note. Size the
+  volume before enabling, and note the cache is *outside* the project directory,
+  so it is not covered by the backup destination.
+- **CPU:** transcription runs on CPU in `int8` and is serialized by a lock, so
+  two notes queue rather than competing. It is the most CPU-intensive thing this
+  bot does.
+- **Python version:** `ctranslate2` ships compiled wheels that can lag a very new
+  interpreter. This project targets 3.14; if the install fails, either wait for a
+  wheel or run on 3.12/3.13. Failure to install is not an outage — without the
+  package voice notes reply "type it instead" and everything else is unaffected.
+- **Privacy:** audio never leaves the host. It is written to a temporary
+  directory that is removed whatever happens, is never stored, and is never
+  attached to a log row. There is deliberately no consent switch, because nothing
+  is transmitted.
+- **Durability:** there is no persisted job queue. A note being transcribed when
+  the process stops is lost, not resumed. That is intentional for a two-user
+  deployment; the user simply re-sends it.
+
 ## Secrets and logs
 
 - Never commit `.env`, real Telegram IDs, the bot token, database files, backups,

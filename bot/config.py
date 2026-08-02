@@ -90,6 +90,40 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
 GEMINI_AVAILABLE: bool = bool(GEMINI_API_KEY)
 
+# ---------------------------------------------------------------------------
+# Optional local voice transcription (Release 5) — off by default
+# ---------------------------------------------------------------------------
+# Default-off because enabling it downloads a speech model (hundreds of MB) on
+# first use. Unlike Gemini parsing, this needs no consent switch: the audio never
+# leaves the host, which is exactly why transcription is local while parsing may
+# be remote.
+VOICE_ENABLED: bool = os.getenv("VOICE_ENABLED", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+# Whisper size. "base" is the smallest that handles ordinary meal dictation;
+# "tiny" is faster and noticeably worse at food names.
+VOICE_MODEL_SIZE: str = os.getenv("VOICE_MODEL_SIZE", "base").strip() or "base"
+
+
+def _positive_int(name: str, default: int, *, maximum: int) -> int:
+    """Read a bounded positive integer, failing at import rather than at use."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a whole number; got {raw!r}.") from exc
+    if value <= 0 or value > maximum:
+        raise RuntimeError(f"{name} must be between 1 and {maximum}; got {value}.")
+    return value
+
+
+# A hard cap on accepted audio, checked from Telegram's declared duration before
+# anything is downloaded. A meal description is a sentence; anything much longer
+# is a mistake, and transcription cost grows with length.
+VOICE_MAX_SECONDS: int = _positive_int("VOICE_MAX_SECONDS", 60, maximum=600)
+
 # Optional routine file (motivational anchors). When absent, the bot falls
 # back to the single legacy reminder configured by REMINDER_HOUR below.
 ROUTINE_PATH: str = _resolve_under_root(

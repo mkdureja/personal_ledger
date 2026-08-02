@@ -1155,6 +1155,23 @@ DB_PATH=ledger.db</code></pre>
     Nothing is saved until you tap a meal type.</p>
 
     <div class="box box-info no-break">
+        <div class="box-title">🎤 Optional voice notes (off by default)</div>
+        <p>If voice is switched on for this bot, you can send a voice note from
+        Home instead of typing. The bot writes back what it heard, then shows the
+        same preview and the same meal-type buttons — nothing is saved until you
+        tap one.</p>
+        <p><strong>Your recording never leaves this machine.</strong> It is
+        transcribed on the computer running the bot and deleted immediately
+        afterwards. It is never stored and never attached to your log. That is
+        exactly why speech is handled locally even though meal <em>text</em> can
+        optionally be sent to an AI parser.</p>
+        <p>Notes are capped (60 seconds by default) — a meal is a sentence, not a
+        monologue. Send voice notes from Home, not in the middle of a guided
+        flow; mid-flow the bot will ask you to finish or <code>/cancel</code>
+        first. If voice isn't installed, the bot says so and you can type instead.</p>
+    </div>
+
+    <div class="box box-info no-break">
         <div class="box-title">🤖 Optional AI help (off by default)</div>
         <p>If the bot is configured with an AI key, you can turn on
         <code>/aiparse on</code> so phrases the bot can't read locally — like
