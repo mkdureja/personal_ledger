@@ -84,6 +84,8 @@ def _picker_db(foods=(), recipes=(), catalog=(), suggestions_on=True):
         list_foods=AsyncMock(return_value=list(foods)),
         list_recipes=AsyncMock(return_value=list(recipes)),
         get_user_catalog_history=AsyncMock(return_value=list(catalog)),
+        get_meal_shortcuts=AsyncMock(return_value=set()),
+        get_shortcut_targets=AsyncMock(return_value=[]),
         get_suggestions_enabled=AsyncMock(return_value=suggestions_on),
         get_diet_item_stats=AsyncMock(return_value={}),
         get_food_preferences=AsyncMock(return_value={}),

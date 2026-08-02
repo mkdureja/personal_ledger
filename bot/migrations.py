@@ -1120,6 +1120,49 @@ async def _migration_0011_gym_sets_and_exercises(conn: aiosqlite.Connection) -> 
     )
 
 
+async def _migration_0012_meal_shortcuts(conn: aiosqlite.Connection) -> None:
+    """Let a user say "this is a snack item" before any history exists.
+
+    Suggestions were already meal-type aware — ``bot.suggestions`` weights
+    same-meal-type frequency three times general use — but only by *learning*
+    from completed meals. That leaves two gaps a new ledger feels immediately:
+    a food you know you eat at snack time has to be logged through Search
+    several times before it becomes tappable, and a shared-catalog item can
+    never be personalised at all.
+
+    A separate table rather than a ``meal_type`` column on
+    ``user_food_preferences``: that table's ``is_pinned``/``hidden``/
+    ``default_amount`` are properties of the *food* ("my usual is 150 g"), and
+    widening its primary key would silently redefine all three as per-meal-type.
+    A shortcut is a different statement — about a food's place in a meal — so it
+    gets its own row.
+
+    ``source_type`` accepts ``catalog`` here, which ``user_food_preferences``
+    deliberately does not: a shortcut stores no nutrition and no amount, only a
+    pointer, so pointing at shared reference data carries no snapshot risk.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS meal_shortcuts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            meal_type   TEXT NOT NULL
+                CHECK(meal_type IN ('breakfast', 'lunch', 'dinner', 'snack')),
+            source_type TEXT NOT NULL
+                CHECK(source_type IN ('food', 'recipe', 'catalog')),
+            source_id   INTEGER NOT NULL,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, meal_type, source_type, source_id),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_meal_shortcuts_lookup "
+        "ON meal_shortcuts(user_id, meal_type)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1132,6 +1175,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     9: _migration_0009_supplements,
     10: _migration_0010_ai_parsing_consent,
     11: _migration_0011_gym_sets_and_exercises,
+    12: _migration_0012_meal_shortcuts,
 }
 
 

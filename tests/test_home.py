@@ -305,6 +305,8 @@ async def test_diet_home_entry_enabled_opens_quick_food_choice(monkeypatch):
         list_recipes=AsyncMock(return_value=[]),
         get_suggestions_enabled=AsyncMock(return_value=True),
         get_user_catalog_history=AsyncMock(return_value=[]),
+        get_meal_shortcuts=AsyncMock(return_value=set()),
+        get_shortcut_targets=AsyncMock(return_value=[]),
         get_food_preferences=AsyncMock(return_value={}),
     )
     context = _context(db)

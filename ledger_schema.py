@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # The version this checkout migrates a database to. Bump it (and register the new
 # migration in ``bot.migrations._MIGRATIONS``) for every schema change.
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 12
 
 # Version 0 is the pre-versioning legacy shape. It is *not* a certifiable schema
 # version: those databases never stamped a version and their table/column shape
@@ -69,6 +69,7 @@ TABLE_INTRODUCED: dict[str, int] = {
     "supplement_logs": 9,
     "exercises": 11,
     "gym_sets": 11,
+    "meal_shortcuts": 12,
 }
 
 # The columns each table must carry, grouped by the version that introduced
@@ -145,6 +146,9 @@ VERIFIED_COLUMNS: dict[str, tuple[tuple[int, tuple[str, ...]], ...]] = {
     ),
     "gym_sets": (
         (11, ("id", "user_id", "gym_log_id", "set_number", "reps", "weight_kg")),
+    ),
+    "meal_shortcuts": (
+        (12, ("id", "user_id", "meal_type", "source_type", "source_id")),
     ),
 }
 

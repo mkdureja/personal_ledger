@@ -60,6 +60,7 @@ from .handlers.home import (
 )
 from .handlers.study import study_conv_handler
 from .handlers.gym import gym_conv_handler, stale_gym_callback
+from .handlers.shortcuts import shortcuts_conv_handler
 from .handlers.diet import (
     _DIET_PHASE1_CALLBACK_RE,
     _RECEIPT_CALLBACK_RE,
@@ -436,6 +437,7 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(diet_conv_handler)
     application.add_handler(habits_setup_conv_handler)
     application.add_handler(supplements_setup_conv_handler)
+    application.add_handler(shortcuts_conv_handler)
 
     # --- Simple command handlers ---
     application.add_handler(CommandHandler("start", start_command, filters=AUTH_FILTER))

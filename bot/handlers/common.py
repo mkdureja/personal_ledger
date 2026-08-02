@@ -112,8 +112,10 @@ _CONVERSATION_LABELS = {
     "diet": "a meal",
     "habits": "habit setup",
     "supplements": "supplement setup",
+    "shortcuts": "meal shortcut setup",
 }
 _CONVERSATION_DATA_KEYS = {
+    "shortcuts": ("shortcut_meal",),
     "study": ("study_subject", "study_duration"),
     "gym": (
         "gym_exercises",

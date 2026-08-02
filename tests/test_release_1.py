@@ -630,6 +630,8 @@ def _picker_db(*, suggestions_on: bool, prefs=None):
         ),
         get_suggestions_enabled=AsyncMock(return_value=suggestions_on),
         get_user_catalog_history=AsyncMock(return_value=[]),
+        get_meal_shortcuts=AsyncMock(return_value=set()),
+        get_shortcut_targets=AsyncMock(return_value=[]),
         get_diet_item_stats=AsyncMock(return_value={}),
         get_food_preferences=AsyncMock(return_value=prefs or {}),
         search_catalog=AsyncMock(return_value=[]),

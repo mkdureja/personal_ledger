@@ -22,6 +22,11 @@ _MONTH_BONUS = 1.0
 # A pin must outrank any inferred score, so its bonus exceeds any realistic
 # frequency total for a personal ledger.
 _PIN_BONUS = 1_000_000.0
+# An explicit meal shortcut outranks even a pin *within its meal type*, because
+# it is the more specific statement: a pin says "always show me this", a shortcut
+# says "this belongs to my snacks". Both are the user's own words rather than
+# anything inferred, so the narrower one wins where it applies.
+_SHORTCUT_BONUS = 2_000_000.0
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,9 @@ class Candidate:
     last_used: datetime | None = None
     is_pinned: bool = False
     hidden: bool = False
+    #: Explicitly marked by the user as belonging to the meal type being
+    #: rendered. Set by the caller from ``get_meal_shortcuts``.
+    is_meal_shortcut: bool = False
 
 
 def _recency_bonus(last_used: datetime | None, now: datetime) -> float:
@@ -58,6 +66,8 @@ def score(candidate: Candidate, now: datetime) -> float:
     )
     if candidate.is_pinned:
         value += _PIN_BONUS
+    if candidate.is_meal_shortcut:
+        value += _SHORTCUT_BONUS
     return value
 
 

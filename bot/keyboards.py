@@ -211,6 +211,12 @@ def choice_button_label(choice: dict, *, quick: bool) -> str:
     else:
         prefix, suffix = "🥗 ", ""
 
+    # An item the user marked as belonging to this meal is at the top *because
+    # they said so*, not because it happened to score well. Saying which is the
+    # difference between a list they trust and one that seems to reorder itself.
+    if choice.get("is_meal_shortcut"):
+        prefix = "⭐ "
+
     quantity = ""
     if quick and kind in ("food", "recipe"):
         default = choice.get("default")

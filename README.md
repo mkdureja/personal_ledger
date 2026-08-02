@@ -106,6 +106,37 @@ The numbers come from one of two places, and the app never estimates them:
 A definition saved before this rule that is still missing a macro is reported as
 "not logged" with the reason, rather than being logged with a hole in it.
 
+### Meal shortcuts
+
+The picker already learns: `bot/suggestions.py` weights same-meal-type frequency
+three times general use, so what you eat at snack time drifts to the top of the
+snack list on its own. `/shortcuts` is the manual half, for the two cases
+learning cannot cover — a food you *know* belongs to a meal but haven't logged
+yet, and a shared-catalog item, which has no per-user preference row at all.
+
+```
+/shortcuts  →  [🌅 Breakfast] [🥗 Lunch]
+               [🍽️ Dinner]    [🍎 Snack]
+
+🍎 Snack shortcuts
+  [⭐ Skyr]        ← tap to remove
+  [☆ Oats]        ← tap to add
+  [🔍 Search the catalog]
+```
+
+A starred item is the **first row of that meal's picker and no other**, marked
+⭐ so it is clear it is there because you put it there rather than because it
+scored well. It outranks even a pin, which is the broader "always show me this".
+
+It stores only a pointer — no nutrition, no amount — so editing the food still
+changes what gets logged, and archiving it simply drops the row from the list
+until the food comes back. Limit of 12 per meal: past a handful of buttons,
+scanning them costs more than searching would.
+
+| Command | Description |
+|---|---|
+| `/shortcuts` | Pick a meal, then star the items that belong to it |
+
 ### Logging a workout
 
 Tap **🏋️ Workout** and pick a muscle group — Chest, Back, Legs, Shoulders, Arms,
@@ -261,6 +292,7 @@ each action's outcome is recorded once and replayed.
 | `/start` | Register (reminders off), then open Home with a one-time welcome |
 | `/menu` | Same surface as `/home` |
 | `/recent` | List your latest study/gym/diet entries (reconcile a save) |
+| `/shortcuts` | Star the items that belong to each meal |
 | `/undo` | Undo last log — preview, then confirm (within 24h) |
 | `/reminders on\|off` | Turn your scheduled reminders on or off |
 | `/suggestions on\|off\|reset` | Personalized ordering of your saved items |

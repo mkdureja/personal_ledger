@@ -199,25 +199,40 @@ async def _ranked_choices(
         return suggestions.annotate_defaults(plain, prefs)
 
     # A catalog food only becomes a suggestion once it appears in this user's
-    # own history; the shared catalog itself stays behind Search.
+    # own history — the shared catalog itself stays behind Search — *or* once
+    # they mark it a shortcut for this meal, which is the same statement made
+    # deliberately instead of inferred from repetition.
     catalog = await db.get_user_catalog_history(uid)
-    if not foods and not recipes and not catalog:
+    shortcuts = await db.get_meal_shortcuts(uid, meal_type)
+    shortcut_rows = await db.get_shortcut_targets(uid, meal_type) if shortcuts else []
+    if not foods and not recipes and not catalog and not shortcut_rows:
         return []
 
     stats = await db.get_diet_item_stats(uid, meal_type)
     now = _utc_now()
     names: dict[tuple[str, int], str] = {}
     candidates: list[suggestions.Candidate] = []
-    for source_type, rows in (
-        ("food", foods),
-        ("recipe", recipes),
-        ("catalog", catalog),
-    ):
+    seen: set[tuple[str, int]] = set()
+    grouped: list[tuple[str, list]] = [
+        ("food", list(foods)),
+        ("recipe", list(recipes)),
+        ("catalog", list(catalog)),
+    ]
+    # A shortcut may point at something absent from all three lists — a catalog
+    # food never logged before is exactly the case this feature exists for — so
+    # its resolved row joins the candidates carrying its own source type.
+    for row in shortcut_rows:
+        grouped.append((str(row["source_type"]), [row]))
+
+    for source_type, rows in grouped:
         for row in rows:
             key = (source_type, row["id"])
+            if key in seen:
+                continue
+            seen.add(key)
             names[key] = row["name"]
             stat = stats.get(key, {})
-            # Catalog rows have no private preference on v8.
+            # Catalog rows have no private preference row (see the v12 migration).
             pref = prefs.get(key, {}) if source_type != "catalog" else {}
             candidates.append(
                 suggestions.Candidate(
@@ -229,6 +244,7 @@ async def _ranked_choices(
                     last_used=_parse_ts(stat.get("last_used")),
                     is_pinned=bool(pref.get("is_pinned")),
                     hidden=bool(pref.get("hidden")),
+                    is_meal_shortcut=key in shortcuts,
                 )
             )
     return suggestions.annotate_defaults(
@@ -237,6 +253,7 @@ async def _ranked_choices(
                 "source_type": c.source_type,
                 "id": c.source_id,
                 "name": names[(c.source_type, c.source_id)],
+                "is_meal_shortcut": c.is_meal_shortcut,
             }
             for c in suggestions.rank(candidates, now)
         ],

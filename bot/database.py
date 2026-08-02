@@ -104,6 +104,23 @@ MAX_INGREDIENTS_PER_RECIPE = 100
 #: "same again" tap cannot write an unbounded number of child rows.
 MAX_GYM_SETS_PER_EXERCISE = 30
 MAX_EXERCISE_NAME = 50
+#: A shortcut list is a fast lane, not a second menu — past a handful of buttons
+#: scanning them costs more than searching would.
+MAX_MEAL_SHORTCUTS = 12
+VALID_MEAL_TYPES = frozenset({"breakfast", "lunch", "dinner", "snack"})
+SHORTCUT_SOURCE_TYPES = frozenset({"food", "recipe", "catalog"})
+
+
+def _validated_meal_type(value: str) -> str:
+    if value not in VALID_MEAL_TYPES:
+        raise ValueError(f"Unknown meal type: {value!r}")
+    return value
+
+
+def _validated_shortcut_source(value: str) -> str:
+    if value not in SHORTCUT_SOURCE_TYPES:
+        raise ValueError(f"Unknown shortcut source type: {value!r}")
+    return value
 MAX_CATALOG_AMOUNT = float(NUTRITION_MAX_CATALOG_AMOUNT)
 MAX_NUTRIENT_VALUE = float(NUTRITION_MAX_NUTRIENT_VALUE)
 MAX_SUPPLEMENT_NAME_LENGTH = 50
@@ -1820,6 +1837,92 @@ class DatabaseManager:
             (user_id, source_type, source_id, limit),
         )
         return [dict(row) for row in rows]
+
+    # -------------------------------------------------------------------
+    # Meal shortcuts — "this item belongs to my snacks", set explicitly
+    # -------------------------------------------------------------------
+    async def add_meal_shortcut(
+        self, user_id: int, meal_type: str, source_type: str, source_id: int
+    ) -> bool:
+        """Mark a source as a shortcut for one meal type. ``True`` if new.
+
+        Idempotent: a repeat tap reports ``False`` rather than erroring, so a
+        double-tap on a slow connection cannot fail.
+        """
+        _validated_meal_type(meal_type)
+        _validated_shortcut_source(source_type)
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "INSERT OR IGNORE INTO meal_shortcuts "
+                "(user_id, meal_type, source_type, source_id) VALUES (?, ?, ?, ?)",
+                (user_id, meal_type, source_type, int(source_id)),
+            )
+            return bool(cursor.rowcount)
+
+    async def remove_meal_shortcut(
+        self, user_id: int, meal_type: str, source_type: str, source_id: int
+    ) -> bool:
+        """Unmark a shortcut. ``True`` if a row was removed."""
+        _validated_meal_type(meal_type)
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "DELETE FROM meal_shortcuts WHERE user_id = ? AND meal_type = ? "
+                "AND source_type = ? AND source_id = ?",
+                (user_id, meal_type, source_type, int(source_id)),
+            )
+            return bool(cursor.rowcount)
+
+    async def get_meal_shortcuts(
+        self, user_id: int, meal_type: str
+    ) -> set[tuple[str, int]]:
+        """``{(source_type, source_id)}`` a user marked for this meal type."""
+        _validated_meal_type(meal_type)
+        rows = await self._query_all(
+            "SELECT source_type, source_id FROM meal_shortcuts "
+            "WHERE user_id = ? AND meal_type = ?",
+            (user_id, meal_type),
+        )
+        return {(row["source_type"], row["source_id"]) for row in rows}
+
+    async def get_shortcut_targets(
+        self, user_id: int, meal_type: str
+    ) -> list[dict[str, Any]]:
+        """Resolve this meal's shortcuts to displayable rows, skipping dead ones.
+
+        A shortcut is only a pointer, so the referenced food may since have been
+        archived or deleted. Those are dropped from the list rather than shown as
+        a broken button; the row stays in the table so restoring the food brings
+        the shortcut back.
+        """
+        shortcuts = await self.get_meal_shortcuts(user_id, meal_type)
+        if not shortcuts:
+            return []
+
+        resolved: list[dict[str, Any]] = []
+        for source_type, source_id in sorted(shortcuts):
+            if source_type == "food":
+                row = await self._query_one(
+                    "SELECT * FROM foods WHERE id = ? AND user_id = ? "
+                    "AND is_active = 1",
+                    (source_id, user_id),
+                )
+            elif source_type == "recipe":
+                row = await self._query_one(
+                    "SELECT * FROM recipes WHERE id = ? AND user_id = ? "
+                    "AND is_active = 1",
+                    (source_id, user_id),
+                )
+            else:
+                row = await self._query_one(
+                    "SELECT *, display_name AS name FROM catalog_foods "
+                    "WHERE id = ? AND is_active = 1",
+                    (source_id,),
+                )
+            if row is not None:
+                entry = dict(row)
+                entry["source_type"] = source_type
+                resolved.append(entry)
+        return resolved
 
     async def get_food_preferences(
         self, user_id: int
