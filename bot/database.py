@@ -57,6 +57,14 @@ from .nutrition import (
     format_decimal,
     normalize_catalog_name,
 )
+# A plain module-level import: these resolvers are pure and live in the
+# application layer, not the handler package, so the data layer no longer has to
+# reach into Telegram code from inside a locked write.
+from .nutrition_resolution import (
+    resolve_catalog_food_entry,
+    resolve_food_diet_entry,
+    resolve_recipe_diet_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1681,17 +1689,7 @@ class DatabaseManager:
         bounded, a known metric alias, a named portion, the recipe's yield unit),
         so no handler ever invents its own rules. Raises ``NutritionError`` for an
         unusable quantity and ``LookupError`` when the source itself is gone.
-
-        Imported lazily because the resolvers are pure functions that happen to
-        live in the handler package; importing them at module scope would make
-        the database module depend on the Telegram layer.
         """
-        from .handlers.catalog import (
-            resolve_catalog_food_entry,
-            resolve_food_diet_entry,
-            resolve_recipe_diet_entry,
-        )
-
         # The read helpers below re-enter the already-held connection lock rather
         # than re-acquiring it, so these reads join the caller's transaction and
         # see exactly the rows the write is about to act on.

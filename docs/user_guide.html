@@ -1113,6 +1113,58 @@ DB_PATH=ledger.db</code></pre>
         <p>If you remove a habit and later add one with the same name — <em>case and spacing don't matter</em>, so "read" matches "Read" — the bot <strong>reactivates</strong> the original instead of creating a duplicate. Your streak and history are preserved.</p>
     </div>
 
+    <h3>Typing a whole meal at once</h3>
+    <p>Use <code>/describe</code> when it's faster to type than to tap:</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/describe 2 eggs, 100g oats, quinoa</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                📝 <strong>Ready to log</strong><br><br>
+                • 2 eggs — 156 cal<br>
+                • 100 g oats — 380 cal<br><br>
+                <strong>Total:</strong> 536 cal<br><br>
+                ⚠️ <strong>Not logged</strong><br>
+                • quinoa — not in your foods or the catalog<br><br>
+                These are left out. Add one with <code>/food add</code>, or give
+                an amount and describe again.<br><br>
+                Pick a meal type to save:
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn">🌅 Breakfast</span>
+                        <span class="kb-btn">🥗 Lunch</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">🍽️ Dinner</span>
+                        <span class="kb-btn">🍎 Snack</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn">✖️ Cancel</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <p>Amounts can lead or trail — <code>100g oats</code> and
+    <code>oats 100g</code> both work — and items are separated by commas.
+    Nothing is saved until you tap a meal type.</p>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Why some items are left out</div>
+        <p>Nutrition always comes from your saved foods or the shared catalog —
+        it is never estimated. An item is left out when it is
+        <strong>unknown</strong> (add it with <code>/food add</code>),
+        <strong>has no amount</strong>, uses an <strong>unsupported unit</strong>,
+        or <strong>matches more than one thing</strong>. In the last case the bot
+        shows you the candidates rather than picking one, so a meal never
+        contains food you didn't eat.</p>
+    </div>
+
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 7. SUPPLEMENTS                                          -->
     <!-- ═══════════════════════════════════════════════════════ -->
@@ -1641,6 +1693,11 @@ DB_PATH=ledger.db</code></pre>
                 <td><code>/diet &lt;meal&gt; &lt;food&gt; [cal] [p=&lt;g&gt; c=&lt;g&gt; f=&lt;g&gt;]</code></td>
                 <td>Quick meal log</td>
                 <td><span class="badge badge-required">meal, food</span> <span class="badge badge-optional">calories, macros</span></td>
+            </tr>
+            <tr>
+                <td><code>/describe &lt;items&gt;</code></td>
+                <td>Type a whole meal; preview, then one tap saves</td>
+                <td><span class="badge badge-required">items</span></td>
             </tr>
             <tr>
                 <td><code>/food &lt;action&gt; ...</code></td>

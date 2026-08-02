@@ -68,6 +68,11 @@ from .handlers.diet import (
 )
 from .handlers.receipts import RECEIPT_UNDO_PATTERN, undo_from_receipt
 from .handlers.catalog import food_command, recipe_command
+from .handlers.describe import (
+    describe_cancel_callback,
+    describe_command,
+    describe_save_callback,
+)
 from .handlers.habits import (
     habits_setup_conv_handler,
     habit_check_callback,
@@ -332,6 +337,9 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(CommandHandler("help", help_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("menu", menu_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("home", home_command, filters=AUTH_FILTER))
+    application.add_handler(
+        CommandHandler("describe", describe_command, filters=AUTH_FILTER)
+    )
     application.add_handler(CommandHandler("food", food_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("recipe", recipe_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("summary", summary_command, filters=AUTH_FILTER))
@@ -433,6 +441,13 @@ def build_application(*, register_commands: bool = False) -> Application:
         CallbackQueryHandler(
             supplement_setup_done_callback, pattern=r"^supp_setup_done_"
         )
+    )
+    # Typed-meal (describe) callbacks
+    application.add_handler(
+        CallbackQueryHandler(describe_save_callback, pattern=r"^desc_save_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(describe_cancel_callback, pattern=r"^desc_cancel_")
     )
     # Undo confirm/cancel callbacks
     application.add_handler(

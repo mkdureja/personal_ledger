@@ -776,6 +776,51 @@ quick/default, and replay/current-values seams.
 No LLM, online provider, or schema migration. This is the fallback Release 4
 degrades to, so it must be genuinely useful on its own.
 
+#### Release 3 status — implemented 2026-08-02
+
+Implemented on `hardening/review-fixes`. **1168 tests pass** (1118 before, 50
+added). No schema change. Not yet accepted on a real client.
+
+§3.1 — `bot/nutrition_resolution.py` now owns `ResolvedCatalogDietEntry` and the
+three resolvers. `database.py` imports it at module scope; the lazy
+`from .handlers.catalog import ...` inside a locked write is gone.
+`handlers/catalog.py` re-exports the names so existing callers and tests are
+unchanged, and keeps only `resolve_catalog_diet_entry`, which does database I/O.
+The constraint is enforced by reading the module's AST — no Telegram, driver, or
+config import, and no `async def`/`await` — because "it happens to work today" is
+not the property worth keeping.
+
+§3.2 — three pieces, each testable alone:
+
+- `bot/meal_text.py` — pure segmentation. Handles `100g oats`, `oats 100g`,
+  `2 eggs`, and bare names; splits on commas, newlines, `+`, `&`, and a
+  standalone `and`; bounded at 20 segments and 120 characters each.
+- `bot/services/typed_meal.py` — resolution planning. Private foods and recipes
+  by exact name first, then the shared catalog, accepting a search result only
+  when it is unambiguous. Reads the user's lists once per line.
+- `bot/handlers/describe.py` — `/describe 2 eggs, 100g oats`. Shows a preview,
+  then one tap picks the meal type *and* saves through the existing
+  `log_diet_with_items`. Owner id and a per-preview token are embedded in every
+  callback, so a superseded preview and another user's tap both refuse.
+
+Four refusals are the actual feature, and each has its own message: unknown food,
+missing amount, unsupported unit, ambiguous match. An ambiguous segment names its
+candidates instead of being resolved by ranking. Unresolved items are listed as
+**not logged** rather than dropped silently, so a half-understood line never
+becomes a quietly smaller meal.
+
+One parser defect was found and fixed by the new tests: a "bare quantity" guard
+intended for `100g` also matched `2 eggs`, swallowing the count. The guard was
+removed rather than patched — the parser deliberately does not know which words
+are units, so it cannot make that distinction by shape and should not pretend to.
+
+**Deliberately not done here:** the preview does not reuse the Builder's
+draft-edit UI, so an unresolved item cannot be fixed in place — the user
+re-describes or uses 🍽️ Log meal. The Home **Describe** bar button explains the
+command rather than opening a text-capturing state, which keeps Home idle and
+avoids a second flow that could collide with the diet conversation. Promote
+either only if the live gate shows it matters.
+
 ### Release 4 — Gemini-assisted parsing
 
 Layered on §3.2, which stays the default and the fallback.

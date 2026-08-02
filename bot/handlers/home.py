@@ -317,7 +317,12 @@ async def home_text_router(
     if action == "repeat":
         await repeat_last_meal(update, context)
     elif action == "describe":
-        await _sync_keyboard(update, "📝 Describe isn't enabled yet.", uid)
+        # The bar label alone carries no meal text, so this teaches the command
+        # rather than opening a text-capturing state — Home stays idle, and a
+        # half-finished describe draft can never collide with a guided flow.
+        from .describe import describe_usage_reply
+
+        await describe_usage_reply(message)
     else:  # action == "meal"
         logger.warning("Home router received a Meal label; expected Diet entry point")
         await message.reply_text("Use /diet to log a meal.")
