@@ -66,6 +66,10 @@ from .nutrition_resolution import (
     resolve_food_diet_entry,
     resolve_recipe_diet_entry,
 )
+# The accepted weight range is a property of the measurement, not of storage, so
+# it lives with the rest of the pure weight logic and is imported here rather
+# than restated. Re-exported: callers already import limits from this module.
+from .weight_series import MAX_WEIGHT_KG, MIN_WEIGHT_KG
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +99,32 @@ class MutationSource(NamedTuple):
     chat_id: int | None = None
     message_id: int | None = None
 
+
+class WeightWrite(NamedTuple):
+    """The outcome of recording one day's weight.
+
+    ``previous_kg`` is what that same day held before, so a caller can tell a
+    first entry from a correction and say which it was. A day holds at most one
+    weight, which makes re-sending the same number harmless — the idempotency
+    that meals need a mutation receipt for, weight gets from its primary key.
+    """
+
+    log_date: date
+    weight_kg: float
+    previous_kg: float | None = None
+
+    @property
+    def replaced(self) -> bool:
+        """Whether this overwrote a weight already recorded for that day."""
+        return self.previous_kg is not None
+
+    @property
+    def change_kg(self) -> float | None:
+        """How much the stored value moved, for a correction; else ``None``."""
+        if self.previous_kg is None:
+            return None
+        return round(self.weight_kg - self.previous_kg, 2)
+
 MAX_DISPLAY_UNIT_LENGTH = MAX_PORTION_NAME_LENGTH
 MAX_ACTIVE_FOODS = 500
 MAX_PORTIONS_PER_FOOD = 50
@@ -121,6 +151,27 @@ def _validated_shortcut_source(value: str) -> str:
     if value not in SHORTCUT_SOURCE_TYPES:
         raise ValueError(f"Unknown shortcut source type: {value!r}")
     return value
+
+
+def _validated_weight_kg(value: float) -> float:
+    """Bound a body weight and round it to the precision a scale reports.
+
+    Two decimals: household scales read to 0.1 kg and a few to 0.05, so storing
+    more would record noise the instrument never measured. Rounding here rather
+    than at the handler means every path — tap, typed, quick command — stores the
+    same value for the same reading.
+    """
+    try:
+        weight = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("Weight must be a number") from None
+    if not math.isfinite(weight):
+        raise ValueError("Weight must be a finite number")
+    if not (MIN_WEIGHT_KG <= weight <= MAX_WEIGHT_KG):
+        raise ValueError(
+            f"Weight must be between {MIN_WEIGHT_KG:g} and {MAX_WEIGHT_KG:g} kg"
+        )
+    return round(weight, 2)
 MAX_CATALOG_AMOUNT = float(NUTRITION_MAX_CATALOG_AMOUNT)
 MAX_NUTRIENT_VALUE = float(NUTRITION_MAX_NUTRIENT_VALUE)
 MAX_SUPPLEMENT_NAME_LENGTH = 50
@@ -1923,6 +1974,124 @@ class DatabaseManager:
                 entry["source_type"] = source_type
                 resolved.append(entry)
         return resolved
+
+    # -------------------------------------------------------------------
+    # Daily weight — one number per calendar day
+    # -------------------------------------------------------------------
+    # Keyed on the *local* calendar date the caller supplies, not on a UTC
+    # instant. "What did I weigh on Tuesday" has to have one answer, and which
+    # Tuesday it was is a question only the caller's timezone can settle.
+    async def log_weight(
+        self,
+        user_id: int,
+        weight_kg: float,
+        log_date: date,
+    ) -> WeightWrite:
+        """Record (or correct) one day's weight, returning what it replaced.
+
+        A second weigh-in on the same day overwrites the first rather than
+        adding a row: a chart with two values for one day would have to pick one
+        anyway, and doing that silently at render time is worse than deciding it
+        here. The read and the write share one immediate transaction so the
+        reported ``previous_kg`` is genuinely the value that was overwritten.
+        """
+        weight = _validated_weight_kg(weight_kg)
+        day = log_date.isoformat()
+
+        async with self._write_operation(begin_immediate=True):
+            cursor = await self.conn.execute(
+                "SELECT weight_kg FROM weight_logs WHERE user_id = ? AND log_date = ?",
+                (user_id, day),
+            )
+            row = await cursor.fetchone()
+            previous = float(row["weight_kg"]) if row is not None else None
+
+            await self.conn.execute(
+                """
+                INSERT INTO weight_logs (user_id, log_date, weight_kg, logged_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, log_date) DO UPDATE SET
+                    weight_kg = excluded.weight_kg,
+                    logged_at = excluded.logged_at
+                """,
+                (user_id, day, weight, _utc_timestamp_now()),
+            )
+        return WeightWrite(log_date=log_date, weight_kg=weight, previous_kg=previous)
+
+    async def get_weight_on(self, user_id: int, log_date: date) -> float | None:
+        """That day's recorded weight, or ``None`` if it was not weighed."""
+        row = await self._query_one(
+            "SELECT weight_kg FROM weight_logs WHERE user_id = ? AND log_date = ?",
+            (user_id, log_date.isoformat()),
+        )
+        return float(row["weight_kg"]) if row is not None else None
+
+    async def get_latest_weight(
+        self, user_id: int, *, on_or_before: date | None = None
+    ) -> dict[str, Any] | None:
+        """The most recent weigh-in, as ``{"log_date": date, "weight_kg": float}``.
+
+        This is what a nudge keyboard is built around and what Home reports, so
+        it deliberately looks past today: the point of the feature is that days
+        get missed, and a keyboard offering "same as last time" is only useful if
+        "last time" can be a week ago.
+        """
+        if on_or_before is None:
+            row = await self._query_one(
+                "SELECT log_date, weight_kg FROM weight_logs WHERE user_id = ? "
+                "ORDER BY log_date DESC LIMIT 1",
+                (user_id,),
+            )
+        else:
+            row = await self._query_one(
+                "SELECT log_date, weight_kg FROM weight_logs "
+                "WHERE user_id = ? AND log_date <= ? ORDER BY log_date DESC LIMIT 1",
+                (user_id, on_or_before.isoformat()),
+            )
+        if row is None:
+            return None
+        return {
+            "log_date": date.fromisoformat(row["log_date"]),
+            "weight_kg": float(row["weight_kg"]),
+        }
+
+    async def get_weight_logs(
+        self, user_id: int, start: date, end: date
+    ) -> list[dict[str, Any]]:
+        """Every weigh-in in ``[start, end]``, oldest first.
+
+        Text comparison is exact for ISO dates — they sort lexicographically in
+        the same order they sort chronologically — so a BETWEEN over the stored
+        strings needs no conversion.
+        """
+        rows = await self._query_all(
+            "SELECT log_date, weight_kg, logged_at FROM weight_logs "
+            "WHERE user_id = ? AND log_date BETWEEN ? AND ? ORDER BY log_date",
+            (user_id, start.isoformat(), end.isoformat()),
+        )
+        return [
+            {
+                "log_date": date.fromisoformat(row["log_date"]),
+                "weight_kg": float(row["weight_kg"]),
+                "logged_at": row["logged_at"],
+            }
+            for row in rows
+        ]
+
+    async def delete_weight(self, user_id: int, log_date: date) -> bool:
+        """Remove a day's weight entirely. ``True`` if a row was deleted.
+
+        Distinct from overwriting: a mistyped weight is corrected by logging
+        again, but a day you did not actually weigh should hold *nothing*, so the
+        fill can carry the previous real value across it instead of standing on a
+        number that was never measured.
+        """
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "DELETE FROM weight_logs WHERE user_id = ? AND log_date = ?",
+                (user_id, log_date.isoformat()),
+            )
+            return bool(cursor.rowcount)
 
     async def get_food_preferences(
         self, user_id: int

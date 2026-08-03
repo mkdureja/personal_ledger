@@ -15,6 +15,7 @@ from telegram import (
 
 from .callback_data import to_base36
 from .nutrition import NutritionError, format_decimal
+from .weight_series import format_kg, nudge_values
 
 
 # A checklist uses two buttons per habit plus a date row and a day-toggle row.
@@ -85,24 +86,29 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     rather than the section name, and 🗒️ Recent is promoted onto Home because
     "did my save land?" is a normal daily question. The ``callback_data`` values
     are unchanged so a Home message sent by an older build still routes: Study,
-    Gym, and Diet are claimed by their ConversationHandler entry points, and
-    Habits/Recent/Analytics by :func:`bot.handlers.start.menu_callback`.
+    Gym, Diet, and Weight are claimed by their ConversationHandler entry points,
+    and Habits/Recent/Analytics by :func:`bot.handlers.start.menu_callback`.
+
+    ⚖️ Weight sits beside 🍽️ Log meal because both are daily and both are the
+    reason someone opens the bot at all; the sections you visit weekly stay
+    further down.
     """
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton("🍽️ Log meal", callback_data="menu_diet"),
-                InlineKeyboardButton("✅ Habits", callback_data="menu_habits"),
+                InlineKeyboardButton("⚖️ Weight", callback_data="menu_weight"),
             ],
             [
+                InlineKeyboardButton("✅ Habits", callback_data="menu_habits"),
                 InlineKeyboardButton("💊 Supplements", callback_data="menu_supplements"),
-                InlineKeyboardButton("📖 Study", callback_data="menu_study"),
             ],
             [
                 InlineKeyboardButton("🏋️ Workout", callback_data="menu_gym"),
-                InlineKeyboardButton("🗒️ Recent", callback_data="menu_recent"),
+                InlineKeyboardButton("📖 Study", callback_data="menu_study"),
             ],
             [
+                InlineKeyboardButton("🗒️ Recent", callback_data="menu_recent"),
                 InlineKeyboardButton("📊 Analytics", callback_data="menu_analytics"),
             ],
         ]
@@ -1042,10 +1048,97 @@ def analytics_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📊 Habit Chart", callback_data="chart_habits"),
             ],
             [
+                InlineKeyboardButton("⚖️ Weight Chart", callback_data="chart_weight"),
+            ],
+            [
                 InlineKeyboardButton("🔥 Streaks", callback_data="analytics_streak"),
             ],
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# Weight entry
+# ---------------------------------------------------------------------------
+#: Callback prefix for a tappable weight. The value travels as an integer number
+#: of *hundredths* of a kilogram: callback data is a string either way, and an
+#: integer cannot pick up a locale's decimal comma or a float's repr on the way
+#: back.
+WEIGHT_TAP_PREFIX = "wt"
+
+
+def weight_tap_data(user_id: int, weight_kg: float) -> str:
+    """Encode one tappable weight as ``wt_v_<user>_<hundredths>``."""
+    return f"{WEIGHT_TAP_PREFIX}_v_{user_id}_{int(round(float(weight_kg) * 100))}"
+
+
+def weight_clear_data(user_id: int) -> str:
+    """Encode the "remove today's entry" tap."""
+    return f"{WEIGHT_TAP_PREFIX}_x_{user_id}"
+
+
+def parse_weight_tap(data: str, user_id: int) -> tuple[str, float | None] | None:
+    """Decode a ``wt_*`` callback, or ``None`` if it is not this user's button.
+
+    Returns ``(action, weight_kg)`` where ``action`` is ``"v"`` (log this value)
+    or ``"x"`` (clear the day). The user check is what stops one household member
+    tapping a button rendered for the other in a shared chat.
+    """
+    parts = (data or "").split("_")
+    if len(parts) < 3 or parts[0] != WEIGHT_TAP_PREFIX:
+        return None
+    action = parts[1]
+    try:
+        if int(parts[2]) != user_id:
+            return None
+    except ValueError:
+        return None
+
+    if action == "x":
+        return ("x", None)
+    if action != "v" or len(parts) < 4:
+        return None
+    try:
+        hundredths = int(parts[3])
+    except ValueError:
+        return None
+    return ("v", round(hundredths / 100, 2))
+
+
+def weight_entry_keyboard(
+    user_id: int,
+    last_kg: float | None,
+    *,
+    has_today: bool = False,
+) -> InlineKeyboardMarkup | None:
+    """Nudge buttons around ``last_kg``, or ``None`` when there is nothing to nudge.
+
+    Each button is labelled with the weight it would log, and the row ascends
+    left to right, so what a tap does is readable without a legend. Returning
+    ``None`` for a first-ever weigh-in is deliberate: a grid centred on a guess
+    would invite a tap that records a number nobody measured.
+    """
+    values = nudge_values(last_kg)
+    rows: list[list[InlineKeyboardButton]] = []
+    if values:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    format_kg(value), callback_data=weight_tap_data(user_id, value)
+                )
+                for value in values
+            ]
+        )
+    if has_today:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "🗑 Clear today's weight",
+                    callback_data=weight_clear_data(user_id),
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 def habit_setup_keyboard(

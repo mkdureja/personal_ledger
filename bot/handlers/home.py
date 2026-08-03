@@ -35,6 +35,7 @@ from ..keyboards import (
     reply_keyboard_remove,
 )
 from ..meal_models import RepeatStatus
+from ..weight_series import format_kg
 from .common import (
     AUTH_FILTER,
     GREETING_HOME_FILTER,
@@ -124,6 +125,33 @@ def _last_meal_line(summary: dict | None) -> str | None:
     )
 
 
+async def _weight_snapshot(db, user_id: int, today) -> str:
+    """Today's weight for the Home line, or what to do about its absence.
+
+    Deliberately reports the *last* weigh-in when today has none, rather than a
+    bare dash. The whole premise of the feature is that days get missed, so
+    "72.4 kg on Aug 1" is the useful answer to "where am I"; a dash would say
+    only that a button was not pressed.
+
+    Never raises: Home has to render even when one section cannot answer, and a
+    weight line is the least important thing on it.
+    """
+    try:
+        today_kg = await db.get_weight_on(user_id, today)
+        if today_kg is not None:
+            return f"{format_kg(today_kg)} kg"
+        latest = await db.get_latest_weight(user_id)
+    except Exception:
+        logger.warning("Could not read weight for Home", exc_info=False)
+        return "—"
+
+    if latest is None:
+        return "not logged yet"
+    days = (today - latest["log_date"]).days
+    ago = "yesterday" if days == 1 else f"{days} days ago"
+    return f"— (last {format_kg(latest['weight_kg'])} kg {ago})"
+
+
 async def show_home(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -161,6 +189,7 @@ async def show_home(
         f"👋 <b>{first_name}</b> — here's today:",
         "",
         f"🍽️ Diet: {meal_count} meal(s), {calories} cal{cal_suffix}",
+        f"⚖️ Weight: {await _weight_snapshot(db, uid, today)}",
         f"📖 Study: {study_min} min",
         f"🏋️ Gym: {gym_count} exercise(s)",
         f"✅ Habits: {checked_count}/{len(active_habits)} done",

@@ -29,6 +29,11 @@ def _summary_db(diet_logs: list[dict[str, object]]) -> SimpleNamespace:
         get_diet_logs=AsyncMock(return_value=diet_logs),
         get_active_habits=AsyncMock(return_value=[]),  # used by _daily_summary
         get_habit_adherence=AsyncMock(return_value=(0, 0)),  # used by _weekly_summary
+        # Both summaries carry a weight line; these tests are about macros, so
+        # the ledger is empty of weigh-ins rather than absent of the methods.
+        get_weight_on=AsyncMock(return_value=None),
+        get_latest_weight=AsyncMock(return_value=None),
+        get_weight_logs=AsyncMock(return_value=[]),
     )
 
 

@@ -44,6 +44,7 @@ from bot.handlers.diet import diet_conv_handler
 from bot.handlers.gym import EXERCISE, gym_conv_handler
 from bot.handlers.habits import ADDING_HABIT, habits_setup_conv_handler
 from bot.handlers.study import SUBJECT, study_conv_handler
+from bot.handlers.weight import ASK as WEIGHT_ASK, weight_conv_handler
 from bot.meal_models import RepeatStatus
 
 UID = 123456789  # matches conftest ALLOWED_USER_IDS
@@ -57,6 +58,7 @@ _FLOW_STATES = {
     "gym": (gym_conv_handler, EXERCISE),
     "diet": (diet_conv_handler, diet.FOOD_CHOICE),
     "habits": (habits_setup_conv_handler, ADDING_HABIT),
+    "weight": (weight_conv_handler, WEIGHT_ASK),
 }
 
 
@@ -235,12 +237,12 @@ async def test_every_idle_entry_renders_the_same_home(db, entry):
     markup = _first_kwargs(update.effective_message.reply_text)["reply_markup"]
     assert "here's today" in text
     assert _labels(markup) == [
-        "🍽️ Log meal", "✅ Habits", "💊 Supplements", "📖 Study",
-        "🏋️ Workout", "🗒️ Recent", "📊 Analytics",
+        "🍽️ Log meal", "⚖️ Weight", "✅ Habits", "💊 Supplements",
+        "🏋️ Workout", "📖 Study", "🗒️ Recent", "📊 Analytics",
     ]
 
 
-@pytest.mark.parametrize("flow", ["study", "gym", "diet", "habits"])
+@pytest.mark.parametrize("flow", ["study", "gym", "diet", "habits", "weight"])
 @pytest.mark.parametrize("entry", ["start", "home", "menu", "greeting"])
 async def test_every_idle_entry_escapes_a_live_flow(db, flow, entry):
     """Home always opens, from inside any flow, by any entry point.
@@ -311,7 +313,7 @@ async def test_escaping_a_flow_with_nothing_pending_says_nothing_extra(db):
     assert "here's today" in said
 
 
-@pytest.mark.parametrize("flow", ["study", "gym", "diet", "habits"])
+@pytest.mark.parametrize("flow", ["study", "gym", "diet", "habits", "weight"])
 @pytest.mark.parametrize(
     "text", ["/start", "/home", "/menu", "hi"], ids=["start", "home", "menu", "greeting"]
 )
@@ -375,8 +377,10 @@ async def test_first_ever_start_onboards_opted_out_and_still_shows_home(db):
 
 
 def test_command_menu_is_only_the_everyday_set():
+    # /weight is here because "/weight 72.4" is a complete daily interaction on
+    # its own; every other logging command opens a flow and belongs on Home.
     assert [command for command, _ in main_module.COMMAND_MENU] == [
-        "home", "recent", "undo", "help",
+        "home", "weight", "recent", "undo", "help",
     ]
     assert all(description for _, description in main_module.COMMAND_MENU)
 
@@ -419,7 +423,9 @@ async def test_register_command_menu_sends_only_the_everyday_set():
 
     await main_module.register_command_menu(SimpleNamespace(bot=_Bot()))
 
-    assert [c.command for c in calls[0]] == ["home", "recent", "undo", "help"]
+    assert [c.command for c in calls[0]] == [
+        "home", "weight", "recent", "undo", "help",
+    ]
 
 
 async def test_register_command_menu_degrades_instead_of_failing_startup():

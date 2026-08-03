@@ -1163,6 +1163,43 @@ async def _migration_0012_meal_shortcuts(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0013_weight_logs(conn: aiosqlite.Connection) -> None:
+    """Daily body weight — one number, at most one per day.
+
+    Keyed on ``log_date`` (a local calendar date) rather than a UTC
+    ``logged_at`` instant, like ``habit_logs`` and unlike ``diet_logs``. A meal
+    happens at a moment; a body weight is a property of a *day*, and the
+    question "what did I weigh on Tuesday" must have one answer regardless of
+    what time the scale was read. ``UNIQUE(user_id, log_date)`` is what makes
+    that true in the schema rather than merely in the handler: re-weighing
+    replaces the day's number instead of accumulating rows that a chart would
+    then have to pick between.
+
+    ``logged_at`` is still recorded, so a correction is distinguishable from a
+    first entry after the fact, but nothing reads it for placement.
+
+    The ``CHECK`` bounds are deliberately wide — this is a guard against a
+    fat-fingered ``724`` or a negative, not an opinion about anybody's body.
+    Anything inside them is somebody's real weight.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS weight_logs (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id   INTEGER NOT NULL,
+            log_date  TEXT NOT NULL,
+            weight_kg REAL NOT NULL CHECK(weight_kg > 0 AND weight_kg <= 500),
+            logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, log_date),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    # UNIQUE(user_id, log_date) already indexes exactly the range scan every
+    # read performs (one user, a date window, in date order), so no second
+    # index is created here.
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1176,6 +1213,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     10: _migration_0010_ai_parsing_consent,
     11: _migration_0011_gym_sets_and_exercises,
     12: _migration_0012_meal_shortcuts,
+    13: _migration_0013_weight_logs,
 }
 
 

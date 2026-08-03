@@ -12,13 +12,17 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from .common import authorized_callback, escape_html, reply_html
-from .. import charts
+from .. import charts, weight_series
 from ..config import local_date_from_utc, today_local
 from ..keyboards import MAX_ACTIVE_HABITS
 
 logger = logging.getLogger(__name__)
 
-_CHART_CATEGORIES = frozenset({"study", "gym", "diet", "habits"})
+_CHART_CATEGORIES = frozenset({"study", "gym", "diet", "habits", "weight"})
+#: The weight chart's window. Longer than the other charts because a weight
+#: trend is not visible in a week: day-to-day movement is mostly water, and it
+#: takes a few weeks before the rolling average has a direction worth reading.
+_WEIGHT_CHART_DAYS = 30
 _ANALYTICS_ACTIONS = frozenset(
     {"analytics_summary", "analytics_week", "analytics_streak"}
     | {f"chart_{category}" for category in _CHART_CATEGORIES}
@@ -239,6 +243,8 @@ async def _daily_summary(message: Message, db, user_id: int) -> None:
     else:
         lines.append("🍽️ <b>Diet</b>: —")
 
+    lines.append(await _daily_weight_line(db, user_id, today))
+
     habits = await db.get_active_habits(user_id)
     if habits:
         checked = await db.get_checked_habits(user_id, today)
@@ -248,6 +254,28 @@ async def _daily_summary(message: Message, db, user_id: int) -> None:
         lines.append("✅ <b>Habits</b>: no habits set up")
 
     await reply_html(message, "\n".join(lines))
+
+
+async def _daily_weight_line(db, user_id: int, today: date) -> str:
+    """Today's weight, or the last one with its age.
+
+    An unweighed day is not the same as no data: naming the last reading and how
+    old it is says whether the gap matters, where a bare dash says only that a
+    button was not pressed today.
+    """
+    today_kg = await db.get_weight_on(user_id, today)
+    if today_kg is not None:
+        return f"⚖️ <b>Weight</b>: {weight_series.format_kg(today_kg)} kg"
+
+    latest = await db.get_latest_weight(user_id)
+    if latest is None:
+        return "⚖️ <b>Weight</b>: —"
+    days = (today - latest["log_date"]).days
+    ago = "yesterday" if days == 1 else f"{days} days ago"
+    return (
+        f"⚖️ <b>Weight</b>: not today — last "
+        f"{weight_series.format_kg(latest['weight_kg'])} kg {ago}"
+    )
 
 
 async def _weekly_summary(message: Message, db, user_id: int) -> None:
@@ -334,6 +362,26 @@ async def _weekly_summary(message: Message, db, user_id: int) -> None:
     else:
         lines.append("🍽️ <b>Diet</b>: no meals logged this week")
 
+    _entries, _series, trend = await _weight_series(
+        db, user_id, today, weight_series.ROLLING_WINDOW_DAYS
+    )
+    if trend.average_kg is None:
+        lines.append("⚖️ <b>Weight</b>: not logged this week")
+    else:
+        weighed = (
+            f"{trend.measured_days} day"
+            f"{'s' if trend.measured_days != 1 else ''} weighed"
+        )
+        change = (
+            f", {weight_series.format_change(trend.change_kg)} vs the week before"
+            if trend.change_kg is not None
+            else ""
+        )
+        lines.append(
+            f"⚖️ <b>Weight</b>: {weight_series.format_kg(trend.average_kg)} kg "
+            f"average{change} ({weighed})"
+        )
+
     # Lifecycle-aware: a habit counts only for the days an activity period covered
     # it, so deactivating mid-week keeps its earlier completions, and a habit that
     # was active earlier in the window is still included even if inactive now.
@@ -391,6 +439,8 @@ async def _send_chart(message: Message, db, user_id: int, category: str) -> None
         await _send_gym_chart(message, db, user_id, week_start, today)
     elif category == "diet":
         await _send_diet_chart(message, db, user_id, week_start, today)
+    elif category == "weight":
+        await _send_weight_chart(message, db, user_id, today)
     else:
         await _send_habits_chart(message, db, user_id, today)
 
@@ -462,6 +512,44 @@ async def _send_diet_chart(message: Message, db, user_id: int, start, end) -> No
 
     buf = await asyncio.to_thread(charts.diet_chart, logs, days=7, end_date=end)
     await message.reply_photo(buf, caption="🍽️ Diet — Last 7 Days")
+
+
+async def _weight_series(db, user_id: int, today, days: int):
+    """The filled daily series ending today, plus its trend summary.
+
+    Reads ``CARRY_LIMIT_DAYS`` of extra history before the window so a weigh-in
+    that happened just before it opens can still carry into the first days —
+    otherwise the chart's left edge would depend on where the window was cut.
+    """
+    start = today - timedelta(days=days - 1)
+    rows = await db.get_weight_logs(
+        user_id, start - timedelta(days=weight_series.CARRY_LIMIT_DAYS), today
+    )
+    entries = [(row["log_date"], row["weight_kg"]) for row in rows]
+    series = weight_series.daily_series(entries, start, today)
+    return entries, series, weight_series.summarize(series)
+
+
+async def _send_weight_chart(message: Message, db, user_id: int, today) -> None:
+    """Generate and send the weight trend without blocking the event loop."""
+    entries, _series, trend = await _weight_series(
+        db, user_id, today, _WEIGHT_CHART_DAYS
+    )
+    if not entries:
+        await message.reply_text(
+            "No weight logged yet. Tap ⚖️ Weight on /home, or send /weight 72.4"
+        )
+        return
+
+    buf = await asyncio.to_thread(
+        charts.weight_chart, entries, days=_WEIGHT_CHART_DAYS, end_date=today
+    )
+    caption = f"⚖️ Weight — Last {_WEIGHT_CHART_DAYS} Days"
+    if trend.average_kg is not None:
+        caption += f" · 7-day avg {weight_series.format_kg(trend.average_kg)} kg"
+        if trend.change_kg is not None:
+            caption += f" ({weight_series.format_change(trend.change_kg)})"
+    await message.reply_photo(buf, caption=caption)
 
 
 async def _send_habits_chart(message: Message, db, user_id: int, today) -> None:

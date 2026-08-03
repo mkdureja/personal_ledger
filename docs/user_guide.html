@@ -623,6 +623,7 @@
             <li><a href="#catalog">Saved Foods &amp; Recipes</a></li>
             <li><a href="#habits">Tracking Habits</a></li>
             <li><a href="#supplements">Tracking Supplements</a></li>
+            <li><a href="#weight">Logging Your Weight</a></li>
             <li><a href="#analytics">Analytics &amp; Charts</a></li>
             <li><a href="#reminders">Reminders &amp; Routine</a></li>
             <li><a href="#utility">Utility Commands</a></li>
@@ -639,7 +640,8 @@
 
     <div class="box box-success no-break">
         <div class="box-title">✅ What you can use</div>
-        <p>Home, Study, Workout, Meals, Habits, Supplements, Recent, Analytics, charts,
+        <p>Home, Study, Workout, Meals, Weight, Habits, Supplements, Recent,
+        Analytics, charts,
         suggestions, <code>/cancel</code>, and <code>/undo</code> are ready for
         everyday use. Scheduled reminders work after each person opts in with
         <code>/reminders on</code> and while the household bot is running.</p>
@@ -773,6 +775,7 @@ DB_PATH=ledger.db</code></pre>
             <div class="msg-bubble">
                 👋 <strong>Your name</strong> — here's today:<br><br>
                 🍽️ Diet: 2 meal(s), 640 cal<br>
+                ⚖️ Weight: 72.4 kg<br>
                 📖 Study: 45 min<br>
                 🏋️ Gym: 1 exercise(s)<br>
                 ✅ Habits: 3/5 done<br><br>
@@ -780,17 +783,18 @@ DB_PATH=ledger.db</code></pre>
                 <div class="kb">
                     <div class="kb-row">
                         <span class="kb-btn">🍽️ Log meal</span>
-                        <span class="kb-btn">✅ Habits</span>
+                        <span class="kb-btn">⚖️ Weight</span>
                     </div>
                     <div class="kb-row">
+                        <span class="kb-btn">✅ Habits</span>
                         <span class="kb-btn">💊 Supplements</span>
-                        <span class="kb-btn">📖 Study</span>
                     </div>
                     <div class="kb-row">
                         <span class="kb-btn">🏋️ Workout</span>
-                        <span class="kb-btn">🗒️ Recent</span>
+                        <span class="kb-btn">📖 Study</span>
                     </div>
                     <div class="kb-row">
+                        <span class="kb-btn">🗒️ Recent</span>
                         <span class="kb-btn">📊 Analytics</span>
                     </div>
                 </div>
@@ -799,8 +803,9 @@ DB_PATH=ledger.db</code></pre>
     </div>
 
     <p>On a normal live start, Telegram's command menu (the ☰ button beside the
-    message box) lists four everyday commands: <code>/home</code>,
-    <code>/recent</code>, <code>/undo</code>, and <code>/help</code>. Registration
+    message box) lists five everyday commands: <code>/home</code>,
+    <code>/weight</code>, <code>/recent</code>, <code>/undo</code>, and
+    <code>/help</code>. Registration
     is best-effort; if the picker is absent, type those commands directly. Every
     other command still works — see the reference at the end.</p>
 
@@ -1296,9 +1301,93 @@ DB_PATH=ledger.db</code></pre>
     and timing you type replace the old ones.</p>
 
     <!-- ═══════════════════════════════════════════════════════ -->
-    <!-- 8. ANALYTICS                                            -->
+    <!-- 8. WEIGHT                                               -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="analytics" class="page-break">8. Analytics &amp; Charts</h2>
+    <h2 id="weight" class="page-break">8. Logging Your Weight</h2>
+
+    <p>Weight is the one thing here that is a <strong>measurement</strong> rather
+    than a record of something you did, so it works a little differently: one
+    number per calendar day, and weighing again <strong>corrects</strong> that
+    day rather than adding a second entry.</p>
+
+    <h3>Logging It</h3>
+    <p>Tap <strong>⚖️ Weight</strong> on Home, or send <code>/weight</code>. The
+    bot offers five numbers around your last weigh-in — most days one of them is
+    the reading, and that is a single tap. Any day it isn't, type the exact
+    number.</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">⚖️ Weight</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ⚖️ <strong>Today's weight</strong><br><br>
+                Last weigh-in: <strong>72.4 kg</strong> (yesterday).<br>
+                Tap one, or type an exact number.
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn">72.2</span>
+                        <span class="kb-btn">72.3</span>
+                        <span class="kb-btn">72.4</span>
+                        <span class="kb-btn">72.5</span>
+                        <span class="kb-btn">72.6</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">72.3</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                ⚖️ <strong>72.3 kg</strong> logged for today.<br>
+                📈 7-day average <strong>72.5 kg</strong> · −0.2 kg vs the week before
+            </div>
+        </div>
+    </div>
+
+    <p>In a hurry, <code>/weight 72.4</code> does the whole thing in one message —
+    there is no flow to leave afterwards. Typing works the way you would expect:
+    <code>72</code>, <code>72.4</code>, <code>72,4</code>, and
+    <code>72.4 kg</code> are all read the same way.</p>
+
+    <div class="box box-info no-break">
+        <div class="box-title">⚖️ Missing a day is fine — that is the design</div>
+        <p>The chart and the 7-day average <strong>carry your last reading
+        forward</strong> across days you didn't weigh, for up to
+        <strong>10 days</strong>. After that the line breaks until you weigh
+        again, on purpose: a flat line across a month of silence would read as
+        "my weight held steady", which is a claim about your body rather than
+        about your record.</p>
+        <p>Carried days are drawn as <strong>hollow</strong> dots and measured
+        days as filled ones, so you can always see which is which.</p>
+    </div>
+
+    <h3>Reading The Trend</h3>
+    <p><code>/chart weight</code> (or <strong>⚖️ Weight Chart</strong> under
+    Analytics) draws the last 30 days with the 7-day rolling average on top. The
+    average is what to watch: a single day moves on water, salt, and timing, so
+    the week-over-week comparison is the smallest honest statement about a
+    direction.</p>
+
+    <div class="box box-success no-break">
+        <div class="box-title">💡 Weigh at the same time of day</div>
+        <p>First thing in the morning, after the bathroom and before breakfast,
+        is the usual advice — not because that number is more "real", but because
+        comparing like with like is what makes the trend mean anything.</p>
+    </div>
+
+    <p>Recorded the wrong number? Just log the right one — the day is corrected
+    and the bot tells you what it replaced. Recorded a weight on a day you did
+    not actually weigh? Open <code>/weight</code> and tap
+    <strong>🗑 Clear today's weight</strong>, so the fill carries your last real
+    reading across that day instead of standing on an invented one.</p>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- 9. ANALYTICS                                            -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <h2 id="analytics" class="page-break">9. Analytics &amp; Charts</h2>
 
     <h3>Text Summaries</h3>
 
@@ -1360,6 +1449,11 @@ DB_PATH=ledger.db</code></pre>
                 <td>Last 7 days</td>
             </tr>
             <tr>
+                <td><code>/chart weight</code></td>
+                <td>Line — 7-day average, with measured (●) and carried (○) days</td>
+                <td>Last 30 days</td>
+            </tr>
+            <tr>
                 <td><code>/chart habits</code></td>
                 <td>Grid heatmap — ✅/⬜ per habit per day</td>
                 <td>Last 14 days</td>
@@ -1389,7 +1483,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 8. REMINDERS                                            -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="reminders">9. Reminders &amp; Routine</h2>
+    <h2 id="reminders">10. Reminders &amp; Routine</h2>
 
     <p>Ledger can nudge you, not just record you. Reminders are opt-in for each
     person; once enabled, Ledger can send one evening habit reminder. Add an
@@ -1497,7 +1591,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 9. UTILITY                                              -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="utility" class="page-break">10. Utility Commands</h2>
+    <h2 id="utility" class="page-break">11. Utility Commands</h2>
 
     <h3>/undo — Undo Last Entry</h3>
     <p>Made a mistake? Send <code>/undo</code> to review your most recent log entry (study, gym, or diet). The bot shows it and waits for you to confirm — <strong>nothing is deleted until you tap “Yes, undo.”</strong> Only works within <strong>24 hours</strong> of the entry.</p>
@@ -1695,7 +1789,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 10. QUICK REFERENCE                                     -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="quick-ref" class="page-break">11. Quick Reference Card</h2>
+    <h2 id="quick-ref" class="page-break">12. Quick Reference Card</h2>
 
     <h3>Logging Commands</h3>
     <table>
@@ -1765,6 +1859,15 @@ DB_PATH=ledger.db</code></pre>
         </tbody>
     </table>
 
+    <h3>Weight Commands</h3>
+    <table>
+        <thead><tr><th>Command</th><th>Action</th></tr></thead>
+        <tbody>
+            <tr><td><code>/weight</code></td><td>Prompt for today's weight — tap a nearby number or type one</td></tr>
+            <tr><td><code>/weight 72.4</code></td><td>Log today's weight in a single message</td></tr>
+        </tbody>
+    </table>
+
     <h3>Analytics Commands</h3>
     <table>
         <thead><tr><th>Command</th><th>Action</th></tr></thead>
@@ -1774,6 +1877,7 @@ DB_PATH=ledger.db</code></pre>
             <tr><td><code>/chart study</code></td><td>Study hours chart (7 days)</td></tr>
             <tr><td><code>/chart gym</code></td><td>Gym volume chart (7 days)</td></tr>
             <tr><td><code>/chart diet</code></td><td>Calorie intake chart (7 days)</td></tr>
+            <tr><td><code>/chart weight</code></td><td>Weight trend with 7-day average (30 days)</td></tr>
             <tr><td><code>/chart habits</code></td><td>Habit heatmap (14 days)</td></tr>
             <tr><td><code>/streak</code></td><td>Habit streak counts</td></tr>
         </tbody>
@@ -1800,7 +1904,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 11. TIPS                                                -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="tips" class="page-break">12. Tips &amp; Best Practices</h2>
+    <h2 id="tips" class="page-break">13. Tips &amp; Best Practices</h2>
 
     <div class="feature-grid">
         <div class="feature-card no-break">
@@ -1849,7 +1953,7 @@ DB_PATH=ledger.db</code></pre>
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 12. TROUBLESHOOTING                                     -->
     <!-- ═══════════════════════════════════════════════════════ -->
-    <h2 id="troubleshooting" class="page-break">13. Troubleshooting</h2>
+    <h2 id="troubleshooting" class="page-break">14. Troubleshooting</h2>
 
     <table>
         <thead><tr><th style="width: 35%;">Problem</th><th>Solution</th></tr></thead>

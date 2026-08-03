@@ -61,6 +61,7 @@ from .handlers.home import (
 from .handlers.study import study_conv_handler
 from .handlers.gym import gym_conv_handler, stale_gym_callback
 from .handlers.shortcuts import shortcuts_conv_handler
+from .handlers.weight import stale_weight_callback, weight_conv_handler
 from .handlers.diet import (
     _DIET_PHASE1_CALLBACK_RE,
     _RECEIPT_CALLBACK_RE,
@@ -180,6 +181,9 @@ logger = logging.getLogger(__name__)
 #: keeps working; this is the discoverable subset, not the whole reference.
 COMMAND_MENU: tuple[tuple[str, str], ...] = (
     ("home", "Today and actions"),
+    # Earns its place by being a daily one-liner: "/weight 72.4" is the whole
+    # interaction, with no flow to enter or leave.
+    ("weight", "Log today's weight"),
     ("recent", "Recent entries"),
     ("undo", "Recover the latest supported entry"),
     ("help", "Full reference"),
@@ -438,6 +442,10 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(habits_setup_conv_handler)
     application.add_handler(supplements_setup_conv_handler)
     application.add_handler(shortcuts_conv_handler)
+    # Registered before the ``^menu_`` catch-all below so the ⚖️ Weight tap
+    # reaches this conversation's entry point rather than menu_callback, which
+    # cannot open a flow.
+    application.add_handler(weight_conv_handler)
 
     # --- Simple command handlers ---
     application.add_handler(CommandHandler("start", start_command, filters=AUTH_FILTER))
@@ -492,6 +500,9 @@ def build_application(*, register_commands: bool = False) -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(stale_meal_callback, pattern=r"^meal_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(stale_weight_callback, pattern=r"^wt_")
     )
     application.add_handler(
         CallbackQueryHandler(

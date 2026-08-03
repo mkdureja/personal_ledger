@@ -23,7 +23,9 @@ from ..config import phase1_enabled_for
 from ..keyboards import analytics_keyboard
 
 #: Home actions whose ConversationHandler entry point normally claims the tap.
-_CONVERSATION_MENU_ACTIONS = frozenset({"menu_study", "menu_gym", "menu_diet"})
+_CONVERSATION_MENU_ACTIONS = frozenset(
+    {"menu_study", "menu_gym", "menu_diet", "menu_weight"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +106,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/aiparse on|off</code> — Optional AI help reading meals (off by default)\n"
         "<code>/food</code> — Manage saved foods and portions\n"
         "<code>/recipe</code> — Manage saved recipes\n\n"
+        "<b>Weight</b>\n"
+        "<code>/weight</code> — Log today's weight (tap a number or type one)\n"
+        "<code>/weight 72.4</code> — Log it in one message\n"
+        "One entry per day; weighing again corrects the day. Missed days are "
+        "carried forward on the chart for up to 10 days.\n\n"
         "<b>Habits</b>\n"
         "<code>/habits</code> — Check off today's habits\n"
         "<code>/habits setup</code> — Add/remove habits\n\n"
@@ -117,6 +124,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/chart gym</code> — Gym volume chart\n"
         "<code>/chart diet</code> — Diet calories chart\n"
         "<code>/chart habits</code> — Habit heatmap (14 days)\n"
+        "<code>/chart weight</code> — Weight trend (30 days)\n"
         "<code>/streak</code> — Current habit streaks\n\n"
         "<b>Other</b>\n"
         "<code>/recent</code> — Your latest logged entries\n"

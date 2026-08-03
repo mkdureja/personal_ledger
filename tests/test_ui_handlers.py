@@ -322,6 +322,7 @@ async def test_weekly_habit_percentage_uses_lifecycle_adherence(user_id):
         get_diet_logs=AsyncMock(return_value=[]),
         # Period-aware adherence is computed in the DB layer now.
         get_habit_adherence=AsyncMock(return_value=(1, 7)),
+        get_weight_logs=AsyncMock(return_value=[]),
     )
     message = SimpleNamespace(reply_text=AsyncMock())
 

@@ -1,6 +1,6 @@
 # 📒 Ledger — Personal Logging Telegram Bot
 
-A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, and **Habits** with daily/weekly analytics, streak tracking, chart generation, and daily reminders.
+A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, **Weight**, and **Habits** with daily/weekly analytics, streak tracking, chart generation, and daily reminders.
 
 ## Features
 
@@ -9,10 +9,11 @@ A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, and **Habit
 | 📖 **Study** | Subject, duration (minutes), notes |
 | 🏋️ **Gym** | Exercise picked by muscle group, then one set at a time — each set keeps its own reps and weight |
 | 🍽️ **Diet** | Meal type, food items, calories, and protein/carbs/fat macros |
+| ⚖️ **Weight** | One body weight per day; missed days carry forward (up to 10) so the 7-day average stays readable |
 | ✅ **Habits** | Predefined habits, daily check-off, streaks |
 
 **Extras:**
-- 📊 Charts — Study hours, gym volume, calorie intake, habit heatmaps
+- 📊 Charts — Study hours, gym volume, calorie intake, weight trend, habit heatmaps
 - 🔥 Streaks — Consecutive-day tracking for habits
 - ⏰ Reminders — Daily evening nudge for unchecked habits, **opt-in per user**
 - 🌙 Routine — Optional log-aware anchor nudges + motivational quotes ([details](#routine--motivation))
@@ -274,6 +275,18 @@ each action's outcome is recorded once and replayed.
 | `/habits` | Today's habit checklist — each habit is one full-width button; tap its **name** to check or un-check |
 | `/habits setup` | Add/remove habits |
 
+### Weight
+| Command | Description |
+|---|---|
+| `/weight` | Prompt for today's weight — tap a number near your last one, or type an exact one |
+| `/weight 72.4` | Log it in a single message, with no flow to leave |
+
+One entry per calendar day: weighing again **corrects** the day rather than
+adding a second answer. Missing a day is expected — the chart and the 7-day
+average carry the last reading forward for up to **10 days**, then break the
+line rather than draw a flat one across a longer silence. A carried day is
+always drawn as a hollow dot, so it can never be mistaken for a day you weighed.
+
 ### Analytics
 | Command | Description |
 |---|---|
@@ -282,6 +295,7 @@ each action's outcome is recorded once and replayed.
 | `/chart study` | Study hours chart |
 | `/chart gym` | Gym volume chart |
 | `/chart diet` | Calorie intake chart |
+| `/chart weight` | 30-day weight trend with its 7-day rolling average |
 | `/chart habits` | 14-day habit heatmap |
 | `/streak` | Current habit streaks |
 
@@ -305,15 +319,17 @@ each action's outcome is recorded once and replayed.
 `hey`, `home`) all render the same surface, so there is nothing to remember:
 
 ```text
-[🍽️ Log meal]   [✅ Habits]
-[📖 Study]       [🏋️ Workout]
+[🍽️ Log meal]   [⚖️ Weight]
+[✅ Habits]      [💊 Supplements]
+[🏋️ Workout]     [📖 Study]
 [🗒️ Recent]      [📊 Analytics]
 ```
 
 During a guided log, every one of those entries preserves the draft and returns
 the finish-or-cancel hint instead of replacing the flow. Unrecognized idle text
 gets one short reply carrying the same buttons, rather than silence. Telegram's
-command picker lists the everyday four: `/home`, `/recent`, `/undo`, `/help`.
+command picker lists the everyday set: `/home`, `/weight`, `/recent`, `/undo`,
+`/help`.
 
 Reminders are **opt-in**: a newly authorized user receives no scheduled messages
 until they run `/reminders on`.

@@ -270,6 +270,119 @@ def diet_chart(
 
 
 # ---------------------------------------------------------------------------
+# Weight chart — measured points, carried points, and the 7-day average
+# ---------------------------------------------------------------------------
+def weight_chart(
+    entries: list[tuple[date, float]],
+    days: int = 30,
+    end_date: date | None = None,
+) -> io.BytesIO:
+    """Line chart: daily weight with its 7-day rolling average.
+
+    Three marks, and the distinction between the first two is the point of the
+    chart: a **filled dot** is a day the scale was actually read, a **hollow
+    dot** is a day carried forward from the last reading, and the **line** is
+    the rolling average. Drawing them identically would let a fortnight of
+    forward-fill read as a fortnight of stable weight.
+
+    Gap and fill rules come from :mod:`bot.weight_series`, so the picture and
+    every number quoted in text agree by construction.
+
+    Args:
+        entries: ``(day, weight_kg)`` pairs. May extend before the window — an
+            earlier weigh-in is what the first days carry — and need not be
+            sorted.
+    """
+    from . import weight_series
+
+    if end_date is None:
+        from .config import today_local
+        end_date = today_local()
+
+    start = end_date - timedelta(days=days - 1)
+    series = weight_series.daily_series(entries, start, end_date)
+    averages = weight_series.rolling_average(series)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    _apply_theme(ax, fig)
+
+    measured = [(p.day, p.weight_kg) for p in series if p.measured]
+    carried = [
+        (p.day, p.weight_kg)
+        for p in series
+        if p.carried and p.weight_kg is not None
+    ]
+
+    if not measured and not carried:
+        ax.text(
+            0.5, 0.5,
+            "No weight logged in this window",
+            ha="center", va="center", color=_FG_COLOR, fontsize=14,
+            transform=ax.transAxes,
+        )
+        ax.axis("off")
+        return _to_buffer(fig)
+
+    # The average is plotted as a masked array so a break in the record leaves a
+    # break in the line rather than a straight segment bridging days that hold
+    # no data.
+    days_axis = [point.day for point in series]
+    masked_average = np.array(
+        [value if value is not None else np.nan for value in averages],
+        dtype=float,
+    )
+    ax.plot(
+        days_axis,
+        masked_average,
+        color="#00d2ff",
+        linewidth=2.4,
+        label="7-day average",
+        zorder=3,
+    )
+    if carried:
+        ax.scatter(
+            [day for day, _ in carried],
+            [value for _, value in carried],
+            s=26,
+            facecolors="none",
+            edgecolors="#a29bfe",
+            linewidths=1.2,
+            label="Carried forward",
+            zorder=4,
+        )
+    if measured:
+        ax.scatter(
+            [day for day, _ in measured],
+            [value for _, value in measured],
+            s=30,
+            color="#ffd93d",
+            label="Weighed",
+            zorder=5,
+        )
+
+    ax.set_ylabel("Weight (kg)")
+    ax.set_title(f"Weight — Last {days} Days")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    # An explicit day interval rather than AutoDateLocator: the automatic one
+    # cannot satisfy a tick budget over a range of only a few days and warns
+    # instead of choosing, which this project's warning-as-error test settings
+    # turn into a failure. Roughly eight labels reads well at this figure width.
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, round(days / 8))))
+    for label in ax.get_xticklabels():
+        label.set_rotation(45)
+        label.set_horizontalalignment("right")
+    ax.legend(
+        loc="best",
+        fontsize=8,
+        facecolor=_BG_COLOR,
+        edgecolor=_GRID_COLOR,
+        labelcolor=_FG_COLOR,
+    )
+
+    return _to_buffer(fig)
+
+
+# ---------------------------------------------------------------------------
 # Habits chart — grid/heatmap (14 days × habits)
 # ---------------------------------------------------------------------------
 def habits_chart(
