@@ -68,6 +68,52 @@ def test_named_portions_are_food_specific_and_exact() -> None:
         )
 
 
+def test_a_singular_portion_accepts_its_plural() -> None:
+    """Portions are named "scoop"; nobody types "2 scoop"."""
+    amount = resolve_food_base_amount(
+        {"name": "Whey isolate", "base_unit": "piece"},
+        [{"name_key": "scoop", "base_amount": 1}],
+        parse_quantity(["2", "scoops"]),
+    )
+
+    assert amount == Decimal("2")
+
+
+@pytest.mark.parametrize(
+    "typed,defined",
+    [("bowls", "bowl"), ("cubes", "cube"), ("handfuls", "handful"), ("slices", "slice")],
+)
+def test_the_plural_retry_covers_the_portions_actually_in_use(typed, defined) -> None:
+    amount = resolve_food_base_amount(
+        {"name": "Thing", "base_unit": "g"},
+        [{"name_key": defined, "base_amount": 40}],
+        parse_quantity(["3", typed]),
+    )
+
+    assert amount == Decimal("120")
+
+
+def test_an_exact_portion_name_always_wins_over_the_plural_retry() -> None:
+    """A portion deliberately named "chips" must not become "chip"."""
+    amount = resolve_food_base_amount(
+        {"name": "Snack", "base_unit": "g"},
+        [{"name_key": "chips", "base_amount": 30}, {"name_key": "chip", "base_amount": 2}],
+        parse_quantity(["1", "chips"]),
+    )
+
+    assert amount == Decimal("30")
+
+
+def test_the_plural_retry_does_not_invent_a_portion() -> None:
+    """Stripping an "s" must not turn an unknown word into a match."""
+    with pytest.raises(NutritionError, match="Unknown portion"):
+        resolve_food_base_amount(
+            {"name": "Whey isolate", "base_unit": "piece"},
+            [{"name_key": "scoop", "base_amount": 1}],
+            parse_quantity(["2", "sccops"]),
+        )
+
+
 def test_cross_dimension_conversion_is_rejected() -> None:
     quantity = parse_quantity(["220ml"])
 

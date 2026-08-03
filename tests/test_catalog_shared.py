@@ -32,6 +32,38 @@ async def test_seed_is_idempotent(seeded):
     assert (await cursor.fetchone())["n"] == len(CATALOG_FOODS)
 
 
+async def test_the_branded_items_resolve_at_their_declared_values(seeded):
+    """Pack values, typed the way each product is actually measured.
+
+    Both are branded rows whose numbers come from a label rather than a public
+    average, so a silent edit here would put wrong macros under real meals.
+    """
+    bread = (await seeded.search_catalog("protein bread"))[0]
+    entry = resolve_catalog_food_entry(
+        bread, await seeded.get_catalog_portions(bread["id"]), ["100", "g"]
+    )
+    assert (entry.calories, entry.protein_g, entry.carbs_g, entry.fat_g) == (
+        235, 18.4, 40.7, 2.0
+    )
+
+    whey = (await seeded.search_catalog("whey isolate"))[0]
+    portions = await seeded.get_catalog_portions(whey["id"])
+    one = resolve_catalog_food_entry(whey, portions, ["1", "scoop"])
+    assert (one.calories, one.protein_g, one.carbs_g, one.fat_g) == (
+        135, 30.0, 1.5, 0.6
+    )
+    # The daily case: more than one scoop, typed as a plural.
+    two = resolve_catalog_food_entry(whey, portions, ["2", "scoops"])
+    assert (two.calories, two.protein_g) == (270, 60.0)
+
+
+async def test_a_generic_bread_query_offers_both_rather_than_guessing(seeded):
+    """Adding a branded bread must not silently capture "bread"."""
+    names = {row["name"] for row in await seeded.search_catalog("bread")}
+
+    assert {"Bread slice", "Protein Chef protein bread"} <= names
+
+
 async def test_search_matches_name_prefix_and_alias(seeded):
     by_name = await seeded.search_catalog("app")
     assert any(r["name"] == "Apple" for r in by_name)

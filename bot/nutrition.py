@@ -11,7 +11,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 
 MAX_CATALOG_NAME_LENGTH = 100
@@ -332,6 +332,42 @@ def _decimal_value(value: object, field_name: str, *, positive: bool) -> Decimal
     return number
 
 
+def _match_portion(
+    portions: Sequence[Mapping[str, Any]], unit_key: str
+) -> Mapping[str, Any] | None:
+    """Find a named portion, accepting the plural of a singular definition.
+
+    Portions are defined in the singular ("scoop", "bowl", "cube") because that
+    is how you name a thing — but nobody types "2 scoop". Only the standard
+    units carry plural aliases, so every custom portion used to refuse the most
+    natural way to ask for more than one of it.
+
+    The exact key always wins, so a portion deliberately named "chips" is never
+    reinterpreted as "chip". The retry is a single naive de-pluralization,
+    matching the same fallback the catalog name search uses; it is a convenience
+    on top of an exact match, not a stemmer.
+    """
+    exact = next(
+        (
+            row
+            for row in portions
+            if str(row.get("name_key", "")).casefold() == unit_key
+        ),
+        None,
+    )
+    if exact is not None or not unit_key.endswith("s"):
+        return exact
+    singular = unit_key[:-1]
+    return next(
+        (
+            row
+            for row in portions
+            if str(row.get("name_key", "")).casefold() == singular
+        ),
+        None,
+    )
+
+
 def resolve_food_base_amount(
     food: Mapping[str, object],
     portions: Sequence[Mapping[str, object]],
@@ -376,14 +412,7 @@ def resolve_food_base_amount(
             )
         return resolved
 
-    portion = next(
-        (
-            row
-            for row in portions
-            if str(row.get("name_key", "")).casefold() == quantity.unit_key
-        ),
-        None,
-    )
+    portion = _match_portion(portions, quantity.unit_key)
     if portion is None:
         raise NutritionError(
             f"Unknown portion '{quantity.unit}' for {food.get('name', 'this food')}."

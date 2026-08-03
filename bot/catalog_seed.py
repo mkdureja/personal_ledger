@@ -14,7 +14,7 @@ Bump ``CATALOG_REVISION`` when values change; ``seed_catalog`` upserts by
 from __future__ import annotations
 
 CATALOG_PROVIDER = "curated"
-CATALOG_REVISION = "2026.2"
+CATALOG_REVISION = "2026.3"
 
 
 def _food(fid, name, unit, basis, cal, p, c, f, *, category=None, portions=None, aliases=None):
@@ -68,4 +68,18 @@ CATALOG_FOODS: list[dict] = [
           portions=[{"name": "handful", "base_amount": 28}], aliases=["badam"]),
     _food("peanut-butter", "Peanut butter", "g", 100, 588, 25, 20, 50, category="spread",
           portions=[{"name": "tbsp", "base_amount": 16}]),
+    # Branded household items. Unlike the generic rows above, these carry a
+    # manufacturer's declared values from the pack rather than a public average,
+    # so they are exact for this product and meaningless for any other.
+    _food("protein-chef-bread", "Protein Chef protein bread", "g", 100,
+          235, 18.4, 40.7, 2, category="grain", aliases=["protein bread"]),
+    # Per *scoop*, which is the only measure the tub gives. 'piece' is the base
+    # unit because the accepted set is g/ml/piece — one piece is one scoop — and
+    # the named portion below is what makes "1 scoop" resolve. Without the
+    # scoop's weight in grams there is nothing to convert to, and inventing one
+    # would put a made-up number under every protein total.
+    _food("whey-isolate-wellbeing", "Wellbeing whey isolate", "piece", 1,
+          135, 30, 1.5, 0.6, category="protein",
+          portions=[{"name": "scoop", "base_amount": 1}],
+          aliases=["whey isolate", "whey"]),
 ]
