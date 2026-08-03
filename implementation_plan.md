@@ -74,8 +74,10 @@ This plan replaces the old phase roadmap that previously occupied
 `implementation_plan.md`, and absorbs the reviewed Codex artifact that briefly
 lived at `impl_plan_codex.md`. Both predecessors remain recoverable from Git at
 `16d1f3a`. This file is the single roadmap; there is no second plan file to edit.
-See [review_codex.md](review_codex.md) for the evidence and rationale, including
-its second-pass addendum covering deployment safety, CI, and branch state.
+The Codex review that supplied the evidence and rationale — including its
+second-pass addendum covering deployment safety, CI, and branch state — lived at
+`review_codex.md` until it was answered in full and removed; recover it with
+`git show 607f67b:review_codex.md`.
 
 ## Current baseline
 
@@ -245,7 +247,8 @@ key-recovery method are chosen.
 - The superseded `claude_response.md`,
   `docs/tap_first_nutrition_upgrade_proposal.md`, and `impl_plan_codex.md` have
   been removed after the cleanup decision; Git preserves their history.
-- `review_codex.md` is tracked as the evidence record for this roadmap.
+- `review_codex.md` was the evidence record for this roadmap. Every point in it
+  was answered, so it was removed too (`git show 607f67b:review_codex.md`).
 
 ### 0.3 Align privacy claims with diagnostic output
 
