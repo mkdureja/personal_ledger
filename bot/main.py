@@ -72,6 +72,7 @@ from .handlers.diet import (
     stale_phase1_diet_callback,
     stale_receipt_callback,
 )
+from .handlers.keep_food import keep_food_handler
 from .handlers.receipts import RECEIPT_UNDO_PATTERN, undo_from_receipt
 from .handlers.catalog import food_command, recipe_command
 from .handlers.describe import (
@@ -487,6 +488,11 @@ def build_application(*, register_commands: bool = False) -> Application:
     # Withdrawing a suggestion is the same shape of control: it belongs to a
     # receipt that outlives its flow, and it touches no conversation state.
     application.add_handler(withdraw_suggestion_handler)
+    # Keeping a typed entry as a saved food is a third: it writes to the food
+    # catalog, never to the meal, so it stays valid long after the Diet flow that
+    # offered it has timed out. Registered after diet_conv_handler, which lets an
+    # unmatched callback fall through while the flow is still open.
+    application.add_handler(keep_food_handler)
     # Remaining receipt controls (Use current values, or Log another while a Diet
     # flow owns the update) and revisioned base-36 diet families are retired
     # inertly (answer + retire markup, no DB). Registered before the legacy stale

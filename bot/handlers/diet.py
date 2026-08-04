@@ -11,6 +11,7 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
+from typing import Mapping, Sequence
 
 from telegram import Update
 from telegram.error import TelegramError
@@ -51,6 +52,7 @@ from .receipts import (
     RECEIPT_MORE_PATTERN,
     send_meal_receipt,
 )
+from .keep_food import keep_food_offers
 from .catalog import (
     resolve_catalog_diet_entry,
     resolve_catalog_food_entry,
@@ -852,7 +854,7 @@ async def _finish_structured_meal(
     """
     db = context.bot_data["db"]
     meal_type = context.user_data["diet_meal_type"]
-    await db.log_diet_with_items(
+    meal_id = await db.log_diet_with_items(
         update.effective_user.id, meal_type, items, source=mutation_source(update)
     )
     totals = _meal_totals(items)
@@ -870,7 +872,9 @@ async def _finish_structured_meal(
         )
     except TelegramError:
         logger.warning("Could not deliver diet confirmation", exc_info=True)
-    return await _offer_log_another(update, context, update.effective_message)
+    return await _offer_log_another(
+        update, context, update.effective_message, meal_id=meal_id, items=items
+    )
 
 
 async def _save_diet(
@@ -2928,7 +2932,7 @@ async def _persist_draft(
     # the draft and its Save/Add/Cancel controls intact for a retry instead of
     # stranding the conversation. A successful commit is the point of no return.
     try:
-        await db.log_diet_with_items(
+        meal_id = await db.log_diet_with_items(
             update.effective_user.id,
             meal_type,
             items,
@@ -2972,26 +2976,48 @@ async def _persist_draft(
         )
     except TelegramError:
         logger.warning("Could not deliver diet confirmation", exc_info=True)
-    return await _offer_log_another(update, context, query.message)
+    return await _offer_log_another(
+        update, context, query.message, meal_id=meal_id, items=items
+    )
 
 
 async def _offer_log_another(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     message: object,
+    *,
+    meal_id: int | None = None,
+    items: Sequence[Mapping[str, object]] = (),
 ) -> int:
     """After a save, keep the flow open with a one-tap 'Log another' / 'Done'.
 
     Clears the finished meal's data but leaves the conversation active; the
     normal 300s idle timeout closes it when the user stops logging.
+
+    A typed item of the meal just saved also gets a 💾 row here, because this is
+    the one place where its name and its complete nutrition are both already
+    known — see :mod:`bot.handlers.keep_food`. Building the offers must not be
+    able to cost the user their keyboard, so a failed read degrades to the plain
+    two-button version rather than propagating.
     """
+    uid = update.effective_user.id
+    keepable: list[tuple[int, str]] = []
+    if meal_id is not None and items:
+        try:
+            keepable = await keep_food_offers(context.bot_data["db"], uid, items)
+        except Exception:
+            logger.warning("Could not build keep-food offers", exc_info=True)
     _clear_diet_entry_data(context)
     prompt = await _send_tap_keyboard(
         update,
         context,
         message,
         "➕ Log another meal?",
-        log_another_keyboard(update.effective_user.id),
+        log_another_keyboard(
+            uid,
+            meal_id=meal_id if keepable else None,
+            keepable=keepable,
+        ),
     )
     return LOG_ANOTHER if prompt is not None else ConversationHandler.END
 

@@ -107,6 +107,36 @@ The numbers come from one of two places, and the app never estimates them:
 A definition saved before this rule that is still missing a macro is reported as
 "not logged" with the reason, rather than being logged with a hole in it.
 
+### Keeping what you typed
+
+Typing a meal is the escape hatch for everything the ledger does not already
+know, and it costs a name plus four numbers *every* time — which is why an empty
+food list is the single largest source of friction here. `bot/handlers/keep_food.py`
+closes the loop at the one moment it is cheap: the meal is saved, so the
+nutrition is known to be complete, and the name is still on screen.
+
+```
+✅ Saved · Lunch · Rajma chawal · 520 cal
+
+➕ Log another meal?
+  [💾 Save “Rajma chawal”]
+  [🍽️ Log another] [✅ Done]
+```
+
+One tap writes a private food defined as **one helping** — `base_unit="piece"`,
+`basis_amount=1` — plus a `portion` portion and that same `1 portion` as the
+stored usual, which is what promotes it to a one-tap ⚡ row in the picker. A gram
+weight is deliberately *not* invented: nobody supplied one, and guessing it would
+make every future log from that food quietly wrong.
+
+The button is registered outside every `ConversationHandler`, alongside targeted
+meal Undo and suggestion Withdraw — the keyboard outlives the flow that drew it,
+and a control that goes inert on timeout looks broken. Nothing large rides in the
+callback: it names a meal id and an item position, and both the name and the four
+nutrients are read back from `diet_log_items` at tap time. An existing food of the
+same name suppresses the offer and is re-checked at the tap, so a second press
+reports rather than overwrites.
+
 ### Meal shortcuts
 
 The picker already learns: `bot/suggestions.py` weights same-meal-type frequency

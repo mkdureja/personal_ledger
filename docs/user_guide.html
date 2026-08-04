@@ -1001,6 +1001,24 @@ DB_PATH=ledger.db</code></pre>
     </div>
 
     <div class="box box-info no-break">
+        <div class="box-title">💾 Keep what you typed</div>
+        <p>When a meal you typed out is saved, the <em>Log another meal?</em> keyboard
+        carries an extra row — <strong>💾 Save “&lt;name&gt;”</strong> — for each typed item
+        that isn't already one of your foods. One tap turns it into a saved food priced
+        at exactly what you just logged, so the second time costs a tap instead of a
+        name and four numbers.</p>
+        <p>The food is defined as <strong>one helping</strong>: <code>1 portion</code>
+        buys the calories and macros you entered, <code>2 portions</code> buys double.
+        No gram weight is invented, because you never gave one — if you want the food
+        measured by weight instead, save it yourself with
+        <code>/food add</code>. That portion is also stored as your usual amount, which
+        is what makes the food a one-tap ⚡ row in the meal picker afterwards.</p>
+        <p>Nothing about the meal changes: this only writes to your food list. The button
+        keeps working after the flow times out, and it is never offered for a name you
+        have already saved — it will not overwrite an existing food.</p>
+    </div>
+
+    <div class="box box-info no-break">
         <div class="box-title">⚖️ Macro Tracking</div>
         <p>Macros are required and measured in grams. Quick logs use all three case-insensitive labels <code>p=</code>, <code>c=</code>, and <code>f=</code> together with calories; guided logs take the three values in protein/carbs/fat order. Because every meal carries them, daily and weekly totals are complete rather than "known values only". Entries made before this rule may still be partial, and summaries continue to flag those honestly.</p>
     </div>
@@ -1015,7 +1033,7 @@ DB_PATH=ledger.db</code></pre>
 <span class="cmd-prefix">/food show</span> apple
 <span class="cmd-prefix">/food remove</span> apple</code></pre>
 
-    <p>At least one of <code>kcal=</code>, <code>p=</code>, <code>c=</code>, or <code>f=</code> is required. Saving an existing key replaces its nutrition profile, so omitted nutrients become unknown. A named portion is specific to its food: for example, <code>medium=182g</code> belongs to the saved apple definition.</p>
+    <p>All four of <code>kcal=</code>, <code>p=</code>, <code>c=</code>, and <code>f=</code> are required — a saved food is a definition every future log inherits, so a gap in it becomes a gap in every meal that uses it. Use <code>0</code> for a nutrient the label really shows as zero. Saving an existing key replaces its nutrition profile. A named portion is specific to its food: for example, <code>medium=182g</code> belongs to the saved apple definition.</p>
 
     <pre><code><span class="cmd-prefix">/recipe add</span> chicken-curry yield=4serving
 <span class="cmd-prefix">/recipe ingredient</span> chicken-curry food:chicken 500 g

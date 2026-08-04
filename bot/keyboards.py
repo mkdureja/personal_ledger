@@ -5,6 +5,7 @@ Reusable InlineKeyboard builders for Ledger bot.
 from __future__ import annotations
 
 from datetime import date
+from typing import Sequence
 
 from telegram import (
     InlineKeyboardButton,
@@ -13,7 +14,7 @@ from telegram import (
     ReplyKeyboardRemove,
 )
 
-from .callback_data import to_base36
+from .callback_data import parse_base36, to_base36
 from .nutrition import NutritionError, format_decimal
 from .weight_series import format_kg, nudge_values
 
@@ -654,18 +655,93 @@ def diet_save_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
-def log_another_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """After a save, offer to keep logging or finish the diet flow."""
-    return InlineKeyboardMarkup(
-        [
+#: Callback prefix for "keep this typed entry as a saved food". Its own family,
+#: outside the ``d*`` diet-tap shapes, because the button outlives the flow that
+#: drew it and must not be retired by a stale-diet-tap handler.
+KEEP_FOOD_PREFIX = "kf"
+
+#: A keep-food label is mostly decoration, so the name gets a tighter budget than
+#: a picker row — but never less than :data:`_MIN_NAME_CHARS`.
+_KEEP_FOOD_DECORATION = len("💾 Save “”")
+
+
+def keep_food_data(user_id: int, meal_id: int, item_order: int) -> str:
+    """Encode "save item N of meal M" as ``kf_<owner36>_<meal36>_<order36>``.
+
+    The item is named by position rather than by value: the name and all four
+    nutrients are read back from ``diet_log_items`` at tap time, so nothing large
+    has to survive in a 64-byte callback and a restart cannot change what the
+    button means.
+    """
+    return (
+        f"{KEEP_FOOD_PREFIX}_{to_base36(user_id)}"
+        f"_{to_base36(int(meal_id))}_{to_base36(int(item_order))}"
+    )
+
+
+def parse_keep_food(data: str, user_id: int) -> tuple[int, int] | None:
+    """Decode a ``kf_*`` callback to ``(meal_id, item_order)``, or ``None``.
+
+    ``None`` covers every rejection — malformed payload, non-canonical base-36,
+    another household member's button — so the caller answers all of them with
+    one message and reveals nothing about which it was.
+    """
+    parts = (data or "").split("_")
+    if len(parts) != 4 or parts[0] != KEEP_FOOD_PREFIX:
+        return None
+    try:
+        owner = parse_base36(parts[1])
+        meal_id = parse_base36(parts[2])
+        item_order = parse_base36(parts[3])
+    except (TypeError, ValueError):
+        return None
+    if owner != user_id or meal_id <= 0:
+        return None
+    return meal_id, item_order
+
+
+def log_another_keyboard(
+    user_id: int,
+    *,
+    meal_id: int | None = None,
+    keepable: Sequence[tuple[int, str]] = (),
+) -> InlineKeyboardMarkup:
+    """After a save, offer to keep logging or finish the diet flow.
+
+    ``keepable`` adds one 💾 row per typed item of the meal just saved that is
+    not already a saved food — the moment its nutrition is known and the name is
+    still on screen is the only cheap moment to offer this. The rows come first
+    because the Log another / Done pair is the habitual tap and would otherwise
+    move under a new row the user did not expect.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if meal_id is not None:
+        rows.extend(
             [
                 InlineKeyboardButton(
-                    "🍽️ Log another", callback_data=f"dmore_{user_id}_yes"
-                ),
-                InlineKeyboardButton("✅ Done", callback_data=f"dmore_{user_id}_no"),
+                    "💾 Save “"
+                    + _button_label(
+                        name,
+                        max(
+                            _MAX_BUTTON_LABEL - _KEEP_FOOD_DECORATION,
+                            _MIN_NAME_CHARS,
+                        ),
+                    )
+                    + "”",
+                    callback_data=keep_food_data(user_id, meal_id, item_order),
+                )
             ]
+            for item_order, name in keepable
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🍽️ Log another", callback_data=f"dmore_{user_id}_yes"
+            ),
+            InlineKeyboardButton("✅ Done", callback_data=f"dmore_{user_id}_no"),
         ]
     )
+    return InlineKeyboardMarkup(rows)
 
 
 def meal_receipt_keyboard(
