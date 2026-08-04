@@ -1200,6 +1200,44 @@ async def _migration_0013_weight_logs(conn: aiosqlite.Connection) -> None:
     # index is created here.
 
 
+async def _migration_0014_app_suggestions(conn: aiosqlite.Connection) -> None:
+    """What the people using this bot think it should do next.
+
+    Every other table here records something that happened to a user. This one
+    records something they want from the *app*, which makes it the only table
+    whose reader is a maintainer rather than a chart. That difference decides
+    its shape:
+
+    * The text is stored verbatim. A suggestion is an opinion, and parsing one
+      into fields would be deciding in advance which kinds of opinion are
+      expressible.
+    * There is no status, priority, or assignee column. Two people use this
+      bot; a workflow nobody runs is a column that goes stale and then lies.
+      Whether a suggestion was acted on is answered by the app changing.
+    * Nothing cascades and nothing else references it. A suggestion is not part
+      of anyone's ledger, so deleting one leaves no hole in any total.
+
+    A single index on ``(user_id, id DESC)`` serves the only read the bot makes
+    — this user's most recent few — while the maintainer's read is a full scan
+    of a table that will hold tens of rows.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_suggestions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            suggestion TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_app_suggestions_user "
+        "ON app_suggestions(user_id, id DESC)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1214,6 +1252,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     11: _migration_0011_gym_sets_and_exercises,
     12: _migration_0012_meal_shortcuts,
     13: _migration_0013_weight_logs,
+    14: _migration_0014_app_suggestions,
 }
 
 

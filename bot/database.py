@@ -178,6 +178,27 @@ MAX_SUPPLEMENT_NAME_LENGTH = 50
 MAX_DOSE_TEXT_LENGTH = 30
 MAX_DOSE_AMOUNT = 10_000.0
 MAX_ACTIVE_SUPPLEMENTS = 49
+#: A suggestion is a paragraph, not an essay. Long enough for someone to explain
+#: what they want and why, bounded so one message cannot fill the table — and
+#: comfortably under Telegram's own 4096-character message limit, so the refusal
+#: is about length rather than about a truncated send.
+MAX_SUGGESTION_LENGTH = 1000
+
+
+def _validated_suggestion(value: str) -> str:
+    """Trim a suggestion and refuse an empty or over-long one.
+
+    The text is otherwise left exactly as typed: it is somebody's words about
+    the app, and normalizing case or punctuation would edit an opinion.
+    """
+    text = (value or "").strip()
+    if not text:
+        raise ValueError("A suggestion needs some text")
+    if len(text) > MAX_SUGGESTION_LENGTH:
+        raise ValueError(
+            f"A suggestion must be at most {MAX_SUGGESTION_LENGTH} characters"
+        )
+    return text
 
 # ---------------------------------------------------------------------------
 # Schema DDL and migrations now live in bot/migrations.py, keyed on
@@ -2090,6 +2111,91 @@ class DatabaseManager:
             cursor = await self.conn.execute(
                 "DELETE FROM weight_logs WHERE user_id = ? AND log_date = ?",
                 (user_id, log_date.isoformat()),
+            )
+            return bool(cursor.rowcount)
+
+    # -------------------------------------------------------------------
+    # App suggestions — what the people using this want changed
+    # -------------------------------------------------------------------
+    # The only thing stored here that is not a record of the user's life. It is
+    # addressed to whoever maintains the bot, so it is deliberately not part of
+    # any total, streak, or chart: a suggestion cannot affect what a day looks
+    # like in the ledger.
+    async def add_app_suggestion(
+        self,
+        user_id: int,
+        suggestion: str,
+        *,
+        source: MutationSource | None = None,
+    ) -> int:
+        """Store one suggestion and return its id.
+
+        ``source`` makes the write idempotent the same way a meal's is: a
+        redelivered update after a restart returns the original id rather than
+        filing the same idea twice.
+        """
+        text = _validated_suggestion(suggestion)
+        async with self._write_operation(begin_immediate=True):
+            replayed = await self._replayed_entity_id(
+                source, user_id, "app_suggestion"
+            )
+            if replayed is not None:
+                return replayed
+            cursor = await self.conn.execute(
+                "INSERT INTO app_suggestions (user_id, suggestion, created_at) "
+                "VALUES (?, ?, ?)",
+                (user_id, text, _utc_timestamp_now()),
+            )
+            row_id: int = cursor.lastrowid  # type: ignore[assignment]
+            if source is not None:
+                await self._record_receipt(
+                    source, user_id, "app_suggestion", "suggestion", row_id
+                )
+            return row_id
+
+    async def get_app_suggestions(
+        self, user_id: int | None = None, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Suggestions, newest first.
+
+        ``user_id`` omitted reads every user's — the maintainer's view, which
+        has no owner to scope to. The bot itself always passes one, so no
+        handler can render another person's words by forgetting an argument.
+        """
+        bounded = max(1, int(limit))
+        if user_id is None:
+            rows = await self._query_all(
+                "SELECT id, user_id, suggestion, created_at FROM app_suggestions "
+                "ORDER BY id DESC LIMIT ?",
+                (bounded,),
+            )
+        else:
+            rows = await self._query_all(
+                "SELECT id, user_id, suggestion, created_at FROM app_suggestions "
+                "WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                (user_id, bounded),
+            )
+        return [dict(row) for row in rows]
+
+    async def count_app_suggestions(self, user_id: int) -> int:
+        """How many suggestions this user has sent."""
+        row = await self._query_one(
+            "SELECT COUNT(*) AS total FROM app_suggestions WHERE user_id = ?",
+            (user_id,),
+        )
+        return int(row["total"]) if row is not None else 0
+
+    async def delete_app_suggestion(self, user_id: int, suggestion_id: int) -> bool:
+        """Remove one of *this user's* suggestions. ``True`` if a row went.
+
+        The owner is part of the WHERE clause rather than checked beforehand, so
+        a mis-addressed button deletes nothing instead of deleting somebody
+        else's row.
+        """
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "DELETE FROM app_suggestions WHERE id = ? AND user_id = ?",
+                (suggestion_id, user_id),
             )
             return bool(cursor.rowcount)
 

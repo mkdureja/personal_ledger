@@ -1141,6 +1141,66 @@ def weight_entry_keyboard(
     return InlineKeyboardMarkup(rows) if rows else None
 
 
+# ---------------------------------------------------------------------------
+# App-suggestion receipt
+# ---------------------------------------------------------------------------
+# "Suggestion" already means a ranked food row elsewhere in this module
+# (``SUGGESTION_PAGE_SIZE``, ``paginate_choices``). Everything to do with a
+# suggestion *about the app* carries the ``app_`` qualifier, here and in the
+# database layer, so the two never read as the same thing.
+#
+#: Callback prefix for withdrawing a filed suggestion. Its own family, distinct
+#: from ``sc_`` (shortcuts) and ``supp_`` (supplements), so no pattern can route
+#: a tap into the wrong table.
+APP_SUGGESTION_PREFIX = "sug"
+
+
+def app_suggestion_remove_data(user_id: int, suggestion_id: int) -> str:
+    """Encode "withdraw this suggestion" as ``sug_x_<user>_<id>``."""
+    return f"{APP_SUGGESTION_PREFIX}_x_{user_id}_{int(suggestion_id)}"
+
+
+def parse_app_suggestion_remove(data: str, user_id: int) -> int | None:
+    """Decode a ``sug_x_*`` callback, or ``None`` if it is not this user's.
+
+    The owner is carried in the payload and matched here so that a button
+    rendered for one household member cannot be acted on by the other; the
+    delete itself is scoped by owner again in SQL.
+    """
+    parts = (data or "").split("_")
+    if len(parts) != 4 or parts[0] != APP_SUGGESTION_PREFIX or parts[1] != "x":
+        return None
+    try:
+        owner = int(parts[2])
+        suggestion_id = int(parts[3])
+    except ValueError:
+        return None
+    if owner != user_id or suggestion_id <= 0:
+        return None
+    return suggestion_id
+
+
+def app_suggestion_receipt_keyboard(
+    user_id: int, suggestion_id: int
+) -> InlineKeyboardMarkup:
+    """The one control a filed suggestion needs: take it back.
+
+    Offered because a suggestion is sent in one shot with no confirmation step —
+    the price of that speed is that a half-finished thought can land, and the
+    person who sent it should be able to remove it themselves.
+    """
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🗑 Withdraw",
+                    callback_data=app_suggestion_remove_data(user_id, suggestion_id),
+                )
+            ]
+        ]
+    )
+
+
 def habit_setup_keyboard(
     habits: list[dict],
     user_id: int,

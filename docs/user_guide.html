@@ -1656,6 +1656,39 @@ DB_PATH=ledger.db</code></pre>
     separate from your spouse’s. The routine schedule, shared food catalog, bot
     process, and host configuration are household-wide.</p>
 
+    <h3>/suggest — Tell the Bot What to Change</h3>
+    <p>Anything you send after <code>/suggest</code> is filed as a suggestion for whoever maintains this bot. It is not a log entry: it changes no total, no chart, and no streak.</p>
+    <p>• <code>/suggest let me log water</code> — files it in one message.<br>
+       • <code>/suggest</code> on its own — shows what you have already sent, then waits for your next message. Easier on a phone than typing the command and the thought together.</p>
+
+    <div class="chat no-break">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/suggest let me log water</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                💡 <strong>Noted.</strong><br>
+                <em>let me log water</em><br><br>
+                It goes to whoever maintains this bot. Nothing in your ledger changed.
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn">🗑 Withdraw</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="box box-info no-break">
+        <div class="box-title">💡 Worth knowing</div>
+        <p>• <strong>Every word after the command counts.</strong> Nothing is treated as a keyword — <code>/suggest list</code> files the word “list” as your suggestion, because guessing at subcommands would swallow a real one.</p>
+        <p>• <strong>Say it however you like.</strong> There is no format to follow, and the text is stored exactly as you wrote it, line breaks included (up to 1000 characters).</p>
+        <p>• <strong>🗑 Withdraw</strong> takes it back, at any time — it is your suggestion, not a log entry with a 24-hour window. The button only works for the person who sent it.</p>
+        <p>• <strong><code>/suggest</code> and <code>/suggestions</code> are different commands.</strong> The plural one, above, orders your food list; the singular one sends an idea about the bot.</p>
+    </div>
+
     <h3>/cancel — Abort Current Conversation</h3>
     <p>If you're in the middle of a guided log and want to stop, send <code>/cancel</code>. This works in every conversation flow (study, gym, diet, habit setup).</p>
 
@@ -1892,6 +1925,7 @@ DB_PATH=ledger.db</code></pre>
             <tr><td><code>/undo</code></td><td>Undo last log — preview, then confirm (within 24h)</td></tr>
             <tr><td><code>/reminders on|off</code></td><td>Turn your scheduled reminders on or off</td></tr>
             <tr><td><code>/suggestions on|off|reset</code></td><td>Personalized ordering of your saved items</td></tr>
+            <tr><td><code>/suggest &lt;idea&gt;</code></td><td>Send an idea about the bot itself (bare <code>/suggest</code> asks for it)</td></tr>
             <tr><td><code>/keyboard hide|show</code></td><td>Hide or restore the quick-action bar</td></tr>
             <tr><td><code>/settings</code></td><td>View your settings</td></tr>
             <tr><td><code>/cancel</code></td><td>Cancel current conversation</td></tr>

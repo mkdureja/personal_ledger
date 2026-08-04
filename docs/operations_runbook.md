@@ -205,9 +205,10 @@ pip install -r requirements-voice.txt   # then set VOICE_ENABLED=true and restar
 ## Phase 1 rollout flags (Home / fast logging)
 
 > **Schema note.** This section was written when the database was at
-> `user_version = 8`. Later work has migrated it forward to **13** (supplements
+> `user_version = 8`. Later work has migrated it forward to **14** (supplements
 > at v9, AI-parsing consent columns at v10, per-set gym logging at v11, meal
-> shortcuts at v12, daily weight at v13; `ledger_schema.LATEST_SCHEMA_VERSION`
+> shortcuts at v12, daily weight at v13, app suggestions at v14;
+> `ledger_schema.LATEST_SCHEMA_VERSION`
 > is the source of truth). Phase 1 itself still adds no migration and its flags
 > are unchanged — but **any binary predating v9 will refuse to start against the
 > current database**, by design, so the Release A rollback target below is no

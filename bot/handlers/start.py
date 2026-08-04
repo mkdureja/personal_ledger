@@ -131,6 +131,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/undo</code> — Delete last log entry (within 24h)\n"
         "<code>/reminders on|off</code> — Turn reminders on or off\n"
         "<code>/suggestions on|off|reset</code> — Personalized food ordering\n"
+        "<code>/suggest &lt;idea&gt;</code> — Tell me what this bot should do "
+        "differently (send <code>/suggest</code> alone to be asked for it)\n"
         "<code>/settings</code> — View your settings\n"
         "<code>/cancel</code> — Cancel current conversation\n"
         "<code>/home</code> — Today and actions\n"

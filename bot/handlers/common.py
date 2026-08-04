@@ -114,6 +114,7 @@ _CONVERSATION_LABELS = {
     "supplements": "supplement setup",
     "shortcuts": "meal shortcut setup",
     "weight": "a weigh-in",
+    "suggest": "a suggestion",
 }
 _CONVERSATION_DATA_KEYS = {
     "shortcuts": ("shortcut_meal",),

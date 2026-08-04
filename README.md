@@ -310,6 +310,7 @@ always drawn as a hollow dot, so it can never be mistaken for a day you weighed.
 | `/undo` | Undo last log — preview, then confirm (within 24h) |
 | `/reminders on\|off` | Turn your scheduled reminders on or off |
 | `/suggestions on\|off\|reset` | Personalized ordering of your saved items |
+| `/suggest <idea>` | Send an idea about the bot itself; bare `/suggest` asks for it |
 | `/keyboard hide\|show` | Hide or restore the quick-action bar |
 | `/settings` | View your settings (reminders, routine profile) |
 | `/cancel` | Cancel current conversation |
@@ -333,6 +334,24 @@ command picker lists the everyday set: `/home`, `/weight`, `/recent`, `/undo`,
 
 Reminders are **opt-in**: a newly authorized user receives no scheduled messages
 until they run `/reminders on`.
+
+### Suggestions about the bot
+
+`/suggest <idea>` files what a user thinks the app should do differently;
+`/suggest` alone shows what they have already sent and waits for the next
+message. **Everything after the command is the suggestion** — no word is
+reserved as a subcommand, because a capture command that silently swallows one
+phrasing is worse than one with no shortcuts, and the text is stored exactly as
+typed (up to 1000 characters).
+
+A suggestion is deliberately **not ledger data**: it joins no total, chart, or
+streak, and `/undo` does not reach it. The receipt carries 🗑 **Withdraw**, with
+no time limit, since withdrawing an opinion rewrites no history. Read them with
+`python -m scripts.list_suggestions` (add `--user <id>` or `--limit N`); it only
+ever issues SELECTs, so it is safe to run beside the live bot.
+
+Note the singular/plural split: `/suggest` sends an idea about the bot,
+`/suggestions` orders your food list.
 
 ## Routine & motivation
 
@@ -390,6 +409,7 @@ bot/
     ├── analytics.py # Summaries, charts, streaks
     ├── recent.py    # /recent reconciliation
     ├── settings.py  # /settings, /reminders opt-in
+    ├── suggest.py   # /suggest — ideas about the bot, not ledger data
     └── reminders.py # Daily reminder + routine anchor jobs
 
 ledger_schema.py     # Dependency-free schema contract (versions, required tables)
@@ -397,6 +417,7 @@ ledger_backup.py     # Dependency-free inspect/verify/online-backup functions
 
 scripts/
 ├── backup_db.py        # CLI over ledger_backup (create / --verify-only)
+├── list_suggestions.py # Read what /suggest has filed (maintainer view)
 └── send_bot_message.py # Manual allowlisted message helper
 
 docs/

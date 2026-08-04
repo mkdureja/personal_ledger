@@ -62,6 +62,7 @@ from .handlers.study import study_conv_handler
 from .handlers.gym import gym_conv_handler, stale_gym_callback
 from .handlers.shortcuts import shortcuts_conv_handler
 from .handlers.weight import stale_weight_callback, weight_conv_handler
+from .handlers.suggest import suggest_conv_handler, withdraw_suggestion_handler
 from .handlers.diet import (
     _DIET_PHASE1_CALLBACK_RE,
     _RECEIPT_CALLBACK_RE,
@@ -446,6 +447,9 @@ def build_application(*, register_commands: bool = False) -> Application:
     # reaches this conversation's entry point rather than menu_callback, which
     # cannot open a flow.
     application.add_handler(weight_conv_handler)
+    # Owns ``/suggest`` in both its forms, so the bare command can wait for the
+    # next message instead of demanding the whole thought on one line.
+    application.add_handler(suggest_conv_handler)
 
     # --- Simple command handlers ---
     application.add_handler(CommandHandler("start", start_command, filters=AUTH_FILTER))
@@ -480,6 +484,9 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(
         CallbackQueryHandler(undo_from_receipt, pattern=RECEIPT_UNDO_PATTERN)
     )
+    # Withdrawing a suggestion is the same shape of control: it belongs to a
+    # receipt that outlives its flow, and it touches no conversation state.
+    application.add_handler(withdraw_suggestion_handler)
     # Remaining receipt controls (Use current values, or Log another while a Diet
     # flow owns the update) and revisioned base-36 diet families are retired
     # inertly (answer + retire markup, no DB). Registered before the legacy stale
