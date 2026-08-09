@@ -1311,6 +1311,72 @@ async def _migration_0015_ai_parsing_tristate(conn: aiosqlite.Connection) -> Non
     await conn.execute("ALTER TABLE user_settings_new RENAME TO user_settings")
 
 
+async def _migration_0016_catalog_preferences(conn: aiosqlite.Connection) -> None:
+    """Let a shared catalog food carry a usual amount, a pin, and a hide.
+
+    ``user_food_preferences`` has always been restricted to ``food`` and
+    ``recipe``. The effect was that the *shared* half of the food data was
+    second-class: rice and roti exist as one catalog row each, visible to both
+    users, but neither user could store "my usual is one bowl" against them, and
+    a source with no usual amount can never render as a ``⚡`` one-tap row. The
+    only way to get a one-tap staple was therefore to make a private copy of
+    something the catalog already had — the app was routing people into
+    duplicating its own shared data.
+
+    Nothing about ownership changes. The catalog row stays shared and unowned;
+    the *preference* is per user, as it already was, so two people can keep
+    different usual amounts for the same rice without either seeing the other's.
+    ``meal_shortcuts`` (v12) already accepts ``catalog`` for exactly this reason,
+    which is what made the restriction here look like an oversight rather than a
+    rule.
+
+    SQLite cannot widen a CHECK in place, so the table is rebuilt. Existing rows
+    are copied unchanged.
+    """
+    cursor = await conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'user_food_preferences'"
+    )
+    row = await cursor.fetchone()
+    if row is None:  # pragma: no cover - v7 guarantees the table
+        return
+    if "'catalog'" in str(row["sql"]):
+        return  # already widened
+
+    await conn.execute(
+        """
+        CREATE TABLE user_food_preferences_new (
+            user_id      INTEGER NOT NULL,
+            source_type  TEXT NOT NULL
+                            CHECK(source_type IN ('food', 'recipe', 'catalog')),
+            source_id    INTEGER NOT NULL,
+            is_pinned    INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0, 1)),
+            hidden       INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN (0, 1)),
+            default_amount REAL,
+            default_unit   TEXT,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, source_type, source_id),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO user_food_preferences_new (
+            user_id, source_type, source_id, is_pinned, hidden,
+            default_amount, default_unit, updated_at
+        )
+        SELECT user_id, source_type, source_id, is_pinned, hidden,
+               default_amount, default_unit, updated_at
+        FROM user_food_preferences
+        """
+    )
+    await conn.execute("DROP TABLE user_food_preferences")
+    await conn.execute(
+        "ALTER TABLE user_food_preferences_new RENAME TO user_food_preferences"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1327,6 +1393,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     13: _migration_0013_weight_logs,
     14: _migration_0014_app_suggestions,
     15: _migration_0015_ai_parsing_tristate,
+    16: _migration_0016_catalog_preferences,
 }
 
 

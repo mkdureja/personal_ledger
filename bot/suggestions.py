@@ -102,8 +102,11 @@ def annotate_defaults(
       half-stored default is neither usable nor absent; it must surface as
       needing repair rather than silently doing nothing.
 
-    Schema v8 has no catalog preferences, so a shared catalog row is never
-    annotated — it cannot be an instant row in this release.
+    Catalog rows are annotated too, as of schema v16. Before that the preference
+    table's CHECK could not hold one, which meant a shared staple could never be
+    an instant row and the only way to get one was a private copy of something
+    the catalog already had. The row stays shared; the usual amount stays this
+    user's.
     """
     annotated: list[dict] = []
     for choice in choices:
@@ -111,7 +114,7 @@ def annotate_defaults(
         enriched["default"] = None
         enriched["needs_repair"] = False
         source_type = choice.get("source_type")
-        if source_type in ("food", "recipe"):
+        if source_type in ("food", "recipe", "catalog"):
             row = preferences.get((source_type, choice.get("id"))) or {}
             amount = row.get("default_amount")
             unit = row.get("default_unit")

@@ -287,6 +287,17 @@ recipe is a combination and stores *no* nutrition at all — it is calculated fr
 its ingredients every time. So every ingredient must already exist as one of that
 user's saved foods, and a shared-catalog entry cannot be an ingredient.
 
+**Private food or shared catalog?** Staples do not need a private copy. Rice,
+roti, milk and the rest are single rows in the shared catalog that both users
+resolve from, and since schema v16 a catalog row can carry your **usual amount,
+a pin, and a hide** — which is what makes it a ⚡ one-tap row. The row stays
+shared and the preference stays yours: two people can keep different usual
+amounts against the same rice without either seeing the other's, and there is
+still exactly one definition underneath.
+
+Keep a **private food** for what the catalog does not have, for anything that
+has to be a recipe ingredient, and for things only one of you eats.
+
 ### Adding foods from this machine
 
 Building the first dozen staples is a form-shaped job, not a chat-shaped one:

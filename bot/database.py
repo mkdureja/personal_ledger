@@ -2239,20 +2239,35 @@ class DatabaseManager:
         hidden: bool | None = None,
     ) -> None:
         """Upsert a source's pin/hide flags. Enforces mutual exclusivity and active sources."""
-        if source_type not in ("food", "recipe"):
+        if source_type not in ("food", "recipe", "catalog"):
             raise ValueError(f"Unknown source_type {source_type!r}")
         async with self._write_operation():
             await self._assert_source_not_cross_owner(user_id, source_type, source_id)
             
             if is_pinned or hidden:
-                table = "foods" if source_type == "food" else "recipes"
-                cursor = await self.conn.execute(
-                    f"SELECT is_active, user_id FROM {table} WHERE id = ?",
-                    (source_id,)
-                )
-                row = await cursor.fetchone()
-                if not row or not row["is_active"] or row["user_id"] != user_id:
-                    raise ValueError(f"Cannot set true preference on missing or inactive {source_type}.")
+                if source_type == "catalog":
+                    # The catalog is shared and unowned, so there is no owner to
+                    # check — only that the row is still active. The preference
+                    # itself stays private to this user, exactly as it is for a
+                    # private food.
+                    cursor = await self.conn.execute(
+                        "SELECT is_active FROM catalog_foods WHERE id = ?",
+                        (source_id,),
+                    )
+                    row = await cursor.fetchone()
+                    if not row or not row["is_active"]:
+                        raise ValueError(
+                            "Cannot set true preference on missing or inactive catalog."
+                        )
+                else:
+                    table = "foods" if source_type == "food" else "recipes"
+                    cursor = await self.conn.execute(
+                        f"SELECT is_active, user_id FROM {table} WHERE id = ?",
+                        (source_id,)
+                    )
+                    row = await cursor.fetchone()
+                    if not row or not row["is_active"] or row["user_id"] != user_id:
+                        raise ValueError(f"Cannot set true preference on missing or inactive {source_type}.")
 
             await self.conn.execute(
                 "INSERT INTO user_food_preferences (user_id, source_type, source_id) "
@@ -2400,7 +2415,7 @@ class DatabaseManager:
         unusable quantity and ``ValueError`` when the source is missing, archived,
         or another user's (both fail identically, revealing nothing).
         """
-        if source_type not in ("food", "recipe"):
+        if source_type not in ("food", "recipe", "catalog"):
             raise ValueError(f"Unknown source_type {source_type!r}")
         tokens = [format_decimal(quantity.amount), str(quantity.unit)]
         async with self._write_operation(begin_immediate=True):
@@ -2449,7 +2464,7 @@ class DatabaseManager:
         the row only when nothing else is left on it. A missing preference is a
         harmless ``False``.
         """
-        if source_type not in ("food", "recipe"):
+        if source_type not in ("food", "recipe", "catalog"):
             raise ValueError(f"Unknown source_type {source_type!r}")
         async with self._write_operation(begin_immediate=True):
             cursor = await self.conn.execute(

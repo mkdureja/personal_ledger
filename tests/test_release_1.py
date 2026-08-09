@@ -544,11 +544,25 @@ def test_a_broken_usual_reads_as_needing_repair_never_as_instant():
     assert not any(keyboards.INSTANT_PREFIX in label for label in labels)
 
 
-def test_catalog_rows_are_never_instant_on_v8():
+def test_a_catalog_row_with_a_usual_is_instant_from_v16():
+    """This asserted the opposite until schema v16.
+
+    A catalog preference was unstorable then, so a shared staple could never be
+    a one-tap row and the only way to get one was a private copy of something
+    the catalog already had. The row is still shared; the usual amount is this
+    user's alone.
+    """
     catalog = {"source_type": "catalog", "id": 3, "name": "Banana, raw"}
     decorated = suggestions.annotate_defaults(
         [catalog], {("catalog", 3): {"default_amount": 1.0, "default_unit": "g"}}
     )
+    assert decorated[0]["default"] == {"amount": 1.0, "unit": "g"}
+    assert keyboards.choice_button_label(decorated[0], quick=True).startswith("⚡ ")
+
+
+def test_a_catalog_row_without_a_usual_is_still_a_plain_search_result():
+    catalog = {"source_type": "catalog", "id": 3, "name": "Banana, raw"}
+    decorated = suggestions.annotate_defaults([catalog], {})
     assert decorated[0]["default"] is None
     assert keyboards.choice_button_label(decorated[0], quick=True) == "🔎 Banana, raw"
 

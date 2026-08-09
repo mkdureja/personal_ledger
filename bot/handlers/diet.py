@@ -1231,6 +1231,12 @@ async def choose_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     portions = await db.get_catalog_portions(catalog_id)
     recent = await db.get_recent_item_quantities(uid, "catalog", catalog_id)
     context.user_data["diet_recent_qtys"] = recent
+    # Preferences are shown for a catalog food as of v16. The row is shared, the
+    # preference is not: rice stays one row that both users resolve from, and
+    # each stores their own usual amount against it. Before v16 this was
+    # ``show_prefs=False`` — not by design, but because the preference table's
+    # CHECK could not hold a catalog row at all.
+    pref = await db.get_food_preference(uid, "catalog", catalog_id) or {}
     if portions or recent:
         prompt = await _send_tap_keyboard(
             update,
@@ -1240,7 +1246,14 @@ async def choose_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # as "you are searching", and by this point the pick is made. Matches
             # the re-render path.
             f"🥫 <b>{escape_html(catalog_food['name'])}</b> — how much?",
-            food_portion_keyboard(uid, portions, recent, show_prefs=False),
+            food_portion_keyboard(
+                uid,
+                portions,
+                recent,
+                is_pinned=bool(pref.get("is_pinned")),
+                hidden=bool(pref.get("hidden")),
+                revision=context.user_data.get("diet_ui_revision", 0),
+            ),
         )
         return PORTION_CHOICE if prompt is not None else ConversationHandler.END
     return await _prompt_custom_amount_text(
@@ -1560,13 +1573,20 @@ async def _rerender_quantity_screen(
     uid = update.effective_user.id
     kind = context.user_data.get("diet_sel_kind")
     sel_id = context.user_data.get("diet_sel_id")
-    if kind not in ("food", "recipe") or sel_id is None:
+    if kind not in ("food", "recipe", "catalog") or sel_id is None:
         return PORTION_CHOICE
     pref = await db.get_food_preference(uid, kind, sel_id) or {}
     recent = context.user_data.get("diet_recent_qtys") or []
     revision = context.user_data.get("diet_ui_revision", 0)
-    if kind == "food":
-        portions = await db.get_food_portions(uid, sel_id)
+    if kind in ("food", "catalog"):
+        # Same keyboard either way — a catalog food's portions resolve through
+        # the identical code path, which is why widening the preference table
+        # was the only thing standing between a shared staple and a ⚡ row.
+        portions = (
+            await db.get_catalog_portions(sel_id)
+            if kind == "catalog"
+            else await db.get_food_portions(uid, sel_id)
+        )
         keyboard = food_portion_keyboard(
             uid,
             portions,
@@ -1639,7 +1659,7 @@ async def _apply_pref_desired_state(
 
     kind = context.user_data.get("diet_sel_kind")
     sel_id = context.user_data.get("diet_sel_id")
-    if kind not in ("food", "recipe") or sel_id is None:
+    if kind not in ("food", "recipe", "catalog") or sel_id is None:
         await query.answer()
         return await _reprompt_food_choice(update, context, query.message)
 
@@ -2102,7 +2122,7 @@ def _default_target(context: ContextTypes.DEFAULT_TYPE):
     """The (kind, id) the default screens are acting on, if still coherent."""
     kind = context.user_data.get("diet_default_source_type")
     source_id = context.user_data.get("diet_default_source_id")
-    if kind not in ("food", "recipe") or source_id is None:
+    if kind not in ("food", "recipe", "catalog") or source_id is None:
         return None
     return kind, int(source_id)
 
@@ -2117,7 +2137,7 @@ async def manage_default(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return FOOD_CHOICE
     parts = (query.data or "").split("_")
     try:
-        kind = {"f": "food", "r": "recipe"}[parts[3]]
+        kind = {"f": "food", "r": "recipe", "c": "catalog"}[parts[3]]
         source_id = parse_base36(parts[4])
     except (IndexError, KeyError, ValueError):
         await _remove_callback_markup(query)
@@ -3115,7 +3135,7 @@ async def stale_diet_callback(
 _DIET_PHASE1_CALLBACK_RE = re.compile(
     r"^(?:"
     r"dpage_[0-9a-z]+_[0-9a-z]+|dchangemeal_[0-9a-z]+|"
-    r"dmanage_[0-9a-z]+_[0-9a-z]+_[fr]_[0-9a-z]+|"
+    r"dmanage_[0-9a-z]+_[0-9a-z]+_[frc]_[0-9a-z]+|"
     r"d(?:pin|hide)_[0-9a-z]+_[0-9a-z]+_[01]|"
     r"dq_(?:log|default|amount|cancel)_[0-9a-z]+_[0-9a-z]+|"
     r"dd_(?:use|edit|clear|back|save|reenter|cancel)_[0-9a-z]+_[0-9a-z]+|"
@@ -3467,7 +3487,7 @@ async def _rerender_diet_state(
             quick_confirm_keyboard(
                 uid,
                 revision,
-                can_set_default=pending.get("source_type") in ("food", "recipe"),
+                can_set_default=pending.get("source_type") in ("food", "recipe", "catalog"),
             ),
         )
         return QUICK_CONFIRM if prompt is not None else ConversationHandler.END
@@ -3648,7 +3668,7 @@ diet_conv_handler = ConversationHandler(
             CallbackQueryHandler(type_food_instead, pattern=r"^dtype_\d+$"),
             CallbackQueryHandler(
                 manage_default,
-                pattern=r"^dmanage_[0-9a-z]+_[0-9a-z]+_[fr]_[0-9a-z]+$",
+                pattern=r"^dmanage_[0-9a-z]+_[0-9a-z]+_[frc]_[0-9a-z]+$",
             ),
             CallbackQueryHandler(
                 change_page, pattern=r"^dpage_[0-9a-z]+_[0-9a-z]+$"

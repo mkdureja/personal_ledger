@@ -225,7 +225,7 @@ def choice_button_label(choice: dict, *, quick: bool) -> str:
         prefix = "⭐ "
 
     quantity = ""
-    if quick and kind in ("food", "recipe"):
+    if quick and kind in ("food", "recipe", "catalog"):
         default = choice.get("default")
         if choice.get("needs_repair"):
             prefix, suffix = REPAIR_PREFIX, suffix + _REPAIR_SUFFIX
@@ -283,7 +283,7 @@ def food_choice_keyboard(
             data = f"dfood_{user_id}_{choice['id']}"
         label = choice_button_label(choice, quick=quick)
         row = [InlineKeyboardButton(label, callback_data=data)]
-        if manage and kind in ("food", "recipe"):
+        if manage and kind in ("food", "recipe", "catalog"):
             row.append(
                 InlineKeyboardButton(
                     "⚙️",
