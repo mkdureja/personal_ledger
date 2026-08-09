@@ -310,6 +310,17 @@ It prints a `http://127.0.0.1:8765/?token=...` URL and opens it. The page adds
 foods and recipes to either ledger — or both at once, as separate rows — with
 named portions and the usual amount that makes a source a ⚡ one-tap row.
 
+**It also browses and extends the shared catalog.** The page lists every catalog
+food with its basis, calories and macros, filterable by name, alias or category —
+so you can check what a value is before adding a duplicate. Adding one writes a
+`_food(...)` entry into [bot/catalog_seed.py](bot/catalog_seed.py) and bumps
+`CATALOG_REVISION`, rather than writing the database, because `seed_catalog`
+deactivates any curated row missing from that file on the next start — a runtime
+insert would vanish. Writing the source file instead means every catalog change
+arrives as a reviewable git diff, and the edit is rolled back if the result does
+not parse, so a bad entry can never leave the bot unable to start. A food added
+this way shows as "restart to seed" until the bot is restarted.
+
 Every write goes through `DatabaseManager`, so mandatory nutrition, name
 normalization, portion rules, and owner checks are the same code the bot runs.
 It **never migrates**: if the database is not at the version this checkout knows,

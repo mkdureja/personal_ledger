@@ -208,9 +208,85 @@
     </section>
   </div>
 
+  <!-- ------------------------------------------------------------------ -->
+  <section class="panel" style="margin-top:18px">
+    <h2>Shared catalog <span class="count" id="cat-count"></span></h2>
+    <p class="hint" id="cat-meta"></p>
+
+    <details id="cat-add">
+      <summary style="cursor:pointer;color:var(--accent);font-size:14px;padding:4px 0">
+        ➕ Add a food to the shared catalog
+      </summary>
+      <div style="margin-top:14px;max-width:640px">
+        <p class="hint">Both of you get it, as one row. Each of you then sets
+        your own usual amount against it in Telegram, which is what makes it a
+        ⚡ one-tap row for you.</p>
+
+        <div class="row">
+          <div>
+            <label for="c-name">Name</label>
+            <input id="c-name" placeholder="Amul dahi" maxlength="100">
+          </div>
+          <div class="narrow">
+            <label for="c-basis">Per</label>
+            <input id="c-basis" type="number" step="any" min="0" value="100">
+          </div>
+          <div class="unit">
+            <label for="c-unit">&nbsp;</label>
+            <select id="c-unit">
+              <option value="g">g</option>
+              <option value="ml">ml</option>
+              <option value="piece">piece</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row">
+          <div><label for="c-kcal">kcal</label><input id="c-kcal" type="number" step="any" min="0"></div>
+          <div><label for="c-p">Protein g</label><input id="c-p" type="number" step="any" min="0"></div>
+          <div><label for="c-c">Carbs g</label><input id="c-c" type="number" step="any" min="0"></div>
+          <div><label for="c-f">Fat g</label><input id="c-f" type="number" step="any" min="0"></div>
+        </div>
+        <p class="hint">All four required — a catalog row is a definition
+        everyone inherits, so it can never carry a blank.</p>
+
+        <div class="row">
+          <div>
+            <label for="c-cat">Category (optional)</label>
+            <input id="c-cat" list="known-categories" placeholder="dairy" maxlength="40">
+          </div>
+          <div>
+            <label for="c-aliases">Other names (optional, comma separated)</label>
+            <input id="c-aliases" placeholder="dahi, curd">
+          </div>
+        </div>
+        <p class="hint">Aliases make search and voice notes find it — the catalog
+        already carries <em>anda</em>, <em>badam</em>, <em>dahi</em>, <em>chapati</em>.</p>
+
+        <fieldset>
+          <legend>Named portions — optional</legend>
+          <div id="c-portions"></div>
+          <button class="link" type="button" id="c-add-portion">+ add a portion</button>
+          <p class="hint" style="margin:8px 0 0">Lets anyone log <em>1 katori</em>
+          instead of <em>150 g</em>. Amount is in the unit chosen above.</p>
+        </fieldset>
+
+        <button class="primary" type="button" id="c-save">Add to catalog</button>
+        <div class="msg" id="c-msg"></div>
+      </div>
+    </details>
+
+    <div class="row" style="margin:16px 0 10px">
+      <div><input id="cat-filter" placeholder="Filter by name, alias, or category…"></div>
+    </div>
+    <div class="scroll"><table id="cat-table"></table></div>
+  </section>
+
   <h3 style="margin-top:26px">What each ledger holds</h3>
   <div class="cols" id="ledgers"></div>
 </div>
+
+<datalist id="known-categories"></datalist>
 
 <datalist id="known-foods"></datalist>
 
@@ -348,10 +424,60 @@ function recipeList(user) {
   return list;
 }
 
+function catalogTable() {
+  const term = ($("cat-filter").value || "").trim().toLowerCase();
+  const rows = (STATE.catalog || []).filter((f) => {
+    if (!term) return true;
+    const hay = [f.name, f.category || "", ...(f.aliases || [])].join(" ").toLowerCase();
+    return hay.includes(term);
+  });
+  const body = el("tbody");
+  for (const f of rows) {
+    const name = el("td", {}, [f.name]);
+    if (!f.live) {
+      name.append(el("span", { class: "chip", style: "margin-left:6px" }, "restart to seed"));
+    }
+    const extras = [...(f.portions || []).map((p) => `${p.name} = ${fmt(p.base_amount)} ${f.base_unit}`),
+                    ...(f.aliases || []).map((a) => `“${a}”`)];
+    if (extras.length) {
+      name.append(el("br"));
+      for (const e of extras) name.append(el("span", { class: "chip" }, e));
+    }
+    body.append(el("tr", {}, [
+      name,
+      el("td", { class: "num" }, `per ${fmt(f.basis_amount)} ${f.base_unit}`),
+      el("td", { class: "num" }, fmt(f.calories)),
+      el("td", { class: "num" }, fmt(f.protein_g)),
+      el("td", { class: "num" }, fmt(f.carbs_g)),
+      el("td", { class: "num" }, fmt(f.fat_g)),
+      el("td", {}, f.category || "—"),
+    ]));
+  }
+  const table = $("cat-table");
+  table.replaceChildren(
+    el("thead", {}, [el("tr", {}, [
+      el("th", {}, "Food"), el("th", { class: "num" }, "Basis"),
+      el("th", { class: "num" }, "kcal"), el("th", { class: "num" }, "P"),
+      el("th", { class: "num" }, "C"), el("th", { class: "num" }, "F"),
+      el("th", {}, "Category"),
+    ])]),
+    body,
+  );
+  $("cat-count").textContent =
+    term ? ` · ${rows.length} of ${(STATE.catalog || []).length}` : ` · ${rows.length} foods`;
+}
+
 function render() {
   $("meta").innerHTML =
     `<code>${STATE.db_path}</code> · schema v${STATE.schema_version} · ` +
     `${STATE.users.length} ledger(s). Every write goes through the same code the bot uses.`;
+  $("cat-meta").innerHTML =
+    `Shared by both of you, revision <b>${STATE.catalog_revision}</b>. ` +
+    `Stored in <code>${STATE.catalog_seed_path}</code>, not in the database — ` +
+    `a food added here is written to that file and seeded on the next bot start.`;
+  const cats = [...new Set((STATE.catalog || []).map((f) => f.category).filter(Boolean))].sort();
+  $("known-categories").replaceChildren(...cats.map((c) => el("option", { value: c })));
+  catalogTable();
 
   renderWho($("f-who"), "f-who");
   renderWho($("r-who"), "r-who");
@@ -458,12 +584,46 @@ async function saveRecipe() {
   }
 }
 
+async function saveCatalog() {
+  const box = $("c-msg");
+  try {
+    const data = await api("/api/catalog", {
+      catalog: {
+        name: $("c-name").value.trim(),
+        base_unit: $("c-unit").value,
+        basis_amount: num($("c-basis").value),
+        calories: num($("c-kcal").value),
+        protein_g: num($("c-p").value),
+        carbs_g: num($("c-c").value),
+        fat_g: num($("c-f").value),
+        category: $("c-cat").value.trim(),
+        aliases: $("c-aliases").value,
+        portions: readRows($("c-portions")),
+      },
+    });
+    STATE = data;
+    render();
+    const r = data.results[0];
+    say(box, true, `Added “${r.name}” to the shared catalog.`, r.notes || []);
+    for (const id of ["c-name", "c-kcal", "c-p", "c-c", "c-f", "c-aliases"]) {
+      $(id).value = "";
+    }
+    $("c-portions").replaceChildren();
+    $("c-name").focus();
+  } catch (err) {
+    say(box, false, err.message);
+  }
+}
+
 // -- boot -------------------------------------------------------------------
 
 $("f-add-portion").onclick = () => $("f-portions").append(portionRow());
 $("r-add-item").onclick = () => $("r-items").append(ingredientRow());
+$("c-add-portion").onclick = () => $("c-portions").append(portionRow());
 $("f-save").onclick = saveFood;
 $("r-save").onclick = saveRecipe;
+$("c-save").onclick = saveCatalog;
+$("cat-filter").oninput = catalogTable;
 
 $("r-items").append(ingredientRow());
 api("/api/state")

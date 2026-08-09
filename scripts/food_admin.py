@@ -32,12 +32,15 @@ failing. It is still calmer to add a batch of foods while the bot is stopped.
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import json
+import re
 import secrets
 import sqlite3
 import sys
 import threading
+import unicodedata
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +60,13 @@ from ledger_schema import LATEST_SCHEMA_VERSION  # noqa: E402
 #: The page is a sibling file rather than a string constant so it can be edited
 #: with an HTML editor and diffed as HTML.
 PAGE_PATH = Path(__file__).resolve().parent / "food_admin.html"
+
+#: The shared catalog is code-seeded, not a runtime table. ``seed_catalog`` is a
+#: snapshot reconciliation: on every bot start it deactivates any curated row
+#: absent from this file. So a catalog food added straight to the database would
+#: silently disappear at the next restart — the only durable way to add one is to
+#: add it here, which also means every change arrives as a reviewable git diff.
+CATALOG_SEED_PATH = PROJECT_ROOT / "bot" / "catalog_seed.py"
 
 #: Generous for a form post, small enough that a stray upload cannot exhaust
 #: memory on a machine that is also running the bot.
@@ -263,6 +273,216 @@ def parse_recipe_payload(data: Mapping[str, Any]) -> RecipeSpec:
     )
 
 
+@dataclass(frozen=True)
+class CatalogSpec:
+    """One shared-catalog food, as it will be written into the seed file."""
+
+    food_id: str
+    name: str
+    base_unit: str
+    basis_amount: float
+    calories: float
+    protein_g: float
+    carbs_g: float
+    fat_g: float
+    category: str | None = None
+    portions: tuple[PortionSpec, ...] = ()
+    aliases: tuple[str, ...] = ()
+
+
+def slugify(name: str) -> str:
+    """A stable ``provider_food_id`` from a display name.
+
+    ``seed_catalog`` keys on ``(provider, provider_food_id)``, so this id is the
+    identity of the row across every future revision. Kept to lowercase ASCII
+    words joined by hyphens, matching the ids already in the file.
+    """
+    cleaned = []
+    for char in unicodedata.normalize("NFKD", name).casefold():
+        if char.isalnum() and char.isascii():
+            cleaned.append(char)
+        elif cleaned and cleaned[-1] != "-":
+            cleaned.append("-")
+    return "".join(cleaned).strip("-")[:60]
+
+
+def load_catalog_seed(path: Path | None = None) -> tuple[str, list[dict]]:
+    """Read the seed file from disk and return its revision and foods.
+
+    Executed rather than imported so a food added during this session shows up
+    immediately, without restarting the tool. The file is part of this
+    repository and contains only literals and one helper, which is the same code
+    a normal import would run.
+    """
+    # Resolved at call time, not bound as a default, so a test can redirect the
+    # module attribute and never touch the repository's own seed file.
+    path = path or CATALOG_SEED_PATH
+    source = path.read_text(encoding="utf-8")
+    namespace: dict[str, Any] = {}
+    exec(compile(source, str(path), "exec"), namespace)  # noqa: S102
+    return str(namespace["CATALOG_REVISION"]), list(namespace["CATALOG_FOODS"])
+
+
+def parse_catalog_payload(
+    data: Mapping[str, Any], existing_ids: Sequence[str]
+) -> CatalogSpec:
+    """Validate a catalog form post.
+
+    Stricter than a private food in one way: all four nutrients are required
+    with no exception, because a catalog row is a definition shared by everyone
+    and inherited by every meal logged from it.
+    """
+    if not isinstance(data, Mapping):
+        raise AdminError("Expected a catalog food object.")
+    name = _text(data, "name", limit=nutrition.MAX_CATALOG_NAME_LENGTH)
+    base_unit = _unit(data.get("base_unit"), nutrition.FOOD_BASE_UNITS, "Base unit")
+
+    raw_id = data.get("food_id")
+    food_id = (
+        slugify(str(raw_id)) if isinstance(raw_id, str) and raw_id.strip()
+        else slugify(name)
+    )
+    if not food_id:
+        raise AdminError("That name has no letters or numbers to build an id from.")
+    if food_id in existing_ids:
+        raise AdminError(
+            f"The catalog already has an entry with id '{food_id}'. Ids are the "
+            "row's identity across revisions, so pick a distinct one."
+        )
+
+    category = data.get("category")
+    if category is not None and not isinstance(category, str):
+        raise AdminError("Category must be text.")
+    category = (category or "").strip() or None
+
+    raw_aliases = data.get("aliases") or []
+    if isinstance(raw_aliases, str):
+        raw_aliases = [part for part in raw_aliases.split(",")]
+    if not isinstance(raw_aliases, Sequence):
+        raise AdminError("Aliases must be a list.")
+    aliases: list[str] = []
+    for alias in raw_aliases:
+        if not isinstance(alias, str):
+            raise AdminError("Each alias must be text.")
+        text = alias.strip()
+        if text and text.casefold() not in {a.casefold() for a in aliases}:
+            aliases.append(text)
+
+    return CatalogSpec(
+        food_id=food_id,
+        name=name,
+        base_unit=base_unit,
+        basis_amount=_number(data, "basis_amount", positive=True),
+        calories=_number(data, "calories", positive=False),
+        protein_g=_number(data, "protein_g", positive=False),
+        carbs_g=_number(data, "carbs_g", positive=False),
+        fat_g=_number(data, "fat_g", positive=False),
+        category=category,
+        portions=parse_portions(data.get("portions"), base_unit),
+        aliases=tuple(aliases),
+    )
+
+
+def _num(value: float) -> str:
+    """Render a whole number without a trailing ``.0``, matching the file."""
+    return str(int(value)) if float(value).is_integer() else str(float(value))
+
+
+def _q(text: str) -> str:
+    """A double-quoted Python string literal, matching the seed file's style.
+
+    ``repr`` would emit single quotes and switch to double only when the value
+    contains an apostrophe, so a generated line would sit in the diff looking
+    unlike every line around it.
+    """
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def render_catalog_entry(spec: CatalogSpec) -> str:
+    """The ``_food(...)`` source line(s) for one catalog food."""
+    head = (
+        f"    _food({_q(spec.food_id)}, {_q(spec.name)}, {_q(spec.base_unit)}, "
+        f"{_num(spec.basis_amount)}, {_num(spec.calories)}, "
+        f"{_num(spec.protein_g)}, {_num(spec.carbs_g)}, {_num(spec.fat_g)}"
+    )
+    tail: list[str] = []
+    if spec.category:
+        tail.append(f"category={_q(spec.category)}")
+    if spec.portions:
+        rendered = ", ".join(
+            f'{{"name": {_q(p.name)}, "base_amount": {_num(p.amount)}}}'
+            for p in spec.portions
+        )
+        tail.append(f"portions=[{rendered}]")
+    if spec.aliases:
+        rendered = ", ".join(_q(alias) for alias in spec.aliases)
+        tail.append(f"aliases=[{rendered}]")
+    if not tail:
+        return head + "),\n"
+    return head + ",\n" + "".join(f"          {part},\n" for part in tail[:-1]) + (
+        f"          {tail[-1]}),\n"
+    )
+
+
+def bump_revision(revision: str) -> str:
+    """Advance ``YYYY.N`` to ``YYYY.N+1``.
+
+    Bumping matters: the revision is stamped on every seeded row and copied into
+    each logged item's snapshot, which is what makes a later value change
+    auditable instead of silently rewriting history.
+    """
+    match = re.fullmatch(r"(\d+)\.(\d+)", revision.strip())
+    if match is None:
+        return f"{revision.strip()}.1"
+    return f"{match.group(1)}.{int(match.group(2)) + 1}"
+
+
+def append_catalog_food(spec: CatalogSpec, path: Path | None = None) -> str:
+    """Add one food to the seed file and bump the revision. Returns the revision.
+
+    The file is edited rather than regenerated: regenerating would discard the
+    comments that explain why particular rows look the way they do (the whey
+    scoop, the branded pack values), and those are the rows most likely to be
+    misread later. Written atomically-ish — the original text is held and
+    restored if the result does not parse, so a failed write can never leave the
+    catalog unimportable and the bot unable to start.
+    """
+    path = path or CATALOG_SEED_PATH
+    original = path.read_text(encoding="utf-8")
+
+    revision_match = re.search(
+        r'^CATALOG_REVISION\s*=\s*"([^"]+)"', original, re.MULTILINE
+    )
+    if revision_match is None:
+        raise AdminError("Could not find CATALOG_REVISION in the seed file.")
+    new_revision = bump_revision(revision_match.group(1))
+
+    closing = original.rstrip()
+    if not closing.endswith("]"):
+        raise AdminError("The seed file does not end with the food list.")
+    cut = original.rindex("]")
+    updated = original[:cut] + render_catalog_entry(spec) + original[cut:]
+    updated = (
+        updated[: revision_match.start()]
+        + f'CATALOG_REVISION = "{new_revision}"'
+        + updated[revision_match.end() :]
+    )
+
+    path.write_text(updated, encoding="utf-8")
+    try:
+        ast.parse(updated, filename=str(path))
+        revision, foods = load_catalog_seed(path)
+        if revision != new_revision:
+            raise AdminError("The revision did not update as expected.")
+        if not any(food["provider_food_id"] == spec.food_id for food in foods):
+            raise AdminError("The new food did not appear in the list.")
+    except Exception as exc:
+        path.write_text(original, encoding="utf-8")
+        raise AdminError(f"The edit was rolled back — it did not parse: {exc}") from exc
+    return new_revision
+
+
 def parse_user_ids(raw: object, known: Sequence[int]) -> tuple[int, ...]:
     """Resolve the requested ledgers, refusing any this database does not have.
 
@@ -316,6 +536,17 @@ async def load_users(db: DatabaseManager) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+async def active_catalog_ids(db: DatabaseManager) -> set[str]:
+    """The ``provider_food_id``s currently seeded and active in the database."""
+    try:
+        rows = await db._query_all(  # noqa: SLF001 - no public listing exists
+            "SELECT provider_food_id FROM catalog_foods WHERE is_active = 1"
+        )
+    except sqlite3.Error:  # pragma: no cover - table exists from v8
+        return set()
+    return {str(row["provider_food_id"]) for row in rows}
 
 
 async def load_ledger(db: DatabaseManager, user_id: int) -> dict[str, Any]:
@@ -701,18 +932,44 @@ class AdminHandler(BaseHTTPRequestHandler):
             payload = self._decode(raw)
             if not isinstance(payload, Mapping):
                 raise AdminError("Expected an object.")
-            known = [user["user_id"] for user in self._state["users"]]
-            user_ids = parse_user_ids(payload.get("user_ids"), known)
+            # Only the per-ledger routes need to know whose ledger. The catalog
+            # is shared and writes a source file, so asking for user ids there
+            # would be a field with no meaning that the caller must still fill.
+            if path in ("/api/food", "/api/recipe"):
+                known = [user["user_id"] for user in self._state["users"]]
+                user_ids = parse_user_ids(payload.get("user_ids"), known)
             if path == "/api/food":
                 spec = parse_food_payload(payload.get("food") or {})
                 results = loop.run(apply_food(db, user_ids, spec))
             elif path == "/api/recipe":
                 spec = parse_recipe_payload(payload.get("recipe") or {})
                 results = loop.run(apply_recipe(db, user_ids, spec))
+            elif path == "/api/catalog":
+                # No user_ids: the catalog is shared, and this writes a source
+                # file rather than either ledger.
+                _revision, foods = load_catalog_seed()
+                spec = parse_catalog_payload(
+                    payload.get("catalog") or {},
+                    [str(food["provider_food_id"]) for food in foods],
+                )
+                new_revision = append_catalog_food(spec)
+                results = [
+                    {
+                        "user_id": None,
+                        "ok": True,
+                        "status": "added to the shared catalog",
+                        "name": spec.name,
+                        "notes": [
+                            f"catalog revision is now {new_revision}",
+                            "restart the bot to seed it — it is in the source "
+                            "file, not the database, until then",
+                        ],
+                    }
+                ]
             else:
                 self._json(404, {"error": "No such action."})
                 return
-        except (AdminError, nutrition.NutritionError, ValueError) as exc:
+        except (AdminError, nutrition.NutritionError, ValueError, OSError) as exc:
             self._json(400, {"error": str(exc)})
             return
         except TimeoutError:
@@ -730,9 +987,36 @@ class AdminHandler(BaseHTTPRequestHandler):
         loop: LoopThread = self._state["loop"]
         db: DatabaseManager = self._state["db"]
         users = self._state["users"]
+        try:
+            revision, catalog = load_catalog_seed()
+        except OSError as exc:  # pragma: no cover - the file ships with the repo
+            revision, catalog = f"unreadable: {exc}", []
+        # Which seed rows are live yet: anything added since the last bot start
+        # is in the file but not the database, and saying so is the difference
+        # between "it did not work" and "restart to seed it".
+        seeded = loop.run(active_catalog_ids(db))
         return {
             "db_path": str(self._state["db_path"]),
             "schema_version": self._state["schema_version"],
+            "catalog_revision": revision,
+            "catalog_seed_path": str(CATALOG_SEED_PATH),
+            "catalog": [
+                {
+                    "food_id": str(food["provider_food_id"]),
+                    "name": str(food["display_name"]),
+                    "base_unit": str(food["base_unit"]),
+                    "basis_amount": food["basis_amount"],
+                    "calories": food["calories"],
+                    "protein_g": food["protein_g"],
+                    "carbs_g": food["carbs_g"],
+                    "fat_g": food["fat_g"],
+                    "category": food.get("category"),
+                    "portions": list(food.get("portions") or []),
+                    "aliases": list(food.get("aliases") or []),
+                    "live": str(food["provider_food_id"]) in seeded,
+                }
+                for food in catalog
+            ],
             "users": [
                 {**user, **loop.run(load_ledger(db, user["user_id"]))}
                 for user in users

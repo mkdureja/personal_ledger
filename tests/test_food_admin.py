@@ -7,6 +7,7 @@ open, and that it refuses a database it does not match rather than migrating it.
 
 from __future__ import annotations
 
+import ast
 import json
 import sqlite3
 import threading
@@ -685,6 +686,266 @@ class TestServing:
         assert status == 200
         assert body["results"][0]["ok"] is True
         assert len(loop.run(db.list_recipes(MANOJ))) == 1
+
+
+# ---------------------------------------------------------------------------
+# The shared catalog
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def seed_file(tmp_path, monkeypatch):
+    """A throwaway copy of the real seed file, so tests never edit the repo's."""
+    copy = tmp_path / "catalog_seed.py"
+    copy.write_text(
+        food_admin.CATALOG_SEED_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    monkeypatch.setattr(food_admin, "CATALOG_SEED_PATH", copy)
+    return copy
+
+
+def catalog_payload(**overrides):
+    payload = {
+        "name": "Amul dahi",
+        "base_unit": "g",
+        "basis_amount": 100,
+        "calories": 60,
+        "protein_g": 3.1,
+        "carbs_g": 4.7,
+        "fat_g": 3.0,
+    }
+    payload.update(overrides)
+    return payload
+
+
+class TestSlugify:
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("Amul dahi", "amul-dahi"),
+            ("Roti / chapati", "roti-chapati"),
+            ("  Protein Chef bread  ", "protein-chef-bread"),
+            ("Café latte", "cafe-latte"),
+            ("Egg", "egg"),
+        ],
+    )
+    def test_it_matches_the_ids_already_in_the_file(self, name, expected):
+        assert food_admin.slugify(name) == expected
+
+    def test_a_name_with_no_usable_characters_is_caught(self):
+        with pytest.raises(AdminError, match="no letters or numbers"):
+            food_admin.parse_catalog_payload(catalog_payload(name="!!!"), [])
+
+
+class TestCatalogValidation:
+    def test_it_accepts_a_complete_food(self, seed_file):
+        spec = food_admin.parse_catalog_payload(catalog_payload(), [])
+        assert spec.food_id == "amul-dahi"
+        assert spec.name == "Amul dahi"
+        assert spec.calories == 60
+
+    @pytest.mark.parametrize("field", ["calories", "protein_g", "carbs_g", "fat_g"])
+    def test_all_four_nutrients_are_required(self, field):
+        """A catalog row is a definition everyone inherits — no blanks, ever."""
+        payload = catalog_payload()
+        del payload[field]
+        with pytest.raises(AdminError, match="must be a number"):
+            food_admin.parse_catalog_payload(payload, [])
+
+    def test_a_duplicate_id_is_refused(self):
+        """The id is the row's identity across revisions; seed_catalog keys on it."""
+        with pytest.raises(AdminError, match="already has an entry"):
+            food_admin.parse_catalog_payload(catalog_payload(), ["amul-dahi"])
+
+    def test_aliases_arrive_as_a_comma_separated_string(self):
+        spec = food_admin.parse_catalog_payload(
+            catalog_payload(aliases="dahi, curd , dahi"), []
+        )
+        assert spec.aliases == ("dahi", "curd")
+
+    def test_portions_use_the_same_rules_as_a_private_food(self):
+        with pytest.raises(AdminError, match="duplicates this food's own base unit"):
+            food_admin.parse_catalog_payload(
+                catalog_payload(portions=[{"name": "g", "amount": 50}]), []
+            )
+
+    def test_an_explicit_id_is_slugified_too(self):
+        spec = food_admin.parse_catalog_payload(
+            catalog_payload(food_id="Amul Dahi Plain"), []
+        )
+        assert spec.food_id == "amul-dahi-plain"
+
+
+class TestRendering:
+    def test_a_minimal_entry_is_valid_python(self):
+        spec = food_admin.parse_catalog_payload(catalog_payload(), [])
+        rendered = food_admin.render_catalog_entry(spec)
+        # Parses as a call inside a list, which is how it lands in the file.
+        ast.parse(f"x = [\n{rendered}]")
+
+    def test_whole_numbers_lose_their_trailing_zero(self):
+        spec = food_admin.parse_catalog_payload(catalog_payload(), [])
+        rendered = food_admin.render_catalog_entry(spec)
+        assert "100," in rendered and "100.0," not in rendered
+
+    def test_portions_and_aliases_render(self):
+        spec = food_admin.parse_catalog_payload(
+            catalog_payload(
+                category="dairy",
+                aliases="dahi",
+                portions=[{"name": "katori", "amount": 150}],
+            ),
+            [],
+        )
+        rendered = food_admin.render_catalog_entry(spec)
+        ast.parse(f"x = [\n{rendered}]")
+        assert '"katori"' in rendered and "150" in rendered
+        assert '"dahi"' in rendered and '"dairy"' in rendered
+        # Double quotes throughout, so a generated line does not stand out in
+        # the diff from every hand-written line around it.
+        assert "'" not in rendered
+
+
+class TestRevisionBump:
+    @pytest.mark.parametrize(
+        ("current", "expected"),
+        [("2026.3", "2026.4"), ("2026.9", "2026.10"), ("2027.0", "2027.1")],
+    )
+    def test_it_advances_the_minor(self, current, expected):
+        assert food_admin.bump_revision(current) == expected
+
+    def test_an_unexpected_shape_still_advances(self):
+        assert food_admin.bump_revision("draft") == "draft.1"
+
+
+class TestAppending:
+    def test_the_food_lands_in_the_file(self, seed_file):
+        before_revision, before = food_admin.load_catalog_seed()
+        spec = food_admin.parse_catalog_payload(catalog_payload(), [])
+
+        new_revision = food_admin.append_catalog_food(spec)
+
+        revision, after = food_admin.load_catalog_seed()
+        assert revision == new_revision != before_revision
+        assert len(after) == len(before) + 1
+        added = next(f for f in after if f["provider_food_id"] == "amul-dahi")
+        assert added["display_name"] == "Amul dahi"
+        assert added["calories"] == 60
+
+    def test_existing_foods_and_their_comments_survive(self, seed_file):
+        _revision, before = food_admin.load_catalog_seed()
+        spec = food_admin.parse_catalog_payload(catalog_payload(), [])
+
+        food_admin.append_catalog_food(spec)
+
+        text = seed_file.read_text(encoding="utf-8")
+        _revision, after = food_admin.load_catalog_seed()
+        assert [f["provider_food_id"] for f in before] == [
+            f["provider_food_id"] for f in after[:-1]
+        ]
+        # The comments explaining the odd rows are the ones most likely to be
+        # misread later, so regenerating the file wholesale is not an option.
+        assert "only measure the tub gives" in text
+
+    def test_portions_round_trip_through_the_file(self, seed_file):
+        spec = food_admin.parse_catalog_payload(
+            catalog_payload(portions=[{"name": "katori", "amount": 150}]), []
+        )
+        food_admin.append_catalog_food(spec)
+
+        _revision, foods = food_admin.load_catalog_seed()
+        added = next(f for f in foods if f["provider_food_id"] == "amul-dahi")
+        assert added["portions"] == [{"name": "katori", "base_amount": 150}]
+
+    def test_two_foods_can_be_added_in_a_row(self, seed_file):
+        food_admin.append_catalog_food(
+            food_admin.parse_catalog_payload(catalog_payload(), [])
+        )
+        _revision, foods = food_admin.load_catalog_seed()
+        food_admin.append_catalog_food(
+            food_admin.parse_catalog_payload(
+                catalog_payload(name="Amul butter", calories=717,
+                                protein_g=0.9, carbs_g=0.5, fat_g=81),
+                [str(f["provider_food_id"]) for f in foods],
+            )
+        )
+        revision, foods = food_admin.load_catalog_seed()
+        assert revision == "2026.5"
+        assert {"amul-dahi", "amul-butter"} <= {
+            str(f["provider_food_id"]) for f in foods
+        }
+
+    def test_a_broken_edit_is_rolled_back(self, seed_file, monkeypatch):
+        """A seed file that does not parse would stop the bot from starting."""
+        original = seed_file.read_text(encoding="utf-8")
+        monkeypatch.setattr(
+            food_admin, "render_catalog_entry", lambda spec: "    _food(((,\n"
+        )
+        spec = food_admin.parse_catalog_payload(catalog_payload(), [])
+
+        with pytest.raises(AdminError, match="rolled back"):
+            food_admin.append_catalog_food(spec)
+
+        assert seed_file.read_text(encoding="utf-8") == original
+        food_admin.load_catalog_seed()  # still importable
+
+    def test_the_real_seed_file_is_readable(self):
+        """No monkeypatch: the shipped file must parse and be non-empty."""
+        revision, foods = food_admin.load_catalog_seed()
+        assert revision
+        assert len(foods) >= 19
+        assert all(f["provider_food_id"] for f in foods)
+
+
+class TestCatalogOverHttp:
+    def test_the_state_lists_the_catalog(self, server, seed_file):
+        base, _db, _loop = server
+        status, body = request(base, "/api/state")
+        assert status == 200
+        assert body["catalog_revision"]
+        names = {f["name"] for f in body["catalog"]}
+        assert "Egg" in names
+
+    def test_adding_a_catalog_food_writes_the_file(self, server, seed_file):
+        base, _db, _loop = server
+        status, body = request(
+            base, "/api/catalog", body={"catalog": catalog_payload()}
+        )
+        assert status == 200
+        assert body["results"][0]["ok"] is True
+        assert "amul-dahi" in seed_file.read_text(encoding="utf-8")
+        # The reply carries fresh state, so the table updates without a reload.
+        assert "Amul dahi" in {f["name"] for f in body["catalog"]}
+
+    def test_the_reply_says_a_restart_is_needed(self, server, seed_file):
+        """It is in the source file, not the database, until the bot restarts."""
+        base, _db, _loop = server
+        _status, body = request(
+            base, "/api/catalog", body={"catalog": catalog_payload()}
+        )
+        notes = " ".join(body["results"][0]["notes"])
+        assert "restart" in notes.lower()
+        assert "revision" in notes.lower()
+
+    def test_an_unseeded_food_is_marked_as_such(self, server, seed_file):
+        base, _db, _loop = server
+        _status, body = request(
+            base, "/api/catalog", body={"catalog": catalog_payload()}
+        )
+        added = next(f for f in body["catalog"] if f["food_id"] == "amul-dahi")
+        assert added["live"] is False
+
+    def test_a_bad_catalog_payload_writes_nothing(self, server, seed_file):
+        base, _db, _loop = server
+        original = seed_file.read_text(encoding="utf-8")
+        status, body = request(
+            base,
+            "/api/catalog",
+            body={"catalog": catalog_payload(protein_g=None)},
+        )
+        assert status == 400
+        assert "Protein g" in body["error"]
+        assert seed_file.read_text(encoding="utf-8") == original
 
 
 class TestPageAsset:
