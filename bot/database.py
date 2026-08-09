@@ -917,10 +917,17 @@ class DatabaseManager:
         Repeat work is the norm in a gym, so the fastest route to today's
         exercise is usually the one from last time — this feeds a shortcut row
         above the muscle groups.
+
+        ``reps`` and ``total_reps`` come from the most recent row for each
+        exercise (SQLite carries bare columns from the row that produced the
+        ``MAX``), so a caller can tell how that exercise was last logged. Both
+        NULL means it was recorded as a muscle group with no set detail;
+        ``reps`` NULL alone only means the sets varied, which is an ordinary
+        per-set workout and must not be confused with the other.
         """
         return await self._query_all(
             """
-            SELECT exercise, MAX(logged_at) AS last_logged
+            SELECT exercise, MAX(logged_at) AS last_logged, reps, total_reps
             FROM gym_logs WHERE user_id = ?
             GROUP BY exercise
             ORDER BY last_logged DESC

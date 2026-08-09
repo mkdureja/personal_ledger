@@ -112,6 +112,22 @@ def seed_rows() -> list[tuple[str, str]]:
 
 
 def group_label(group_key: str) -> str:
-    """"💪 Arms" for a known key, else the key itself (never raises)."""
+    """"💪 Arms" for a known key, else the key itself (never raises).
+
+    For buttons and prompts only. Never store this: the emoji is decoration, and
+    a stored one shows up doubled next to the 🏋️ that ``/recent`` adds. Use
+    :func:`group_name` for anything that lands in a row.
+    """
     emoji, label = MUSCLE_GROUPS.get(group_key, ("🏋️", group_key.title()))
     return f"{emoji} {label}"
+
+
+def group_name(group_key: str) -> str:
+    """"Arms" — the plain name, for a workout logged as a muscle group only.
+
+    ``gym_logs.exercise`` is a display name snapshotted at save time, alongside
+    values like "Bench press". A decorated label would be the only row in the
+    table carrying an emoji, and would read as a different exercise from the
+    same group logged any other way.
+    """
+    return MUSCLE_GROUPS.get(group_key, ("", group_key.title()))[1]

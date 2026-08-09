@@ -66,7 +66,7 @@ from .common import (
     voice_mid_flow_interceptor,
 )
 from ..config import CONVERSATION_TIMEOUT
-from ..exercise_seed import MUSCLE_GROUPS, group_label
+from ..exercise_seed import MUSCLE_GROUPS, group_label, group_name
 
 logger = logging.getLogger(__name__)
 
@@ -126,16 +126,24 @@ def _draft_summary(exercise: str, sets: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _groups_keyboard(user_id: int, recents: list[str]) -> InlineKeyboardMarkup:
+def _groups_keyboard(user_id: int, recents: list) -> InlineKeyboardMarkup:
     """Recent exercises first, then the muscle groups two per row.
 
     Repeat work is the norm in a gym, so last session's exercise is usually the
-    fastest route to this one's.
+    fastest route to this one's. A recent entry carries how it was logged, so
+    repeating a muscle-group-only session repeats *that* rather than opening a
+    set prompt the user deliberately skipped.
     """
     rows: list[list[InlineKeyboardButton]] = []
-    for name in recents[:4]:
+    for entry in recents[:4]:
+        name, group_only = entry if isinstance(entry, tuple) else (entry, False)
         rows.append(
-            [InlineKeyboardButton(f"🔁 {name}", callback_data=_tap("r", user_id, name))]
+            [
+                InlineKeyboardButton(
+                    f"🔁 {name}",
+                    callback_data=_tap("rg" if group_only else "r", user_id, name),
+                )
+            ]
         )
     keys = list(MUSCLE_GROUPS)
     rows += [
@@ -291,7 +299,12 @@ async def _show_groups(message, context, user_id: int, *, prefix: str = "") -> i
     """Render the muscle-group picker, with this user's recent exercises on top."""
     db = context.bot_data["db"]
     try:
-        recents = [str(row["exercise"]) for row in await db.get_recent_exercises(user_id)]
+        recents = [
+            # Both NULL means it was logged as a muscle group and nothing else.
+            # ``reps`` alone being NULL only means the sets varied.
+            (str(row["exercise"]), row["reps"] is None and row["total_reps"] is None)
+            for row in await db.get_recent_exercises(user_id)
+        ]
     except Exception:  # A shortcut row is a convenience, never a blocker.
         logger.warning("Could not read recent exercises", exc_info=False)
         recents = []
@@ -453,6 +466,12 @@ async def group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if action == "r":  # repeat a recent exercise by name
         await _remove_callback_markup(query)
         return await _start_exercise(query.message, context, str(payload))
+    if action == "rg":
+        # Repeating something that was logged as a muscle group logs it the same
+        # way. Asking for sets here would be the one thing the person who used
+        # that button was avoiding.
+        await _remove_callback_markup(query)
+        return await _log_group_only(update, context, query.message, str(payload))
 
     db = context.bot_data["db"]
     rows = await db.list_exercises(update.effective_user.id, str(payload))
@@ -504,7 +523,9 @@ async def exercise_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if action == "only":
         await _remove_callback_markup(query)
-        return await _log_group_only(update, context, query.message, str(payload))
+        return await _log_group_only(
+            update, context, query.message, group_name(str(payload))
+        )
 
     db = context.bot_data["db"]
     row = await db.get_exercise(update.effective_user.id, int(payload))
@@ -679,7 +700,7 @@ async def after_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return await _save_current_exercise(update, context, query.message)
 
 
-async def _log_group_only(update: Update, context, message, group_key: str) -> int:
+async def _log_group_only(update: Update, context, message, label: str) -> int:
     """Record that a muscle group was trained, with no per-set detail at all.
 
     Not everyone wants to log a workout set by set, and the alternative to a
@@ -691,7 +712,6 @@ async def _log_group_only(update: Update, context, message, group_key: str) -> i
     """
     db = context.bot_data["db"]
     user_id = update.effective_user.id
-    label = group_label(group_key)
     await db.log_gym(user_id, label, 1, None, source=mutation_source(update))
 
     logged: list[str] = context.user_data.setdefault("gym_exercises", [])

@@ -452,7 +452,73 @@ class TestGroupOnly:
         await gym.exercise_callback(update, context)
 
         rows = await db._query_all("SELECT * FROM gym_logs WHERE user_id = ?", (user_id,))
-        assert "Legs" in str(rows[0]["exercise"])
+        assert rows[0]["exercise"] == "Legs"
+
+    async def test_the_stored_name_carries_no_emoji(self, db, user_id):
+        """The label is decoration. Stored, it renders doubled next to the
+        🏋️ that /recent adds, and reads as a different exercise from the same
+        group logged any other way."""
+        await db.ensure_user(user_id, None, None)
+        context = _context(db)
+        await gym.exercise_callback(_callback(f"gx_only_{user_id}_chest"), context)
+
+        rows = await db._query_all("SELECT * FROM gym_logs WHERE user_id = ?", (user_id,))
+        stored = str(rows[0]["exercise"])
+        assert stored == "Chest"
+        assert stored.isascii()
+
+    async def test_repeating_it_logs_it_the_same_way(self, db, user_id):
+        """Asking for sets here is the one thing that button exists to avoid."""
+        await db.ensure_user(user_id, None, None)
+        context = _context(db)
+        await gym.exercise_callback(_callback(f"gx_only_{user_id}_chest"), context)
+
+        state = await gym.group_callback(_callback(f"gx_rg_{user_id}_Chest"), context)
+
+        rows = await db._query_all(
+            "SELECT * FROM gym_logs WHERE user_id = ? ORDER BY id", (user_id,)
+        )
+        assert len(rows) == 2
+        assert rows[1]["exercise"] == "Chest"
+        assert rows[1]["reps"] is None
+        assert state == gym.ConversationHandler.END
+
+    async def test_the_recent_button_repeats_group_only(self, db, user_id):
+        await db.ensure_user(user_id, None, None)
+        context = _context(db)
+        await gym.exercise_callback(_callback(f"gx_only_{user_id}_chest"), context)
+
+        update = _update()
+        await gym.gym_command(update, _context(db))
+
+        labels = _labels(_last_markup(update.message))
+        assert labels[0] == "🔁 Chest"
+        data = [
+            b.callback_data
+            for row in _last_markup(update.message).inline_keyboard
+            for b in row
+        ]
+        assert data[0] == f"gx_rg_{user_id}_Chest"
+
+    async def test_a_varying_set_exercise_still_repeats_into_the_set_flow(
+        self, db, user_id
+    ):
+        """reps IS NULL alone means the sets varied — an ordinary workout."""
+        await db.ensure_user(user_id, None, None)
+        await db.log_gym_sets(
+            user_id,
+            "Deadlift",
+            [{"reps": 5, "weight_kg": 100.0}, {"reps": 3, "weight_kg": 110.0}],
+        )
+        update = _update()
+        await gym.gym_command(update, _context(db))
+
+        data = [
+            b.callback_data
+            for row in _last_markup(update.message).inline_keyboard
+            for b in row
+        ]
+        assert data[0] == f"gx_r_{user_id}_Deadlift"
 
     async def test_another_owners_button_cannot_log_for_me(self, db, user_id):
         await db.ensure_user(user_id, None, None)
