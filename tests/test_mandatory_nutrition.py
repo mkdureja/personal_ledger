@@ -115,18 +115,49 @@ class TestSavedFoodsMustBeComplete:
 # Entry point: the write path (the backstop under every handler)
 # ---------------------------------------------------------------------------
 class TestTheWritePathIsTheBackstop:
-    async def test_log_diet_requires_every_nutrient(self, db_with_user, user_id):
+    async def test_log_diet_requires_calories(self, db_with_user, user_id):
+        """Calories stayed mandatory when macros stopped being.
+
+        Home, the daily total, and the diet chart are all built on calories, so
+        a meal without them is not an incomplete record — it is an absent one.
+        """
         with pytest.raises(NutritionError):
             await db_with_user.log_diet(
-                user_id, "lunch", "mystery", 100, None, 2.0, 3.0
+                user_id, "lunch", "mystery", None, 1.0, 2.0, 3.0
             )
+
+    async def test_log_diet_allows_a_missing_macro(self, db_with_user, user_id):
+        """The deliberate change: a hand-typed meal may leave macros blank."""
+        await db_with_user.log_diet(user_id, "lunch", "frankie", 460, None, None, None)
+        from bot.config import today_local
+
+        rows = await db_with_user.get_diet_logs(user_id, today_local(), today_local())
+        assert len(rows) == 1
+        assert rows[0]["calories"] == 460
+        assert rows[0]["protein_g"] is None
+
+    async def test_one_unknown_macro_makes_the_meals_total_unknown(
+        self, db_with_user, user_id
+    ):
+        """Not smaller — unknown. Summing the rest would look complete and lie."""
+        items = [
+            _complete(display_name="rice", protein_g=3.0),
+            _complete(display_name="dal", protein_g=None),
+        ]
+        await db_with_user.log_diet_with_items(user_id, "lunch", items)
+        from bot.config import today_local
+
+        rows = await db_with_user.get_diet_logs(user_id, today_local(), today_local())
+        assert rows[0]["protein_g"] is None
+        # The macros that *were* known still total normally.
+        assert rows[0]["carbs_g"] is not None
 
     async def test_a_multi_item_meal_names_the_offending_item(
         self, db_with_user, user_id
     ):
         items = [
             _complete(display_name="rice"),
-            _complete(display_name="dal", carbs_g=None),
+            _complete(display_name="dal", calories=None),
         ]
         with pytest.raises(NutritionError, match="dal"):
             await db_with_user.log_diet_with_items(user_id, "lunch", items)
@@ -134,7 +165,7 @@ class TestTheWritePathIsTheBackstop:
     async def test_a_refused_meal_writes_nothing_at_all(self, db_with_user, user_id):
         from bot.config import today_local
 
-        items = [_complete(display_name="rice"), _complete(fat_g=None)]
+        items = [_complete(display_name="rice"), _complete(calories=None)]
         with pytest.raises(NutritionError):
             await db_with_user.log_diet_with_items(user_id, "lunch", items)
 

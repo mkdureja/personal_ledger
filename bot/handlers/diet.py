@@ -137,9 +137,13 @@ _REQUIRED_HINT = (
     "food first with /food add — then logging it fills these in for you."
 )
 _CALORIE_PROMPT = f"🔥 How many calories?\n{_REQUIRED_HINT}"
+_MACRO_HINT = (
+    "If you don't have them, /skip — the meal saves with its calories and the "
+    "macros stay blank rather than being guessed. Saving the food once with "
+    "/food add fills them in for you every time after that."
+)
 _MACRO_PROMPT = (
-    "🥩 Macros in grams? Send protein carbs fat (e.g. 25 80 15).\n"
-    f"{_REQUIRED_HINT}"
+    f"🥩 Macros in grams? Send protein carbs fat (e.g. 25 80 15).\n{_MACRO_HINT}"
 )
 
 # Tap-flow callback shapes (owner id is always re-validated before any lookup).
@@ -761,7 +765,7 @@ async def receive_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             update,
             context,
             "❌ Send exactly three values: protein carbs fat (e.g. 25 80 15).\n"
-            f"{_REQUIRED_HINT}",
+            f"{_MACRO_HINT}",
         )
 
     values: list[float] = []
@@ -771,7 +775,7 @@ async def receive_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return await _macro_validation_error(
                 update,
                 context,
-                f"{error}\n{_REQUIRED_HINT}",
+                f"{error}\n{_MACRO_HINT}",
             )
         assert value is not None
         values.append(value)
@@ -784,6 +788,28 @@ async def receive_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         protein_g=values[0],
         carbs_g=values[1],
         fat_g=values[2],
+        food_items=food_items,
+    )
+
+
+async def skip_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Save the meal with its calories and no macros.
+
+    Restored deliberately, and only here. Every other door — a saved food, a
+    catalog row, a resolved item — still demands all four, because those are
+    *definitions* and a hole in one spreads to every meal that uses it. This is
+    the one place a person is typing a single meal by hand, and the realistic
+    alternative to a blank macro is not a correct one: it is a number they
+    estimated, which the ledger would then be unable to tell from a measured one.
+    """
+    food_items, calories = _pending_diet(context)
+    return await _save_diet(
+        update,
+        context,
+        calories,
+        protein_g=None,
+        carbs_g=None,
+        fat_g=None,
         food_items=food_items,
     )
 
@@ -3789,7 +3815,7 @@ diet_conv_handler = ConversationHandler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_calories),
         ],
         MACROS: [
-            CommandHandler("skip", _skip_retired(MACROS)),
+            CommandHandler("skip", skip_macros),
             _diet_voice_guard,
             _diet_meal_guard(MACROS),
             _diet_control_guard,

@@ -350,18 +350,20 @@ async def test_guided_invalid_macros_stay_in_macro_state(text: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_skip_cannot_save_a_meal_without_macros() -> None:
-    """The route that used to write NULL macros no longer exists.
+async def test_skip_saves_the_meal_with_no_macros() -> None:
+    """``/skip`` is back, at the macro step only.
 
-    ``skip_macros`` is gone rather than merely discouraged: while it existed, the
-    fastest path through the flow was also the one that produced an untotalable
-    row, which is how six of the nine meals in the real ledger ended up with
-    calories and nothing else.
+    It was retired because the fastest path through the flow was also the one
+    that produced an untotalable row. What actually happened once it was gone is
+    that people typed macros they had estimated, which is the same guess with
+    the app's knowledge of it removed. A blank macro is honest; totals keep it
+    contagious and the summary says how many values it excluded.
     """
-    assert not hasattr(diet, "skip_macros")
-    assert not hasattr(diet, "skip_calories")
-
-    db = SimpleNamespace(log_diet_with_items=AsyncMock())
+    db = SimpleNamespace(
+        log_diet=AsyncMock(return_value=1),
+        log_diet_with_items=AsyncMock(return_value=1),
+        get_food_preferences=AsyncMock(return_value={}),
+    )
     state = {
         "diet_meal_type": "snack",
         "diet_food_items": "apple",
@@ -372,14 +374,35 @@ async def test_skip_cannot_save_a_meal_without_macros() -> None:
     update = _update(message)
     activate_conversation(update, context, "diet")
 
-    handler = diet._skip_retired(diet.MACROS)
+    await diet.skip_macros(update, context)
+
+    db.log_diet_with_items.assert_awaited()
+    items = db.log_diet_with_items.await_args.args[2]
+    assert len(items) == 1
+    assert items[0]["protein_g"] is None
+    assert items[0]["carbs_g"] is None
+    assert items[0]["fat_g"] is None
+    # Calories are not optional, and the meal still carries them.
+    assert items[0]["calories"] == 95
+
+
+@pytest.mark.asyncio
+async def test_skip_is_still_gone_at_the_calorie_step() -> None:
+    """Only macros became optional. A meal with no calories is not a record."""
+    assert not hasattr(diet, "skip_calories")
+
+    db = SimpleNamespace(log_diet=AsyncMock(), log_diet_with_items=AsyncMock())
+    context = _context(db, user_data={"diet_meal_type": "snack", "diet_food_items": "apple"})
+    message = _message("/skip")
+    update = _update(message)
+    activate_conversation(update, context, "diet")
+
+    handler = diet._skip_retired(diet.CALORIES)
     result = await handler(update, context)
 
-    assert result == diet.MACROS
+    assert result == diet.CALORIES
+    db.log_diet.assert_not_awaited()
     db.log_diet_with_items.assert_not_awaited()
-    # The draft survives, so answering properly still saves the same meal.
-    assert context.user_data["diet_food_items"] == "apple"
-    assert context.user_data["diet_calories"] == 95
     assert active_conversation_flow(context) == "diet"
 
 

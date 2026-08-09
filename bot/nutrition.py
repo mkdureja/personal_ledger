@@ -316,6 +316,26 @@ def require_complete_nutrients(
         )
 
 
+def require_calories(
+    nutrients: Mapping[str, object | None], *, what: str = "This entry"
+) -> None:
+    """Raise unless calories are present; macros may be absent.
+
+    The weaker rule, used only where a person is typing a meal by hand into the
+    guided flow. Everything the app *defines* — a saved food, a catalog row, a
+    resolved item — still goes through :func:`require_complete_nutrients`, so a
+    definition can never carry a hole that then spreads to every meal using it.
+
+    Calories stay mandatory because the daily total, Home, and the diet chart are
+    all built on them, and a meal with no calories is not an incomplete record so
+    much as an absent one. A missing macro is honest and visible: totals keep
+    ``None`` contagious and the summary renders "Macros (known values)" with the
+    count it excluded, rather than quietly adding zero.
+    """
+    if nutrients.get("calories") is None:
+        raise NutritionError(f"{what} is missing calories. Every log needs calories.")
+
+
 def _decimal_value(value: object, field_name: str, *, positive: bool) -> Decimal:
     if isinstance(value, bool):
         raise NutritionError(f"{field_name} must be numeric.")

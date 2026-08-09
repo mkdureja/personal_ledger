@@ -56,6 +56,7 @@ from .nutrition import (
     finalize_log_nutrients,
     format_decimal,
     normalize_catalog_name,
+    require_calories,
     require_complete_nutrients,
 )
 # A plain module-level import: these resolvers are pure and live in the
@@ -959,22 +960,19 @@ class DatabaseManager:
 
         Idempotent when ``source`` is supplied (see :meth:`log_study`).
 
-        All four nutrients are required. They used to default to ``None``, which
-        made an incomplete meal the *easiest* thing to write — and the ledger
-        filled up with rows carrying calories but no macros, which no later
-        analysis can distinguish from a meal that genuinely had none. Validation
-        lives here, at the single write path, rather than only in the handlers,
-        so a new caller cannot reintroduce the gap by omitting an argument.
+        Calories are required; macros are not. They all used to be, because the
+        ledger had filled with rows carrying calories and no macros. What that
+        rule actually produced, over six days of real use, was people typing
+        macros they had estimated in their heads — which puts the same guess in
+        the ledger with none of the honesty, since the app can no longer tell
+        that it was a guess. A blank is at least visibly blank: totals keep
+        ``None`` contagious and the summary says how many values it excluded.
+
+        Calories stay mandatory because Home, the daily total, and the diet chart
+        are built on them. Validation lives here, at the single write path,
+        rather than only in the handlers, so a new caller cannot bypass it.
         """
-        require_complete_nutrients(
-            {
-                "calories": calories,
-                "protein_g": protein_g,
-                "carbs_g": carbs_g,
-                "fat_g": fat_g,
-            },
-            what="This meal",
-        )
+        require_calories({"calories": calories}, what="This meal")
         async with self._write_operation():
             replayed = await self._replayed_entity_id(source, user_id, "diet_log")
             if replayed is not None:
@@ -1079,12 +1077,17 @@ class DatabaseManager:
             raise ValueError(f"A meal can have at most {MAX_MEAL_ITEMS} items.")
 
         for item in items:
-            require_complete_nutrients(
-                item, what=f"'{item.get('display_name', 'This item')}'"
-            )
+            require_calories(item, what=f"'{item.get('display_name', 'This item')}'")
 
-        def _raw_total(field: str) -> float:
-            return sum(float(item[field]) for item in items)
+        def _raw_total(field: str) -> float | None:
+            # One unknown macro makes the meal's total for that macro unknown —
+            # it does not make it smaller. Summing the rest would report a number
+            # that looks complete and is not, which is the failure the whole
+            # mandatory-nutrition rule existed to prevent.
+            values = [item.get(field) for item in items]
+            if any(value is None for value in values):
+                return None
+            return sum(float(value) for value in values)
 
         # Route the aggregate through the same finalizer a single meal uses, so a
         # multi-item meal cannot bypass the per-meal calorie/macro bounds. This is

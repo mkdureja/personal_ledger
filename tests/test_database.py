@@ -322,30 +322,32 @@ class TestDiet:
         assert row["carbs_g"] == pytest.approx(91.25)
         assert row["fat_g"] == pytest.approx(14.0)
 
-    async def test_log_without_nutrition_is_refused(self, db_with_user, user_id):
-        """Nutrition is mandatory: an incomplete meal is never written.
+    async def test_log_without_calories_is_refused(self, db_with_user, user_id):
+        """Calories are mandatory; macros are not, since 2026-08-09.
 
-        This used to be ``test_log_without_calories`` and asserted the opposite.
-        Tracking macros is the point of the ledger, and a row with calories but
-        no macros silently under-reports every total it feeds.
+        Requiring all four made people type macros they had estimated in their
+        heads, which puts the same guess in the ledger while removing the app's
+        ability to know it was one. A blank is at least visibly blank. Calories
+        stay required because every daily total is built on them.
         """
         from datetime import date
 
         from bot.nutrition import NutritionError
 
-        for missing in ("calories", "protein_g", "carbs_g", "fat_g"):
-            values = {
-                "calories": 100,
-                "protein_g": 1.0,
-                "carbs_g": 2.0,
-                "fat_g": 3.0,
-            }
-            values[missing] = None
-            with pytest.raises(NutritionError, match="missing"):
-                await db_with_user.log_diet(user_id, "dinner", "pasta", **values)
+        with pytest.raises(NutritionError, match="missing"):
+            await db_with_user.log_diet(
+                user_id, "dinner", "pasta", None, 1.0, 2.0, 3.0
+            )
 
         logs = await db_with_user.get_diet_logs(user_id, date.today(), date.today())
         assert logs == [], "a refused meal must leave nothing behind"
+
+        # ...and a meal with calories alone is accepted and stored as such.
+        await db_with_user.log_diet(user_id, "dinner", "pasta", 600, None, None, None)
+        logs = await db_with_user.get_diet_logs(user_id, date.today(), date.today())
+        assert len(logs) == 1
+        assert logs[0]["calories"] == 600
+        assert logs[0]["carbs_g"] is None
 
     async def test_invalid_meal_type(self, db_with_user, user_id):
         """CHECK constraint rejects invalid meal types."""

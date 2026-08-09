@@ -90,10 +90,22 @@ The study duration must be unambiguous: a single bare number
 token marked with `m`, e.g. `/study physics 60m reviewed chapter 2`. Two bare
 numbers are rejected with a hint rather than guessed.
 
-**Nutrition is mandatory.** Every meal records calories *and* all three macros —
-tracking macros is the point of the ledger, and a meal saved without them
-silently under-reports every total it feeds, with no way to tell an unknown from
-a genuine zero afterwards. There is no `/skip`.
+**Calories are mandatory; macros are not.** Every meal records calories, because
+Home, the daily total, and the diet chart are all built on them — a meal without
+calories is not an incomplete record, it is an absent one.
+
+Macros were mandatory too, briefly. What that produced in practice was people
+typing macros they had estimated in their heads, which puts the same guess in
+the ledger while removing the app's ability to know it was a guess. So in the
+guided flow `/skip` saves the meal with its calories and leaves the macros
+blank. A blank is honest and visible: an unknown macro makes the *meal's* total
+for that macro unknown rather than smaller, and the summary reports
+`Macros (known values)` with a note naming how many it excluded.
+
+**Definitions are still complete.** A saved food, a recipe, or a catalog entry
+needs all four, because those numbers are inherited by every meal that uses
+them — one hole there spreads everywhere. Saving your usual foods once is still
+the way to stop typing numbers at all.
 
 The numbers come from one of two places, and the app never estimates them:
 
