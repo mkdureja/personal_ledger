@@ -78,7 +78,13 @@ def _format_entry(entry: dict) -> str:
     if kind == "study":
         body = f"📖 <b>{summary}</b> — {entry['n1']} min"
     elif kind == "gym":
-        body = f"🏋️ <b>{summary}</b> — {entry['n1']}×{entry['n2']}"
+        # reps is NULL for a workout logged without per-set detail — either a
+        # varying exercise, or a session recorded as "I trained this" and
+        # nothing more. Rendering it blind produced "1×None".
+        sets = entry["n1"]
+        reps = entry["n2"]
+        detail = f"{sets}×{reps}" if reps is not None else f"{sets} set(s)"
+        body = f"🏋️ <b>{summary}</b> — {detail}"
     else:  # diet
         calories = f" — {entry['n1']} cal" if entry["n1"] is not None else ""
         body = f"🍽️ <b>{summary}</b>{calories}"

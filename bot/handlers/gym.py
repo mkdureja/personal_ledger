@@ -88,8 +88,15 @@ _TAP_RE = re.compile(r"^gx_([a-z]+)_(\d+)(?:_(.+))?$")
 
 _SET_HINT = (
     "Send <b>reps</b> and <b>weight</b> — e.g. <code>10 50</code>.\n"
-    "Just reps (<code>15</code>) means bodyweight."
+    "Just reps (<code>15</code>) means bodyweight.\n"
+    "Whole exercise at once: <code>3x10 40</code>, "
+    "or one set per line — <code>12 40, 10 45, 8 50</code>."
 )
+
+#: One message may carry a whole exercise: sets split on newlines or commas.
+_SET_SPLIT_RE = re.compile(r"[\n,;]+")
+#: ``3x10`` is sets × reps, the universal gym shorthand — never reps × weight.
+_SETS_BY_REPS_RE = re.compile(r"^\s*(\d+)\s*[x×]\s*(.+)$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +162,17 @@ def _exercises_keyboard(user_id: int, group_key: str, rows) -> InlineKeyboardMar
         [
             InlineKeyboardButton(
                 "➕ Add your own", callback_data=_tap("add", user_id, group_key)
+            )
+        ]
+    )
+    # Offered here rather than on a screen of its own: a separate "detail or
+    # not?" step would cost the per-set user a tap on every single workout to
+    # serve the person who never wants one. On this screen both are one tap.
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                f"✅ Just log {group_label(group_key).casefold()}",
+                callback_data=_tap("only", user_id, group_key),
             )
         ]
     )
@@ -484,6 +502,10 @@ async def exercise_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return NEW_NAME
 
+    if action == "only":
+        await _remove_callback_markup(query)
+        return await _log_group_only(update, context, query.message, str(payload))
+
     db = context.bot_data["db"]
     row = await db.get_exercise(update.effective_user.id, int(payload))
     await _remove_callback_markup(query)
@@ -538,9 +560,30 @@ async def _start_exercise(message, context, exercise: str, *, prefix: str = "") 
 # ---------------------------------------------------------------------------
 # Logging sets
 # ---------------------------------------------------------------------------
-def _parse_set(text: str) -> tuple[dict | None, str | None]:
-    """Parse "reps" or "reps weight" into a set, or return a message."""
-    parts = (text or "").replace("x", " ").replace("×", " ").split()
+def _parse_set_item(text: str) -> tuple[list[dict] | None, str | None]:
+    """Parse one item: ``reps``, ``reps weight``, ``NxR``, or ``NxR weight``.
+
+    ``x`` used to be treated as a plain separator, so ``3x10`` became *3 reps at
+    10 kg* — wrong reps and an invented weight, silently, for the single most
+    natural thing a lifter types. In gym notation ``NxR`` is always sets × reps,
+    so that is what it means here, and the weight (if any) follows separately.
+    ``@`` is accepted as noise so ``3x10 @ 40`` reads the way people write it.
+    """
+    cleaned = (text or "").replace("@", " ").strip()
+    if not cleaned:
+        return None, "❌ Send reps, or reps and weight — e.g. <code>10 50</code>."
+
+    count = 1
+    match = _SETS_BY_REPS_RE.match(cleaned)
+    if match is not None:
+        count, err = parse_int(match.group(1), "Sets", max_value=MAX_SETS_PER_EXERCISE)
+        if err:
+            return None, err
+        if count < 1:
+            return None, "❌ That needs at least one set."
+        cleaned = match.group(2)
+
+    parts = cleaned.split()
     if not parts or len(parts) > 2:
         return None, "❌ Send reps, or reps and weight — e.g. <code>10 50</code>."
     reps, err = parse_int(parts[0], "Reps", max_value=MAX_GYM_REPS)
@@ -551,23 +594,49 @@ def _parse_set(text: str) -> tuple[dict | None, str | None]:
         weight, err = parse_float(parts[1], "Weight", max_value=MAX_WEIGHT_KG)
         if err:
             return None, err
-    return {"reps": reps, "weight_kg": weight}, None
+    # A fresh dict per set: they are stored as individual rows and must not
+    # alias, or editing one would edit them all.
+    return [{"reps": reps, "weight_kg": weight} for _ in range(count)], None
+
+
+def _parse_sets(text: str) -> tuple[list[dict] | None, str | None]:
+    """Parse one message into one or more sets.
+
+    A whole exercise can be entered at once — one set per line, or separated by
+    commas — instead of a message per set. Each item still becomes its own row,
+    so nothing is averaged and the storage is identical either way.
+    """
+    items = [part for part in _SET_SPLIT_RE.split(text or "") if part.strip()]
+    if not items:
+        return None, "❌ Send reps, or reps and weight — e.g. <code>10 50</code>."
+    entries: list[dict] = []
+    for item in items:
+        parsed, error = _parse_set_item(item)
+        if error is not None:
+            return None, error
+        entries.extend(parsed)
+        if len(entries) > MAX_SETS_PER_EXERCISE:
+            return None, (
+                f"❌ That's more than {MAX_SETS_PER_EXERCISE} sets for one "
+                "exercise. Split it into two entries."
+            )
+    return entries, None
 
 
 async def receive_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Take one set's reps (and optional weight)."""
-    entry, error = _parse_set(update.message.text)
+    """Take one set, or a whole exercise's worth of them."""
+    entries, error = _parse_sets(update.message.text)
     if error is not None:
         await reply_html(update.message, f"{error}\n{_SET_HINT}")
         return SET_INPUT
-    return await _record_set(update, context, update.message, entry)
+    return await _record_set(update, context, update.message, entries)
 
 
-async def _record_set(update: Update, context, message, entry: dict) -> int:
-    """Append one set to the draft and offer the next action."""
+async def _record_set(update: Update, context, message, entries: list[dict]) -> int:
+    """Append one or more sets to the draft and offer the next action."""
     user_id = update.effective_user.id
     sets: list[dict] = context.user_data.setdefault("gym_sets", [])
-    sets.append(entry)
+    sets.extend(entries)
     if len(sets) >= MAX_SETS_PER_EXERCISE:
         await reply_html(
             message,
@@ -603,11 +672,35 @@ async def after_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await _remove_callback_markup(query)
 
     if action == "same":
-        return await _record_set(update, context, query.message, dict(sets[-1]))
+        return await _record_set(update, context, query.message, [dict(sets[-1])])
     if action == "diff":
         await reply_html(query.message, f"Set {len(sets) + 1} — {_SET_HINT}")
         return SET_INPUT
     return await _save_current_exercise(update, context, query.message)
+
+
+async def _log_group_only(update: Update, context, message, group_key: str) -> int:
+    """Record that a muscle group was trained, with no per-set detail at all.
+
+    Not everyone wants to log a workout set by set, and the alternative to a
+    two-tap entry is not a more detailed entry — it is no entry. The row stores
+    NULL reps and NULL weight, which is the same shape the schema already uses
+    for an exercise whose sets varied, so nothing downstream has to learn a new
+    case. Deliberately no ``gym_sets`` children: inventing a 1×1 set to fill the
+    columns would put a number in the ledger that nobody performed.
+    """
+    db = context.bot_data["db"]
+    user_id = update.effective_user.id
+    label = group_label(group_key)
+    await db.log_gym(user_id, label, 1, None, source=mutation_source(update))
+
+    logged: list[str] = context.user_data.setdefault("gym_exercises", [])
+    logged.append(f"🏋️ {escape_html(label)} — trained, no set detail")
+    context.user_data.pop("gym_sets", None)
+    context.user_data.pop("gym_current_exercise", None)
+    return await _finish_workout(
+        update, context, message, context.user_data.pop("gym_exercises")
+    )
 
 
 async def _save_current_exercise(update: Update, context, message) -> int:

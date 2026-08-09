@@ -192,6 +192,30 @@ sets vary, and the ledger records each one rather than flattening them.
 
 Send just a number (`15`) for a bodyweight set.
 
+**A whole exercise in one message**, if you would rather type than tap:
+
+| You send | It records |
+|---|---|
+| `10 50` | one set, 10 reps at 50 kg |
+| `15` | one set, 15 reps bodyweight |
+| `3x10 40` | three sets of 10 reps at 40 kg |
+| `12 40, 10 45, 8 50` | three different sets |
+
+`NxR` is **sets × reps**, the way it is written in a gym — `3x10` is three sets of
+ten, never three reps at 10 kg. Sets can be separated by commas, semicolons, or
+newlines, and `@` is accepted anywhere (`3x10 @ 40`). Each set still becomes its
+own row, so typing and tapping store exactly the same thing. Nothing is written
+until you finish the exercise, and the draft is shown first — so a batch you
+mistyped is cancelled, not corrected afterwards.
+
+**Logging only the muscle group.** Not everyone wants per-set detail. On the
+exercise list, **✅ Just log chest** records the session as the muscle group and
+nothing else — two taps from the Workout button. It stores no reps, no weight,
+and deliberately no set rows: a fabricated `1 × 1` would be a number nobody
+performed. Those sessions show as "1 set(s)" in `/recent` and count toward your
+workout streak, but contribute nothing to the volume chart, which is correct —
+no volume was recorded.
+
 An exercise that isn't listed is added with **➕ Add your own**; it is saved under
 that muscle group for you (not the other user) and you go straight into logging
 it. The shared starter list is never modified.

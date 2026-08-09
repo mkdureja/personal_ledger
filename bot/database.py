@@ -706,7 +706,7 @@ class DatabaseManager:
         user_id: int,
         exercise: str,
         sets: int,
-        reps: int,
+        reps: int | None,
         weight_kg: float | None = None,
         *,
         source: MutationSource | None = None,
@@ -714,6 +714,11 @@ class DatabaseManager:
         """Log a single gym exercise. Returns the row ID.
 
         Idempotent when ``source`` is supplied (see :meth:`log_study`).
+
+        ``reps`` is optional because a workout can be recorded without per-set
+        detail — either an exercise whose sets varied, or a session logged as
+        nothing more than the muscle group that was trained. The column has been
+        nullable since v11; the annotation now says so.
         """
         async with self._write_operation():
             replayed = await self._replayed_entity_id(source, user_id, "gym_log")

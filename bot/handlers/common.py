@@ -592,13 +592,18 @@ def _undo_detail_lines(entry: dict[str, Any]) -> list[str]:
     elif "exercise" in entry:
         exercise = _bounded_html(entry["exercise"], _MAX_UNDO_TEXT_LENGTH)
         sets = _bounded_html(entry["sets"], _MAX_UNDO_VALUE_LENGTH)
-        reps = _bounded_html(entry["reps"], _MAX_UNDO_VALUE_LENGTH)
-        w = (
-            f" @ {_bounded_html(entry['weight_kg'], _MAX_UNDO_VALUE_LENGTH)}kg"
-            if entry.get("weight_kg") is not None
-            else " (bodyweight)"
-        )
-        lines.append(f"🏋️ {exercise} — {sets}×{reps}{w}")
+        # A workout with no per-set detail stores NULL reps, and a bare
+        # body-part entry has no weight either. Neither should read as "None".
+        if entry.get("reps") is None:
+            lines.append(f"🏋️ {exercise} — {sets} set(s)")
+        else:
+            reps = _bounded_html(entry["reps"], _MAX_UNDO_VALUE_LENGTH)
+            w = (
+                f" @ {_bounded_html(entry['weight_kg'], _MAX_UNDO_VALUE_LENGTH)}kg"
+                if entry.get("weight_kg") is not None
+                else " (bodyweight)"
+            )
+            lines.append(f"🏋️ {exercise} — {sets}×{reps}{w}")
     elif "food_items" in entry:
         meal_type = _bounded_html(entry["meal_type"], _MAX_UNDO_VALUE_LENGTH)
         food_items = _bounded_html(entry["food_items"], _MAX_UNDO_TEXT_LENGTH)

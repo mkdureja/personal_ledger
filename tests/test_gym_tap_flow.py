@@ -170,20 +170,74 @@ class TestSetEntry:
         ("text", "reps", "weight"),
         [
             ("10 50", 10, 50.0),
-            ("10x50", 10, 50.0),
             ("12 42.5", 12, 42.5),
             ("15", 15, None),
+            ("10 @ 50", 10, 50.0),
         ],
     )
     def test_a_set_line_parses(self, text, reps, weight):
-        entry, error = gym._parse_set(text)
+        entries, error = gym._parse_sets(text)
         assert error is None
-        assert entry == {"reps": reps, "weight_kg": weight}
+        assert entries == [{"reps": reps, "weight_kg": weight}]
 
     @pytest.mark.parametrize("text", ["", "lots", "10 50 60", "0 50", "-3"])
     def test_a_bad_set_line_is_refused(self, text):
-        entry, error = gym._parse_set(text)
-        assert entry is None and error
+        entries, error = gym._parse_sets(text)
+        assert entries is None and error
+
+    @pytest.mark.parametrize("text", ["3x10", "3 x 10", "3×10"])
+    def test_n_by_r_means_n_sets_of_r_reps(self, text):
+        """It used to mean 3 reps at 10 kg — wrong reps AND an invented weight.
+
+        In gym notation NxR is always sets by reps, and that is the single most
+        natural thing a lifter types at a set prompt.
+        """
+        entries, error = gym._parse_sets(text)
+        assert error is None
+        assert entries == [{"reps": 10, "weight_kg": None}] * 3
+
+    def test_n_by_r_takes_a_weight(self):
+        entries, error = gym._parse_sets("3x10 40")
+        assert error is None
+        assert entries == [{"reps": 10, "weight_kg": 40.0}] * 3
+
+    def test_repeated_sets_do_not_alias(self):
+        """Each set is its own row; a shared dict would edit three at once."""
+        entries, _error = gym._parse_sets("3x10 40")
+        entries[0]["reps"] = 99
+        assert [e["reps"] for e in entries] == [99, 10, 10]
+
+    @pytest.mark.parametrize(
+        "text",
+        ["12 40, 10 45, 8 50", "12 40\n10 45\n8 50", "12 40; 10 45; 8 50"],
+    )
+    def test_a_whole_exercise_can_arrive_in_one_message(self, text):
+        entries, error = gym._parse_sets(text)
+        assert error is None
+        assert entries == [
+            {"reps": 12, "weight_kg": 40.0},
+            {"reps": 10, "weight_kg": 45.0},
+            {"reps": 8, "weight_kg": 50.0},
+        ]
+
+    def test_batch_and_shorthand_combine(self):
+        entries, error = gym._parse_sets("2x12 40, 8 50")
+        assert error is None
+        assert entries == [
+            {"reps": 12, "weight_kg": 40.0},
+            {"reps": 12, "weight_kg": 40.0},
+            {"reps": 8, "weight_kg": 50.0},
+        ]
+
+    def test_a_batch_over_the_cap_is_refused_whole(self):
+        entries, error = gym._parse_sets(f"{gym.MAX_SETS_PER_EXERCISE + 1}x10")
+        assert entries is None
+        assert error and "sets" in error.casefold()
+
+    def test_one_bad_item_refuses_the_whole_message(self):
+        """Half-accepting a batch would silently drop sets the user typed."""
+        entries, error = gym._parse_sets("12 40, nonsense, 8 50")
+        assert entries is None and error
 
     async def test_the_first_set_offers_same_again(self, db, user_id):
         await db.ensure_user(user_id, None, None)
@@ -326,6 +380,88 @@ class TestSaving:
         assert "gym_sets" not in context.user_data
         assert "gym_current_exercise" not in context.user_data
         assert len(context.user_data["gym_exercises"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Logging a muscle group and nothing else
+# ---------------------------------------------------------------------------
+class TestGroupOnly:
+    """Not everyone logs set by set. The alternative to a two-tap entry is not
+    a more detailed entry — it is no entry at all."""
+
+    async def test_the_exercise_list_offers_logging_the_group_alone(
+        self, db, user_id
+    ):
+        await db.ensure_user(user_id, None, None)
+        await db.seed_exercises(seed_rows())
+        context = _context(db)
+        update = _callback(f"gx_g_{user_id}_chest")
+
+        await gym.group_callback(update, context)
+
+        labels = _labels(_last_markup(update.callback_query.message))
+        assert any(label.startswith("✅ Just log") for label in labels)
+
+    async def test_it_is_offered_even_when_the_group_has_no_exercises(
+        self, db, user_id
+    ):
+        """An empty group is exactly when someone wants the short route."""
+        await db.ensure_user(user_id, None, None)
+        context = _context(db)
+        update = _callback(f"gx_g_{user_id}_chest")
+
+        await gym.group_callback(update, context)
+
+        labels = _labels(_last_markup(update.callback_query.message))
+        assert any(label.startswith("✅ Just log") for label in labels)
+
+    async def test_tapping_it_writes_one_row_with_no_set_detail(self, db, user_id):
+        await db.ensure_user(user_id, None, None)
+        context = _context(db)
+        update = _callback(f"gx_only_{user_id}_chest")
+
+        state = await gym.exercise_callback(update, context)
+
+        rows = await db._query_all("SELECT * FROM gym_logs WHERE user_id = ?", (user_id,))
+        assert len(rows) == 1
+        assert rows[0]["sets"] == 1
+        # NULL, not a fabricated 1: nobody performed a rep here.
+        assert rows[0]["reps"] is None
+        assert rows[0]["weight_kg"] is None
+        assert state == gym.ConversationHandler.END
+
+    async def test_it_records_no_invented_sets(self, db, user_id):
+        """A 1x1 gym_sets child would put a number in the ledger nobody did."""
+        await db.ensure_user(user_id, None, None)
+        context = _context(db)
+        update = _callback(f"gx_only_{user_id}_back")
+
+        await gym.exercise_callback(update, context)
+
+        rows = await db._query_all("SELECT * FROM gym_logs WHERE user_id = ?", (user_id,))
+        children = await db._query_all(
+            "SELECT * FROM gym_sets WHERE gym_log_id = ?", (rows[0]["id"],)
+        )
+        assert children == []
+
+    async def test_the_row_is_named_for_the_muscle_group(self, db, user_id):
+        await db.ensure_user(user_id, None, None)
+        context = _context(db)
+        update = _callback(f"gx_only_{user_id}_legs")
+
+        await gym.exercise_callback(update, context)
+
+        rows = await db._query_all("SELECT * FROM gym_logs WHERE user_id = ?", (user_id,))
+        assert "Legs" in str(rows[0]["exercise"])
+
+    async def test_another_owners_button_cannot_log_for_me(self, db, user_id):
+        await db.ensure_user(user_id, None, None)
+        context = _context(db)
+        update = _callback(f"gx_only_{OTHER}_chest")
+
+        await gym.exercise_callback(update, context)
+
+        assert await db._query_all("SELECT * FROM gym_logs WHERE user_id = ?", (user_id,)) == []
 
 
 # ---------------------------------------------------------------------------
