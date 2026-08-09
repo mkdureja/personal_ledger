@@ -1238,6 +1238,79 @@ async def _migration_0014_app_suggestions(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0015_ai_parsing_tristate(conn: aiosqlite.Connection) -> None:
+    """Let AI parsing be on by default without asserting anyone consented.
+
+    The owner asked for it on by default for both users. The obvious way to do
+    that — ``UPDATE user_settings SET ai_parsing_enabled = 1`` — is exactly what
+    :func:`_migration_0010_ai_parsing_consent` was written to prevent, and it
+    would also stamp ``consented_at`` with a moment at which nobody agreed to
+    anything. A recorded consent that never happened is worse than no record.
+
+    So the column becomes **nullable, and NULL means "has not chosen"**. The
+    deployment default (``AI_PARSING_DEFAULT_ON``) answers for those rows, while
+    ``0`` and ``1`` remain what they have always been: a decision this user made,
+    which the default never overrides. ``consented_at`` keeps its old meaning and
+    is still only ever set by an explicit opt-in.
+
+    Existing rows are converted only where no choice was ever recorded — enabled
+    ``0`` with a NULL ``consented_at``, which is the state v10 created for every
+    user and the state both live users are still in. A user who had explicitly
+    opted out would be indistinguishable from one who never answered, because
+    opt-out deliberately clears the timestamp; that ambiguity is accepted here
+    only because it is verifiable that neither user has run the command, and it
+    cannot recur, since every write from now on stores an explicit 0 or 1.
+
+    SQLite cannot drop a NOT NULL constraint in place, so the table is rebuilt.
+    """
+    cursor = await conn.execute("PRAGMA table_info(user_settings)")
+    columns = {row["name"]: row for row in await cursor.fetchall()}
+    if "ai_parsing_enabled" not in columns:  # pragma: no cover - v10 guarantees it
+        return
+    if not columns["ai_parsing_enabled"]["notnull"]:
+        return  # already nullable
+
+    await conn.execute(
+        """
+        CREATE TABLE user_settings_new (
+            user_id                 INTEGER PRIMARY KEY,
+            reminders_enabled       INTEGER NOT NULL DEFAULT 1
+                                        CHECK(reminders_enabled IN (0, 1)),
+            routine_profile         TEXT,
+            created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            suggestions_enabled     INTEGER NOT NULL DEFAULT 1
+                                        CHECK(suggestions_enabled IN (0, 1)),
+            ai_parsing_enabled      INTEGER
+                                        CHECK(ai_parsing_enabled IS NULL
+                                              OR ai_parsing_enabled IN (0, 1)),
+            ai_parsing_consented_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO user_settings_new (
+            user_id, reminders_enabled, routine_profile, created_at, updated_at,
+            suggestions_enabled, ai_parsing_enabled, ai_parsing_consented_at
+        )
+        SELECT
+            user_id, reminders_enabled, routine_profile, created_at, updated_at,
+            suggestions_enabled,
+            CASE
+                WHEN ai_parsing_enabled = 0 AND ai_parsing_consented_at IS NULL
+                    THEN NULL
+                ELSE ai_parsing_enabled
+            END,
+            ai_parsing_consented_at
+        FROM user_settings
+        """
+    )
+    await conn.execute("DROP TABLE user_settings")
+    await conn.execute("ALTER TABLE user_settings_new RENAME TO user_settings")
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1253,6 +1326,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     12: _migration_0012_meal_shortcuts,
     13: _migration_0013_weight_logs,
     14: _migration_0014_app_suggestions,
+    15: _migration_0015_ai_parsing_tristate,
 }
 
 

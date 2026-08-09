@@ -180,13 +180,19 @@ async def aiparse_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     enabled = await db.get_ai_parsing_enabled(user.id)
+    chosen = await db.has_chosen_ai_parsing(user.id)
     state = "🤖 on" if enabled else "off"
+    # Named honestly: a default is not a decision this person made, and telling
+    # them it is would be the same lie as recording a consent they never gave.
+    how = "your choice" if chosen else "the default — you haven't chosen"
     await reply_html(
         update.message,
-        f"AI meal parsing: <b>{state}</b>.\n\n"
-        "When on, text <code>/describe</code> can't parse locally is sent to "
-        "Google Gemini to be split into items. Nutrition always comes from your "
-        "saved foods — never from the AI.\n"
+        f"AI meal parsing: <b>{state}</b> <i>({how})</i>.\n\n"
+        "When on, text <code>/describe</code> or a voice note can't parse "
+        "locally is sent to Google Gemini to be split into items. Only that "
+        "leftover text — never your logs, totals, name, or Telegram ID. "
+        "Nutrition always comes from your saved foods and the catalog, never "
+        "from the AI, and every meal is still confirmed by you before it saves.\n"
         "Use <code>/aiparse on</code> or <code>/aiparse off</code>.",
     )
 

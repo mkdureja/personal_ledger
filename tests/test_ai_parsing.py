@@ -552,10 +552,10 @@ async def test_aiparse_stores_nothing_when_the_bot_has_no_key(monkeypatch):
     assert "isn't configured" in update.message.reply_text.call_args.args[0]
 
 
-async def test_consent_defaults_to_off_and_round_trips(db):
+async def test_a_choice_round_trips_and_is_recorded(db):
+    """The setting no longer defaults to off (see test_ai_parsing_default.py),
+    but an explicit choice still round-trips and is still audited."""
     await db.ensure_user(UID, "t", "Test")
-
-    assert await db.get_ai_parsing_enabled(UID) is False
 
     await db.set_ai_parsing_enabled(UID, True)
     assert await db.get_ai_parsing_enabled(UID) is True
@@ -572,15 +572,25 @@ async def test_consent_defaults_to_off_and_round_trips(db):
     assert row["ai_parsing_consented_at"] is None
 
 
-async def test_a_user_with_no_settings_row_is_opted_out(db):
-    """Absence must never read as consent."""
+async def test_absence_is_never_read_as_consent(db, monkeypatch):
+    """The original protection, restated for the tri-state.
+
+    A missing row now falls back to the deployment default rather than being
+    hardcoded off — but it is still *not consent*: nothing is recorded, and
+    turning the default off leaves the user off, which a stored consent would
+    not have done.
+    """
+    monkeypatch.setattr("bot.config.AI_PARSING_DEFAULT_ON", False)
     await db.ensure_user(UID, "t", "Test")
     await db._query_one("DELETE FROM user_settings WHERE user_id = ?", (UID,))
 
     assert await db.get_ai_parsing_enabled(UID) is False
+    assert await db.has_chosen_ai_parsing(UID) is False
 
 
-async def test_consent_is_per_user(db):
+async def test_consent_is_per_user(db, monkeypatch):
+    """One user's choice never moves the other's, in either direction."""
+    monkeypatch.setattr("bot.config.AI_PARSING_DEFAULT_ON", False)
     other = 987654321
     await db.ensure_user(UID, "t", "Test")
     await db.ensure_user(other, "o", "Other")
@@ -589,3 +599,4 @@ async def test_consent_is_per_user(db):
 
     assert await db.get_ai_parsing_enabled(UID) is True
     assert await db.get_ai_parsing_enabled(other) is False
+    assert await db.has_chosen_ai_parsing(other) is False

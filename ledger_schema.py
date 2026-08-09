@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # The version this checkout migrates a database to. Bump it (and register the new
 # migration in ``bot.migrations._MIGRATIONS``) for every schema change.
-LATEST_SCHEMA_VERSION = 14
+LATEST_SCHEMA_VERSION = 15
 
 # Version 0 is the pre-versioning legacy shape. It is *not* a certifiable schema
 # version: those databases never stamped a version and their table/column shape
@@ -117,6 +117,10 @@ VERIFIED_COLUMNS: dict[str, tuple[tuple[int, tuple[str, ...]], ...]] = {
         # v10 is column-only: without this group a database that lost both
         # consent columns would still verify as a sound v10.
         (10, ("ai_parsing_enabled", "ai_parsing_consented_at")),
+        # v15 rebuilds the table to make ai_parsing_enabled nullable, so the
+        # columns are unchanged by name. Listed again at 15 so a database that
+        # lost them cannot verify as a sound v15 either.
+        (15, ("ai_parsing_enabled", "ai_parsing_consented_at")),
     ),
     "diet_log_items": (
         (

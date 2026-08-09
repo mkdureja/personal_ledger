@@ -2638,18 +2638,41 @@ class DatabaseManager:
             )
 
     async def get_ai_parsing_enabled(self, user_id: int) -> bool:
-        """Whether this user consented to external meal-text parsing.
+        """Whether this user's meal text may go to the external parser.
 
-        Defaults to **False**, including for a missing settings row. Unlike
-        suggestions, absence must never mean "on": the default here governs
-        whether text leaves the host, so an unmigrated, unseen, or newly created
-        user is opted out until they say otherwise.
+        Three states, and the distinction is the whole point (schema v15):
+
+        * ``1`` / ``0`` — this user ran ``/aiparse`` and decided. Returned as-is;
+          the deployment default never overrides a decision someone made.
+        * ``NULL``, or no settings row at all — they have not chosen, so
+          :data:`config.AI_PARSING_DEFAULT_ON` answers for them.
+
+        A missing row is treated as "not chosen" rather than as "off" because it
+        means the same thing: nobody has expressed a preference yet.
+        """
+        # Imported here, as elsewhere in this module, to keep the data layer
+        # free of a module-scope dependency on deployment settings.
+        from .config import AI_PARSING_DEFAULT_ON
+
+        row = await self._query_one(
+            "SELECT ai_parsing_enabled FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        )
+        if row is None or row["ai_parsing_enabled"] is None:
+            return AI_PARSING_DEFAULT_ON
+        return bool(row["ai_parsing_enabled"])
+
+    async def has_chosen_ai_parsing(self, user_id: int) -> bool:
+        """Whether this user has ever answered the AI-parsing question.
+
+        Lets ``/aiparse`` report "on by default" honestly instead of claiming a
+        choice the user never made.
         """
         row = await self._query_one(
             "SELECT ai_parsing_enabled FROM user_settings WHERE user_id = ?",
             (user_id,),
         )
-        return bool(row is not None and row["ai_parsing_enabled"])
+        return row is not None and row["ai_parsing_enabled"] is not None
 
     async def set_ai_parsing_enabled(self, user_id: int, enabled: bool) -> None:
         """Record or revoke consent for external meal-text parsing.

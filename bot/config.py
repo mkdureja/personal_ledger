@@ -88,8 +88,24 @@ if BACKUP_DEST_DIR:
 # echoed into a message, or written to the database.
 #
 # This is only the *capability*. Whether a given user's meal text may be sent is
-# a separate, per-user, default-OFF consent decision.
+# still a separate, per-user decision — see AI_PARSING_DEFAULT_ON below for what
+# answers that question when the user has not made one.
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+
+# What a user who has never run ``/aiparse`` is treated as having chosen.
+#
+# This started life as default-OFF, on the principle that consent cannot be
+# inferred. It is now default-ON at the owner's explicit instruction, which is
+# his to give for his own household bot — but the principle is kept where it
+# actually matters: this default only ever answers for a user who has *not*
+# chosen (schema v15 stores that as NULL, distinct from a real 0). An explicit
+# ``/aiparse off`` is a decision, and no default overrides it. Nothing here
+# writes a consent timestamp, because nobody consented; and the per-message
+# disclosure in the preview still tells each user, on the message where it
+# happened, that the text was sent.
+AI_PARSING_DEFAULT_ON: bool = os.getenv(
+    "AI_PARSING_DEFAULT_ON", "true"
+).strip().casefold() in {"1", "true", "yes", "on"}
 # Chosen by measurement against the live free tier, and re-measured after the
 # first choice degraded in service:
 #   gemini-flash-latest       3.6s, correct, 5 requests/minute free   <- default
