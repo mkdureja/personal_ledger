@@ -1,0 +1,474 @@
+<!doctype html>
+<!--
+  The page half of scripts/food_admin.py. Served only from 127.0.0.1, only with
+  the per-run token in the URL. Entirely self-contained: no fonts, no scripts,
+  no images from anywhere else, which is what lets the server send a
+  default-src 'none' policy and mean it.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledger — foods and recipes</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1a1d21;
+    --muted: #5d6570;
+    --line: #dfe3e8;
+    --accent: #2f6f4f;
+    --accent-ink: #ffffff;
+    --bad: #a3352c;
+    --good: #2f6f4f;
+    --chip: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a;
+      --panel: #1c2024;
+      --ink: #e8eaed;
+      --muted: #9aa3ad;
+      --line: #2e343b;
+      --accent: #6bbd8e;
+      --accent-ink: #10161a;
+      --bad: #e88b82;
+      --good: #6bbd8e;
+      --chip: #262c32;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 20px 64px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 21px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; margin: 0 0 14px; letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted); }
+  h3 { font-size: 14px; margin: 18px 0 8px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 22px; }
+  .sub code { background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 18px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; letter-spacing: 0.02em; }
+  input, select, button {
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: flex; gap: 8px; margin-bottom: 12px; }
+  .row > div { flex: 1; min-width: 0; }
+  .row > div.narrow { flex: 0 0 92px; }
+  .row > div.unit { flex: 0 0 104px; }
+  .hint { font-size: 12px; color: var(--muted); margin: -6px 0 14px; }
+  fieldset { border: 1px dashed var(--line); border-radius: 10px; padding: 12px; margin: 0 0 14px; }
+  legend { font-size: 12px; color: var(--muted); padding: 0 6px; }
+  .who { display: flex; flex-wrap: wrap; gap: 14px; }
+  .who label { display: flex; align-items: center; gap: 7px; font-size: 14px; color: var(--ink); margin: 0; cursor: pointer; }
+  .who input { width: auto; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; cursor: pointer; padding: 11px; }
+  button.primary:hover { filter: brightness(1.06); }
+  button.link { background: none; border: none; color: var(--accent); width: auto; padding: 4px 0; cursor: pointer; font-size: 13px; text-align: left; }
+  button.tiny { width: auto; flex: 0 0 auto; padding: 8px 11px; color: var(--muted); cursor: pointer; }
+  .msg { margin-top: 14px; font-size: 13px; border-radius: 8px; padding: 10px 12px; display: none; }
+  .msg.show { display: block; }
+  .msg.ok { background: color-mix(in srgb, var(--good) 12%, transparent); color: var(--good); }
+  .msg.err { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  .msg ul { margin: 6px 0 0; padding-left: 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding: 0 8px 6px 0; }
+  td { padding: 7px 8px 7px 0; border-top: 1px solid var(--line); vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 5px; padding: 1px 6px; font-size: 11px; color: var(--muted); margin-right: 4px; }
+  .count { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Foods and recipes</h1>
+  <p class="sub" id="meta"></p>
+
+  <div class="cols">
+    <!-- ---------------------------------------------------------------- -->
+    <section class="panel">
+      <h2>Add a food</h2>
+      <p class="hint">One ingredient, with the numbers off its label. The amount
+      varies when you log it.</p>
+
+      <div class="row"><div>
+        <label for="f-name">Name</label>
+        <input id="f-name" placeholder="Rolled oats" maxlength="100">
+      </div></div>
+
+      <div class="row">
+        <div class="narrow">
+          <label for="f-basis">Numbers are per</label>
+          <input id="f-basis" type="number" step="any" min="0" value="100">
+        </div>
+        <div class="unit">
+          <label for="f-unit">&nbsp;</label>
+          <select id="f-unit">
+            <option value="g">g</option>
+            <option value="ml">ml</option>
+            <option value="piece">piece</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <div><label for="f-kcal">kcal</label><input id="f-kcal" type="number" step="any" min="0"></div>
+        <div><label for="f-p">Protein g</label><input id="f-p" type="number" step="any" min="0"></div>
+        <div><label for="f-c">Carbs g</label><input id="f-c" type="number" step="any" min="0"></div>
+        <div><label for="f-f">Fat g</label><input id="f-f" type="number" step="any" min="0"></div>
+      </div>
+      <p class="hint">All four are required. Zero is an answer; blank is not.</p>
+
+      <fieldset>
+        <legend>Named portions — optional</legend>
+        <div id="f-portions"></div>
+        <button class="link" type="button" id="f-add-portion">+ add a portion</button>
+        <p class="hint" style="margin:8px 0 0">Lets you log <em>1 bowl</em> instead of
+        <em>40 g</em>. The amount is in the food's own unit above.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Usual amount — optional</legend>
+        <div class="row" style="margin:0">
+          <div class="narrow"><input id="f-def-amt" type="number" step="any" min="0" placeholder="40"></div>
+          <div><input id="f-def-unit" placeholder="g, or a portion name"></div>
+        </div>
+        <p class="hint" style="margin:8px 0 0">Setting this is what makes the food
+        a ⚡ one-tap row.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Save for</legend>
+        <div class="who" id="f-who"></div>
+      </fieldset>
+
+      <button class="primary" type="button" id="f-save">Save food</button>
+      <div class="msg" id="f-msg"></div>
+    </section>
+
+    <!-- ---------------------------------------------------------------- -->
+    <section class="panel">
+      <h2>Add a recipe</h2>
+      <p class="hint">A combination of foods you have already saved. Its
+      nutrition is calculated from the ingredients every time, never stored — so
+      every ingredient must exist as a saved food first.</p>
+
+      <div class="row"><div>
+        <label for="r-name">Name</label>
+        <input id="r-name" placeholder="Overnight oats" maxlength="100">
+      </div></div>
+
+      <div class="row">
+        <div class="narrow">
+          <label for="r-yield">Makes</label>
+          <input id="r-yield" type="number" step="any" min="0" value="1">
+        </div>
+        <div class="unit">
+          <label for="r-yield-unit">&nbsp;</label>
+          <select id="r-yield-unit">
+            <option value="serving">serving</option>
+            <option value="g">g</option>
+            <option value="ml">ml</option>
+            <option value="piece">piece</option>
+          </select>
+        </div>
+      </div>
+
+      <fieldset>
+        <legend>Ingredients</legend>
+        <div id="r-items"></div>
+        <button class="link" type="button" id="r-add-item">+ add an ingredient</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Usual amount — optional</legend>
+        <div class="row" style="margin:0">
+          <div class="narrow"><input id="r-def-amt" type="number" step="any" min="0" placeholder="1"></div>
+          <div><input id="r-def-unit" placeholder="serving"></div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Save for</legend>
+        <div class="who" id="r-who"></div>
+      </fieldset>
+
+      <button class="primary" type="button" id="r-save">Save recipe</button>
+      <div class="msg" id="r-msg"></div>
+    </section>
+  </div>
+
+  <h3 style="margin-top:26px">What each ledger holds</h3>
+  <div class="cols" id="ledgers"></div>
+</div>
+
+<datalist id="known-foods"></datalist>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+let STATE = { users: [] };
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, kids = []) => {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v; else node.setAttribute(k, v);
+  }
+  for (const kid of [].concat(kids)) {
+    node.append(kid instanceof Node ? kid : document.createTextNode(kid));
+  }
+  return node;
+};
+const num = (v) => {
+  const t = String(v ?? "").trim();
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+};
+const fmt = (v) => (v === null || v === undefined ? "—" : String(Math.round(v * 100) / 100));
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: { "X-Admin-Token": TOKEN, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({ error: "The server sent no answer." }));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status}).`);
+  return data;
+}
+
+// -- repeating rows ---------------------------------------------------------
+
+function portionRow() {
+  const name = el("input", { placeholder: "bowl", maxlength: "50" });
+  const amt = el("input", { type: "number", step: "any", min: "0", placeholder: "40" });
+  const row = el("div", { class: "row" }, [
+    el("div", {}, [name]),
+    el("div", { class: "narrow" }, [amt]),
+  ]);
+  const drop = el("button", { class: "tiny", type: "button", title: "remove" }, "✕");
+  drop.onclick = () => row.remove();
+  row.append(drop);
+  row._read = () => {
+    const n = name.value.trim(), a = num(amt.value);
+    if (!n && a === null) return null;
+    return { name: n, amount: a === null ? 0 : a };
+  };
+  return row;
+}
+
+function ingredientRow() {
+  const food = el("input", { placeholder: "Rolled oats", list: "known-foods", maxlength: "100" });
+  const amt = el("input", { type: "number", step: "any", min: "0", placeholder: "60" });
+  const unit = el("input", { placeholder: "g", maxlength: "50", value: "g" });
+  const row = el("div", { class: "row" }, [
+    el("div", {}, [food]),
+    el("div", { class: "narrow" }, [amt]),
+    el("div", { class: "unit" }, [unit]),
+  ]);
+  const drop = el("button", { class: "tiny", type: "button", title: "remove" }, "✕");
+  drop.onclick = () => row.remove();
+  row.append(drop);
+  row._read = () => {
+    const f = food.value.trim(), a = num(amt.value), u = unit.value.trim();
+    if (!f && a === null && !u) return null;
+    return { food: f, amount: a === null ? 0 : a, unit: u };
+  };
+  return row;
+}
+
+const readRows = (host) =>
+  [...host.children].map((r) => r._read && r._read()).filter(Boolean);
+
+// -- rendering --------------------------------------------------------------
+
+function renderWho(host, name) {
+  host.replaceChildren();
+  for (const user of STATE.users) {
+    const box = el("input", { type: "checkbox", name, value: String(user.user_id) });
+    box.checked = true;
+    host.append(el("label", {}, [box, user.label]));
+  }
+}
+
+function chosen(host) {
+  return [...host.querySelectorAll("input:checked")].map((b) => Number(b.value));
+}
+
+function foodTable(user) {
+  if (!user.foods.length) return el("p", { class: "empty" }, "No saved foods yet.");
+  const body = el("tbody");
+  for (const f of user.foods) {
+    const label = el("td", {}, [f.name]);
+    if (f.portions.length) {
+      label.append(el("br"));
+      for (const p of f.portions) {
+        label.append(el("span", { class: "chip" }, `${p.name} = ${fmt(p.amount)} ${f.base_unit}`));
+      }
+    }
+    body.append(el("tr", {}, [
+      label,
+      el("td", { class: "num" }, `per ${fmt(f.basis_amount)} ${f.base_unit}`),
+      el("td", { class: "num" }, fmt(f.calories)),
+      el("td", { class: "num" }, `${fmt(f.protein_g)} / ${fmt(f.carbs_g)} / ${fmt(f.fat_g)}`),
+    ]));
+  }
+  const table = el("table", {}, [
+    el("thead", {}, [el("tr", {}, [
+      el("th", {}, "Food"), el("th", { class: "num" }, "Basis"),
+      el("th", { class: "num" }, "kcal"), el("th", { class: "num" }, "P / C / F"),
+    ])]),
+    body,
+  ]);
+  return el("div", { class: "scroll" }, [table]);
+}
+
+function recipeList(user) {
+  if (!user.recipes.length) return el("p", { class: "empty" }, "No recipes yet.");
+  const list = el("div");
+  for (const r of user.recipes) {
+    const parts = r.ingredients.map((i) => `${fmt(i.amount)} ${i.unit} ${i.food}`).join(" · ");
+    list.append(el("div", { style: "padding:7px 0;border-top:1px solid var(--line)" }, [
+      el("div", {}, `${r.name} — makes ${fmt(r.yield_amount)} ${r.yield_unit}`),
+      el("div", { class: "empty", style: "padding:2px 0" }, parts || "no ingredients"),
+    ]));
+  }
+  return list;
+}
+
+function render() {
+  $("meta").innerHTML =
+    `<code>${STATE.db_path}</code> · schema v${STATE.schema_version} · ` +
+    `${STATE.users.length} ledger(s). Every write goes through the same code the bot uses.`;
+
+  renderWho($("f-who"), "f-who");
+  renderWho($("r-who"), "r-who");
+
+  const names = new Set();
+  for (const u of STATE.users) for (const f of u.foods) names.add(f.name);
+  $("known-foods").replaceChildren(...[...names].sort().map((n) => el("option", { value: n })));
+
+  const host = $("ledgers");
+  host.replaceChildren();
+  for (const user of STATE.users) {
+    host.append(el("section", { class: "panel" }, [
+      el("h2", {}, [user.label,
+        el("span", { class: "count" }, ` · ${user.foods.length} foods, ${user.recipes.length} recipes`)]),
+      foodTable(user),
+      el("h3", {}, "Recipes"),
+      recipeList(user),
+    ]));
+  }
+}
+
+function say(box, ok, headline, lines) {
+  box.className = `msg show ${ok ? "ok" : "err"}`;
+  box.replaceChildren(el("div", {}, headline));
+  if (lines && lines.length) {
+    box.append(el("ul", {}, lines.map((t) => el("li", {}, t))));
+  }
+}
+
+function report(box, results) {
+  const good = results.filter((r) => r.ok);
+  const bad = results.filter((r) => !r.ok);
+  const nameOf = (id) => (STATE.users.find((u) => u.user_id === id) || {}).label || id;
+  const lines = [];
+  for (const r of good) for (const n of r.notes || []) lines.push(`${nameOf(r.user_id)}: ${n}`);
+  for (const r of bad) lines.push(`${nameOf(r.user_id)}: ${r.error}`);
+  if (!bad.length) {
+    const verb = good.map((r) => `${nameOf(r.user_id)} (${r.status})`).join(", ");
+    say(box, true, `Saved “${good[0].name}” for ${verb}.`, lines);
+  } else {
+    say(box, good.length > 0, `Saved for ${good.length} of ${results.length}.`, lines);
+  }
+}
+
+// -- actions ----------------------------------------------------------------
+
+function defaultOf(amtId, unitId) {
+  const amount = num($(amtId).value), unit = $(unitId).value.trim();
+  if (amount === null && !unit) return null;
+  return { amount: amount === null ? 0 : amount, unit };
+}
+
+async function saveFood() {
+  const box = $("f-msg");
+  try {
+    const data = await api("/api/food", {
+      user_ids: chosen($("f-who")),
+      food: {
+        name: $("f-name").value.trim(),
+        base_unit: $("f-unit").value,
+        basis_amount: num($("f-basis").value),
+        calories: num($("f-kcal").value),
+        protein_g: num($("f-p").value),
+        carbs_g: num($("f-c").value),
+        fat_g: num($("f-f").value),
+        portions: readRows($("f-portions")),
+        default: defaultOf("f-def-amt", "f-def-unit"),
+      },
+    });
+    STATE = data;
+    render();
+    report(box, data.results);
+    for (const id of ["f-name", "f-kcal", "f-p", "f-c", "f-f", "f-def-amt", "f-def-unit"]) {
+      $(id).value = "";
+    }
+    $("f-portions").replaceChildren();
+    $("f-name").focus();
+  } catch (err) {
+    say(box, false, err.message);
+  }
+}
+
+async function saveRecipe() {
+  const box = $("r-msg");
+  try {
+    const data = await api("/api/recipe", {
+      user_ids: chosen($("r-who")),
+      recipe: {
+        name: $("r-name").value.trim(),
+        yield_amount: num($("r-yield").value),
+        yield_unit: $("r-yield-unit").value,
+        ingredients: readRows($("r-items")),
+        default: defaultOf("r-def-amt", "r-def-unit"),
+      },
+    });
+    STATE = data;
+    render();
+    report(box, data.results);
+    $("r-name").value = "";
+    $("r-items").replaceChildren(ingredientRow());
+    $("r-name").focus();
+  } catch (err) {
+    say(box, false, err.message);
+  }
+}
+
+// -- boot -------------------------------------------------------------------
+
+$("f-add-portion").onclick = () => $("f-portions").append(portionRow());
+$("r-add-item").onclick = () => $("r-items").append(ingredientRow());
+$("f-save").onclick = saveFood;
+$("r-save").onclick = saveRecipe;
+
+$("r-items").append(ingredientRow());
+api("/api/state")
+  .then((data) => { STATE = data; render(); })
+  .catch((err) => { $("meta").textContent = err.message; });
+</script>
+</body>
+</html>

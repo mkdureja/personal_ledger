@@ -245,6 +245,35 @@ Dimensions are never converted unless you configure an explicit food-specific
 mapping such as `piece=50g` or `ml=1.4g`. A recipe can be logged in grams or
 millilitres only when its recorded yield uses that unit dimension.
 
+**Food or recipe?** A food is one ingredient and stores its own nutrition, read
+off a label as "per 100 g" or "per piece"; the amount varies when you log it. A
+recipe is a combination and stores *no* nutrition at all — it is calculated from
+its ingredients every time. So every ingredient must already exist as one of that
+user's saved foods, and a shared-catalog entry cannot be an ingredient.
+
+### Adding foods from this machine
+
+Building the first dozen staples is a form-shaped job, not a chat-shaped one:
+
+```powershell
+python -m scripts.food_admin
+```
+
+It prints a `http://127.0.0.1:8765/?token=...` URL and opens it. The page adds
+foods and recipes to either ledger — or both at once, as separate rows — with
+named portions and the usual amount that makes a source a ⚡ one-tap row.
+
+Every write goes through `DatabaseManager`, so mandatory nutrition, name
+normalization, portion rules, and owner checks are the same code the bot runs.
+It **never migrates**: if the database is not at the version this checkout knows,
+it refuses to start and tells you to start the bot once, whose preflight takes a
+verified backup first. It binds to the loopback interface and requires the
+per-run token, because a page in a browser can post to `localhost` without a
+token being involved.
+
+Safe to run while the bot is polling — both open the same WAL database with a
+busy timeout — though a batch of foods is calmer with the bot stopped.
+
 ### Fast logging (Phase 1)
 
 Gated per user by `PHASE1_ENABLED_USER_IDS` — see
