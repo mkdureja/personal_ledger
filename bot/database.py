@@ -41,6 +41,7 @@ from .meal_models import (
     RepeatStatus,
     UndoResult,
     UndoStatus,
+    PREFERENCE_SOURCE_TYPES,
 )
 from .services.current_values import preview_signature
 from .nutrition import (
@@ -2246,7 +2247,7 @@ class DatabaseManager:
         hidden: bool | None = None,
     ) -> None:
         """Upsert a source's pin/hide flags. Enforces mutual exclusivity and active sources."""
-        if source_type not in ("food", "recipe", "catalog"):
+        if source_type not in PREFERENCE_SOURCE_TYPES:
             raise ValueError(f"Unknown source_type {source_type!r}")
         async with self._write_operation():
             await self._assert_source_not_cross_owner(user_id, source_type, source_id)
@@ -2422,7 +2423,7 @@ class DatabaseManager:
         unusable quantity and ``ValueError`` when the source is missing, archived,
         or another user's (both fail identically, revealing nothing).
         """
-        if source_type not in ("food", "recipe", "catalog"):
+        if source_type not in PREFERENCE_SOURCE_TYPES:
             raise ValueError(f"Unknown source_type {source_type!r}")
         tokens = [format_decimal(quantity.amount), str(quantity.unit)]
         async with self._write_operation(begin_immediate=True):
@@ -2471,7 +2472,7 @@ class DatabaseManager:
         the row only when nothing else is left on it. A missing preference is a
         harmless ``False``.
         """
-        if source_type not in ("food", "recipe", "catalog"):
+        if source_type not in PREFERENCE_SOURCE_TYPES:
             raise ValueError(f"Unknown source_type {source_type!r}")
         async with self._write_operation(begin_immediate=True):
             cursor = await self.conn.execute(
@@ -2511,7 +2512,7 @@ class DatabaseManager:
         nothing and says which one it was, so the handler can open the right
         repair screen.
         """
-        if source_type not in ("food", "recipe", "catalog"):
+        if source_type not in PREFERENCE_SOURCE_TYPES:
             raise ValueError(f"Unknown source_type {source_type!r}")
         if set_as_default and (source_type == "catalog" or quantity is None):
             raise ValueError("A default needs a private source and an amount.")

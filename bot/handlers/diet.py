@@ -81,6 +81,7 @@ from ..meal_models import (
     DefaultQuantity,
     DietEntryMode,
     QuickMealStatus,
+    PREFERENCE_SOURCE_TYPES,
 )
 from ..services.meal_logging import infer_meal_type
 from ..nutrition import (
@@ -1515,7 +1516,7 @@ async def receive_custom_amount(
     sel_id = context.user_data.get("diet_sel_id")
     db = context.bot_data["db"]
     uid = update.effective_user.id
-    if kind not in ("food", "recipe", "catalog") or sel_id is None:
+    if kind not in PREFERENCE_SOURCE_TYPES or sel_id is None:
         finish_conversation(update, context, "diet")
         await update.message.reply_text(
             "⚠️ Lost track of the item. Start again with /diet."
@@ -1573,7 +1574,7 @@ async def _rerender_quantity_screen(
     uid = update.effective_user.id
     kind = context.user_data.get("diet_sel_kind")
     sel_id = context.user_data.get("diet_sel_id")
-    if kind not in ("food", "recipe", "catalog") or sel_id is None:
+    if kind not in PREFERENCE_SOURCE_TYPES or sel_id is None:
         return PORTION_CHOICE
     pref = await db.get_food_preference(uid, kind, sel_id) or {}
     recent = context.user_data.get("diet_recent_qtys") or []
@@ -1659,7 +1660,7 @@ async def _apply_pref_desired_state(
 
     kind = context.user_data.get("diet_sel_kind")
     sel_id = context.user_data.get("diet_sel_id")
-    if kind not in ("food", "recipe", "catalog") or sel_id is None:
+    if kind not in PREFERENCE_SOURCE_TYPES or sel_id is None:
         await query.answer()
         return await _reprompt_food_choice(update, context, query.message)
 
@@ -1954,7 +1955,8 @@ async def _show_quick_confirm(
             update.effective_user.id,
             revision,
             can_set_default=(
-                kind in ("food", "recipe") and item["entered_amount"] is not None
+                kind in PREFERENCE_SOURCE_TYPES
+                and item["entered_amount"] is not None
             ),
         ),
     )
@@ -1970,7 +1972,7 @@ def _pending_quantity(context: ContextTypes.DEFAULT_TYPE):
     source_id = pending.get("source_id")
     amount = pending.get("entered_amount")
     unit = pending.get("entered_unit")
-    if kind not in ("food", "recipe", "catalog") or source_id is None:
+    if kind not in PREFERENCE_SOURCE_TYPES or source_id is None:
         return None
     if amount is None or unit is None:
         return None
@@ -2122,7 +2124,7 @@ def _default_target(context: ContextTypes.DEFAULT_TYPE):
     """The (kind, id) the default screens are acting on, if still coherent."""
     kind = context.user_data.get("diet_default_source_type")
     source_id = context.user_data.get("diet_default_source_id")
-    if kind not in ("food", "recipe", "catalog") or source_id is None:
+    if kind not in PREFERENCE_SOURCE_TYPES or source_id is None:
         return None
     return kind, int(source_id)
 
@@ -3487,7 +3489,7 @@ async def _rerender_diet_state(
             quick_confirm_keyboard(
                 uid,
                 revision,
-                can_set_default=pending.get("source_type") in ("food", "recipe", "catalog"),
+                can_set_default=pending.get("source_type") in PREFERENCE_SOURCE_TYPES,
             ),
         )
         return QUICK_CONFIRM if prompt is not None else ConversationHandler.END

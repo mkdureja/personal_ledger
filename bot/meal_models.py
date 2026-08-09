@@ -16,6 +16,15 @@ class DietItemSourceType(StrEnum):
     CATALOG = "catalog"
     FREETEXT = "freetext"
 
+
+#: The source types that can carry a user preference — a usual amount, a pin, or
+#: a hide. Named once because widening it is otherwise a hunt: the same tuple was
+#: spelled out at a dozen call sites, and v16 shipped with two of them missed, so
+#: the storage accepted a catalog preference that no screen would ever offer and
+#: no keyboard would ever render. ``freetext`` is absent on purpose — it has no
+#: source row to hold a preference against.
+PREFERENCE_SOURCE_TYPES: tuple[str, ...] = ("food", "recipe", "catalog")
+
 class QuickMealStatus(StrEnum):
     CREATED = "created"
     REPLAYED = "replayed"

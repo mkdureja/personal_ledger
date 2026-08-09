@@ -13,13 +13,15 @@ the preference is per user, and one person's usual is invisible to the other.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 import pytest_asyncio
 
-from bot import migrations
+from bot import keyboards, migrations
 from bot.database import DatabaseManager
 from bot.keyboards import INSTANT_PREFIX, choice_button_label
-from bot.meal_models import DefaultQuantity
+from bot.meal_models import PREFERENCE_SOURCE_TYPES, DefaultQuantity
 from bot.suggestions import annotate_defaults
 
 MANOJ = 1554408692
@@ -168,6 +170,139 @@ class TestItActuallyRendersAsInstant:
         assert not choice_button_label(annotated[0], quick=True).startswith(
             INSTANT_PREFIX
         )
+
+
+class TestTheOfferIsActuallyReachable:
+    """Storage plus rendering is still not a feature if no screen offers it.
+
+    v16 shipped with the confirm screen still gated on food/recipe, so a catalog
+    food could hold a usual amount that nothing would ever ask the user for.
+    Six days of the table staying empty was the only symptom.
+    """
+
+    @pytest.mark.parametrize("kind", ["food", "recipe", "catalog"])
+    async def test_the_confirm_screen_offers_it(self, kind):
+        """Drives the real handler, which is where the miss actually was.
+
+        Asserting on ``quick_confirm_keyboard(can_set_default=True)`` would have
+        passed throughout the bug: the keyboard was always willing, and it was
+        the caller that never said yes for a catalog food.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from bot.handlers import diet
+
+        message = SimpleNamespace(
+            reply_text=AsyncMock(return_value=SimpleNamespace(message_id=1)),
+            message_id=1,
+        )
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=MANOJ, username="m", first_name="M"),
+            effective_message=message,
+            effective_chat=SimpleNamespace(id=MANOJ, type="private"),
+            message=message,
+        )
+        context = SimpleNamespace(bot_data={}, user_data={"diet_meal_type": "snack"})
+        context.user_data["diet_sel_kind"] = kind
+        context.user_data["diet_sel_id"] = 7
+        entry = SimpleNamespace(
+            as_item=lambda: {
+                "display_name": "White rice (cooked)",
+                "calories": 169,
+                "entered_amount": 130.0,
+                "entered_unit": "g",
+            }
+        )
+
+        await diet._show_quick_confirm(update, context, message, entry)
+
+        markup = next(
+            call.kwargs["reply_markup"]
+            for call in reversed(message.reply_text.call_args_list)
+            if call.kwargs.get("reply_markup") is not None
+        )
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        assert any("usual" in label.casefold() for label in labels), labels
+
+    async def test_it_is_not_offered_without_a_resolved_amount(self):
+        """No amount means there is nothing to store as the usual."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from bot.handlers import diet
+
+        message = SimpleNamespace(
+            reply_text=AsyncMock(return_value=SimpleNamespace(message_id=1)),
+            message_id=1,
+        )
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=MANOJ, username="m", first_name="M"),
+            effective_message=message,
+            effective_chat=SimpleNamespace(id=MANOJ, type="private"),
+            message=message,
+        )
+        context = SimpleNamespace(
+            bot_data={},
+            user_data={
+                "diet_meal_type": "snack",
+                "diet_sel_kind": "catalog",
+                "diet_sel_id": 7,
+            },
+        )
+        entry = SimpleNamespace(
+            as_item=lambda: {
+                "display_name": "White rice (cooked)",
+                "calories": 169,
+                "entered_amount": None,
+                "entered_unit": None,
+            }
+        )
+
+        await diet._show_quick_confirm(update, context, message, entry)
+
+        markup = next(
+            call.kwargs["reply_markup"]
+            for call in reversed(message.reply_text.call_args_list)
+            if call.kwargs.get("reply_markup") is not None
+        )
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        assert not any("usual" in label.casefold() for label in labels), labels
+
+    def test_every_preference_source_type_can_set_a_default(self):
+        """The gate is one shared constant now; this pins what it must contain."""
+        assert set(PREFERENCE_SOURCE_TYPES) == {"food", "recipe", "catalog"}
+
+    def test_freetext_is_deliberately_excluded(self):
+        """A typed blob has no source row to hold a preference against."""
+        assert "freetext" not in PREFERENCE_SOURCE_TYPES
+
+    def test_no_gate_still_hardcodes_the_old_pair(self):
+        """A structural check, because this was missed twice by reading.
+
+        Any surviving literal ('food', 'recipe') pair in the preference paths is
+        a gate that a later widening will silently skip again.
+        """
+        import pathlib
+
+        root = pathlib.Path(food_admin_root())
+        offenders = []
+        for path in [
+            root / "bot" / "keyboards.py",
+            root / "bot" / "suggestions.py",
+            root / "bot" / "handlers" / "diet.py",
+        ]:
+            text = path.read_text(encoding="utf-8")
+            for number, line in enumerate(text.splitlines(), 1):
+                if '"food", "recipe")' in line and "PREFERENCE_SOURCE_TYPES" not in line:
+                    offenders.append(f"{path.name}:{number}: {line.strip()}")
+        assert not offenders, "hardcoded gate(s):\n" + "\n".join(offenders)
+
+
+def food_admin_root():
+    import bot
+
+    return pathlib.Path(bot.__file__).resolve().parent.parent
 
 
 class TestMigration:

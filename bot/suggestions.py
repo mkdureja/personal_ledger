@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from .meal_models import PREFERENCE_SOURCE_TYPES
+
 # Transparent, tunable weights.
 _MEAL_TYPE_WEIGHT = 3.0
 _GENERAL_WEIGHT = 1.0
@@ -114,7 +116,7 @@ def annotate_defaults(
         enriched["default"] = None
         enriched["needs_repair"] = False
         source_type = choice.get("source_type")
-        if source_type in ("food", "recipe", "catalog"):
+        if source_type in PREFERENCE_SOURCE_TYPES:
             row = preferences.get((source_type, choice.get("id"))) or {}
             amount = row.get("default_amount")
             unit = row.get("default_unit")

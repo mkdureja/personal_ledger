@@ -15,6 +15,7 @@ from telegram import (
 )
 
 from .callback_data import parse_base36, to_base36
+from .meal_models import PREFERENCE_SOURCE_TYPES
 from .nutrition import NutritionError, format_decimal
 from .weight_series import format_kg, nudge_values
 
@@ -225,7 +226,7 @@ def choice_button_label(choice: dict, *, quick: bool) -> str:
         prefix = "⭐ "
 
     quantity = ""
-    if quick and kind in ("food", "recipe", "catalog"):
+    if quick and kind in PREFERENCE_SOURCE_TYPES:
         default = choice.get("default")
         if choice.get("needs_repair"):
             prefix, suffix = REPAIR_PREFIX, suffix + _REPAIR_SUFFIX
@@ -283,7 +284,7 @@ def food_choice_keyboard(
             data = f"dfood_{user_id}_{choice['id']}"
         label = choice_button_label(choice, quick=quick)
         row = [InlineKeyboardButton(label, callback_data=data)]
-        if manage and kind in ("food", "recipe", "catalog"):
+        if manage and kind in PREFERENCE_SOURCE_TYPES:
             row.append(
                 InlineKeyboardButton(
                     "⚙️",
@@ -513,8 +514,8 @@ def food_portion_keyboard(
 ) -> InlineKeyboardMarkup:
     """Recent quantities + named portions for a food, with custom/back/pref rows.
 
-    ``show_prefs`` is off for shared-catalog foods, which cannot be pinned/hidden
-    (preferences apply only to a user's own foods and recipes).
+    ``show_prefs`` controls the pin/hide row. It applies to shared-catalog foods
+    too since schema v16 — the row is shared, the preference is this user's.
     """
     rows: list[list[InlineKeyboardButton]] = _recent_quantity_rows(
         user_id, recent or []
