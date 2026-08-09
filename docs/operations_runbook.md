@@ -231,7 +231,7 @@ non-subset ID.
 Release A installs all Home routing, disabled-label compatibility, and keyboard
 removal, but keeps every fast mutation dark. It was the Phase 1 binary rollback
 target **while the database was at v8**; it is a v8 binary and will now refuse to
-start against the v10 database (see "Binary rollback"). The configuration below
+start against the current database (see "Binary rollback"). The configuration below
 still describes what "Phase 1 dark" means on a current binary. Ship it with:
 
 ```text
@@ -285,20 +285,23 @@ legacy label until both users have received a Home response from this build.
    message is implied.
 4. Never restore an older DB merely to disable Phase 1 — Phase 1 adds no schema
    and accepted ledger rows must be preserved. Verify `/start`, `/diet`,
-   `/recent`, reminders, schema `user_version = 10`, and `PRAGMA foreign_key_check`
+   `/recent`, reminders, a `user_version` still equal to
+   `ledger_schema.LATEST_SCHEMA_VERSION`, and `PRAGMA foreign_key_check`
    afterward.
 
 ### Binary rollback (when the code, not the config, is at fault)
 
 Older binaries fail closed against newer schemas — `migration_preflight` raises
 `UnsupportedSchemaError` when `user_version` exceeds what the build knows. That
-is a safety property, not a bug: a v8 build has no idea what v9/v10 rows mean.
-It also means **a binary rollback below the database's version is not available
-without a database restore**, and a restore discards every row accepted since.
+is a safety property, not a bug: a v8 build has no idea what a v9 supplement row
+or a v13 weight row means. It also means **a binary rollback below the database's
+version is not available without a database restore**, and a restore discards
+every row accepted since.
 
 1. Prefer a fix-forward commit. It is almost always faster than a restore.
-2. If you must go back, roll back to a build at or above `user_version = 10`.
-   Confirm before restarting:
+2. If you must go back, roll back only to a build whose
+   `LATEST_SCHEMA_VERSION` is at least the live `user_version` — **14** as of
+   2026-08-09. Confirm before restarting:
 
    ```powershell
    .\.venv\Scripts\python.exe -c "from ledger_schema import LATEST_SCHEMA_VERSION as v; print(v)"

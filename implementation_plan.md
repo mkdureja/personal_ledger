@@ -1,46 +1,62 @@
 # Ledger implementation plan
 
 **Status:** Releases 0–5 all implemented; acceptance and merge remain open
-**Prepared:** 2026-07-30 · **Scope revised:** 2026-08-02
+**Prepared:** 2026-07-30 · **Scope revised:** 2026-08-02 · **Status block refreshed:** 2026-08-09
 **Original planning baseline:** `hardening/review-fixes` at `16d1f3a`
 **Product boundary:** one private Telegram bot for the owner and spouse
 **Canonical roadmap:** `implementation_plan.md`
 
 ## Where this stands right now — read first
 
-Last updated end of 2026-08-02. **Every release in this plan is built.** There is
-no remaining implementation task; what is left is acceptance, an owner decision,
-and merge controls.
+Last verified 2026-08-09 against the repository and the live database. **Every
+release in this plan is built.** There is no remaining implementation task; what
+is left is acceptance, real usage, and merge controls.
 
-**Code:** branch `hardening/review-fixes`, **1281 tests green**, CI green on
-`windows-latest` and `ubuntu-latest`. Schema **v10**.
+**Code:** branch `hardening/review-fixes` at `b3f1292`, in sync with its remote,
+**1610 tests green**, CI green on `windows-latest` and `ubuntu-latest`. Schema
+**v14**. Work beyond the numbered releases has landed on the same branch: per-set
+gym logging (v11), meal shortcuts (v12), daily weight (v13), `/suggest` (v14), and
+keeping a typed meal as a saved food.
 
-**Deployment:** the live database has migrated to v10. The §0.5 backup gate fired
-in production for the first time and wrote
-`E:\ledger-backups\ledger-premigration-v8-20260802-102740Z.db` before touching
-the schema. Voice is installed (`faster-whisper` 1.2.1) and `VOICE_ENABLED=true`.
-Gemini is configured but **each user is still opted out** — consent is theirs to
-give with `/aiparse on`, and must never be set for them.
+**Deployment:** the live database is at **v14**, matching the code, so no
+migration is owed. The §0.5 backup gate has now fired on three separate migration
+events, most recently writing
+`E:\ledger-backups\ledger-premigration-v13-20260804-052208Z.db`. Voice is
+installed (`faster-whisper` 1.2.1) and `VOICE_ENABLED=true`. Gemini is configured
+but **each user is still opted out** — consent is theirs to give with
+`/aiparse on`, and must never be set for them.
 
 **Verified live:** Home, meal builder, Repeat, Undo, `/recent`, supplements
 empty-state, and voice notes end to end ("100 gm rice" → catalog match →
 preview → save).
 
-**The one blocking fact:** both ledgers still hold **zero private foods and zero
-recipes**. No `⚡` instant row can render for anyone, and `/describe` can only
-match the small shared catalog. Several observed frustrations trace back to this
-single gap, not to missing features. Saving a handful of staples with
-`/food add` is the highest-value next action in the whole project.
+**Real usage so far:** 9 meals, 1 workout, 1 weight reading, and 4 supplement
+check-offs, all between 2026-08-03 and 2026-08-04. Nothing has been logged since,
+and the bot is not currently running.
+
+**The one blocking fact, unchanged:** both ledgers still hold **zero private
+foods and zero recipes**, so no `⚡` instant row can render for anyone and
+`/describe` can only match the shared catalog of 19 foods. Every meal logged so
+far that was not a catalog match cost four typed numbers. Populating a handful of
+staples remains the highest-value next action in the whole project. Two routes
+now exist: `/food add`, or the `💾 Save "…"` button offered after a typed meal.
 
 **Open, and owner-owned:**
 
-1. Save real foods, then run the two-client gate (§Release 1 live gate), which
+1. Start the bot — nothing can be logged while it is stopped.
+2. Save real foods, then run the two-client gate (§Release 1 live gate), which
    now also covers supplements, `/describe`, `/aiparse`, and voice.
-2. Backup security on `E:` — still unencrypted with a broad folder ACL. Secure
-   it or record explicit acceptance.
-3. Open the pull request; enable branch protection on `main` requiring both CI
-   jobs; register the daily backup task.
-4. After acceptance, flip `HOME_KEYBOARD_MODE` from `pilot` to `on`.
+3. Set up the requested Skyr snack shortcut for both users; `meal_shortcuts` is
+   still empty even though the feature has been live since v12.
+4. Record doses and timings against the 10 existing supplements, which currently
+   carry names only.
+5. Open the pull request (the branch is 55 commits ahead of `main`); enable
+   branch protection on `main` requiring both CI jobs; register the daily backup
+   task, which still does not exist.
+
+**Backup security on `E:` is closed, not open.** The owner was shown the specific
+ACLs, the account list, and the consequences, and explicitly accepted the risk.
+Treat a review that flags it as answered.
 
 **One flagged preference, deliberately not changed:** `infer_meal_type` puts the
 lunch/dinner boundary at exactly 16:00, so a 16:00 meal defaults to Dinner. That
