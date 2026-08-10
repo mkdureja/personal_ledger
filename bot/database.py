@@ -43,6 +43,7 @@ from .meal_models import (
     UndoStatus,
     PREFERENCE_SOURCE_TYPES,
 )
+from .monitor_targets import Target as MonitorTarget
 from .services.current_values import preview_signature
 from .nutrition import (
     FOOD_BASE_UNITS,
@@ -180,6 +181,14 @@ MAX_SUPPLEMENT_NAME_LENGTH = 50
 MAX_DOSE_TEXT_LENGTH = 30
 MAX_DOSE_AMOUNT = 10_000.0
 MAX_ACTIVE_SUPPLEMENTS = 49
+MAX_MONITOR_NAME_LENGTH = 50
+#: A display glyph, not a label. Long enough for a multi-code-point emoji
+#: (a flag, a skin tone, a ZWJ sequence), short enough that nobody stores a word.
+MAX_MONITOR_EMOJI_LENGTH = 8
+#: An occurrence quantity is a dose of something countable — grams, units, ml.
+#: The same shape as a supplement dose, and bounded for the same reason.
+MAX_MONITOR_QUANTITY = 10_000.0
+MAX_ACTIVE_MONITORS = 20
 #: A suggestion is a paragraph, not an essay. Long enough for someone to explain
 #: what they want and why, bounded so one message cannot fill the table — and
 #: comfortably under Telegram's own 4096-character message limit, so the refusal
@@ -319,6 +328,76 @@ def _validated_dose_text(value: str | None, field_name: str) -> str | None:
             f"{field_name} must be at most {MAX_DOSE_TEXT_LENGTH} characters"
         )
     return text
+
+
+def _validated_monitor_name(value: str) -> str:
+    """Validate a bounded, non-empty monitor name and return it trimmed."""
+    if not isinstance(value, str):
+        raise ValueError("monitor name must be text")
+    name = value.strip()
+    if not name:
+        raise ValueError("monitor name must not be empty")
+    if len(name) > MAX_MONITOR_NAME_LENGTH:
+        raise ValueError(
+            f"monitor name must be at most {MAX_MONITOR_NAME_LENGTH} characters"
+        )
+    return name
+
+
+def _validated_monitor_emoji(value: str | None) -> str | None:
+    """Validate an optional short display glyph, normalizing blank to None.
+
+    Bounded by characters rather than by "is this really an emoji": a flag or a
+    skin-toned sequence is several code points, and rejecting those would be
+    policing the decoration rather than the size of the column.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("monitor emoji must be text")
+    glyph = value.strip()
+    if not glyph:
+        return None
+    if len(glyph) > MAX_MONITOR_EMOJI_LENGTH:
+        raise ValueError(
+            f"monitor emoji must be at most {MAX_MONITOR_EMOJI_LENGTH} characters"
+        )
+    return glyph
+
+
+def _validated_monitor_target(
+    period: str, minimum: int | None, maximum: int | None
+) -> MonitorTarget:
+    """Validate a target through the pure module that defines what one means.
+
+    Constructing a :class:`bot.monitor_targets.Target` *is* the validation: the
+    bounds, the ordering rule, and the set of legal periods are stated once
+    there, and the database layer inherits them rather than restating them.
+    """
+    return MonitorTarget(
+        period=period,  # type: ignore[arg-type]
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+
+def _validated_monitor_quantity(value: float | None) -> float | None:
+    """Validate an optional positive, finite occurrence quantity."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("quantity must be a number")
+    try:
+        amount = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("quantity must be a number") from exc
+    if not math.isfinite(amount):
+        raise ValueError("quantity must be finite")
+    if amount <= 0 or amount > MAX_MONITOR_QUANTITY:
+        raise ValueError(
+            f"quantity must be greater than 0 and at most {MAX_MONITOR_QUANTITY:g}"
+        )
+    return round(amount, 3)
 
 
 def _habit_key(name: str) -> str:
@@ -4110,6 +4189,262 @@ class DatabaseManager:
                 break
             offset += self._STREAK_PAGE_SIZE
         return streak
+
+    # -------------------------------------------------------------------
+    # Monitors (counted occurrences, measured against a target)
+    # -------------------------------------------------------------------
+    # Unlike habits and supplements, a monitor is *not* idempotent per day: two
+    # taps mean two occurrences. Every write here therefore has a matching undo,
+    # and the read side counts rows rather than testing for existence.
+    async def add_monitor(
+        self,
+        user_id: int,
+        name: str,
+        *,
+        emoji: str | None = None,
+        target_period: str = "day",
+        target_min: int | None = None,
+        target_max: int | None = None,
+        tracks_quantity: bool = False,
+        quantity_unit: str | None = None,
+        tracks_variant: bool = False,
+    ) -> tuple[int, HabitAddStatus]:
+        """Add, reactivate, or find an active monitor.
+
+        Returns ``(monitor_id, status)`` with the same vocabulary as
+        :meth:`add_habit`. Reactivating rewrites the target and the detail flags,
+        because someone restarting a monitor is usually restarting it under a
+        current intention — an old ceiling silently surviving would be worse than
+        replacing it.
+        """
+        clean_name = _validated_monitor_name(name)
+        name_key = _habit_key(clean_name)
+        target = _validated_monitor_target(target_period, target_min, target_max)
+        glyph = _validated_monitor_emoji(emoji)
+        unit = _validated_dose_text(quantity_unit, "quantity unit")
+        wants_quantity = 1 if tracks_quantity else 0
+        wants_variant = 1 if tracks_variant else 0
+
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "SELECT id, is_active FROM monitors "
+                "WHERE user_id = ? AND name_key = ? "
+                "ORDER BY is_active DESC, id LIMIT 1",
+                (user_id, name_key),
+            )
+            row = await cursor.fetchone()
+            if row is not None and row["is_active"]:
+                return row["id"], "already_active"
+
+            if row is not None:
+                cursor = await self.conn.execute(
+                    """
+                    UPDATE monitors
+                    SET is_active = 1, name = ?, emoji = ?, target_period = ?,
+                        target_min = ?, target_max = ?, tracks_quantity = ?,
+                        quantity_unit = ?, tracks_variant = ?
+                    WHERE id = ?
+                      AND is_active = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM monitors
+                          WHERE user_id = ? AND name_key = ? AND is_active = 1
+                      )
+                    """,
+                    (
+                        clean_name, glyph, target.period, target.minimum,
+                        target.maximum, wants_quantity, unit, wants_variant,
+                        row["id"], user_id, name_key,
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    return row["id"], "reactivated"
+
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO monitors
+                    (user_id, name, name_key, emoji, target_period, target_min,
+                     target_max, tracks_quantity, quantity_unit, tracks_variant)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id, clean_name, name_key, glyph, target.period,
+                    target.minimum, target.maximum, wants_quantity, unit,
+                    wants_variant,
+                ),
+            )
+            return cursor.lastrowid, "added"
+
+    async def set_monitor_target(
+        self,
+        user_id: int,
+        monitor_id: int,
+        *,
+        target_period: str = "day",
+        target_min: int | None = None,
+        target_max: int | None = None,
+    ) -> bool:
+        """Replace an active monitor's target. True if a row changed.
+
+        The target is current intention, never history: occurrence rows record
+        what happened and are untouched by a change of mind about the limit.
+        """
+        target = _validated_monitor_target(target_period, target_min, target_max)
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "UPDATE monitors SET target_period = ?, target_min = ?, target_max = ? "
+                "WHERE id = ? AND user_id = ? AND is_active = 1",
+                (
+                    target.period, target.minimum, target.maximum,
+                    monitor_id, user_id,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    async def deactivate_monitor(self, user_id: int, monitor_id: int) -> bool:
+        """Soft-delete a monitor. Returns True if a row was affected.
+
+        Occurrence history is kept and stays joined to this id, and the partial
+        unique index only covers active rows, so the same name can come back
+        later without colliding.
+        """
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "UPDATE monitors SET is_active = 0 "
+                "WHERE id = ? AND user_id = ? AND is_active = 1",
+                (monitor_id, user_id),
+            )
+            return cursor.rowcount > 0
+
+    async def get_active_monitors(self, user_id: int) -> list[dict[str, Any]]:
+        """Get all active monitors for a user, in stable display order."""
+        rows = await self._query_all(
+            "SELECT * FROM monitors WHERE user_id = ? AND is_active = 1 ORDER BY id",
+            (user_id,),
+        )
+        return [dict(row) for row in rows]
+
+    async def log_monitor_occurrence(
+        self,
+        user_id: int,
+        monitor_id: int,
+        log_date: date,
+        *,
+        quantity: float | None = None,
+        quantity_unit: str | None = None,
+        variant: str | None = None,
+    ) -> int | None:
+        """Record one occurrence. Returns its row id, or ``None`` if it did not land.
+
+        The insert is conditional on the monitor being active and owned by this
+        user — the same guard :meth:`take_supplement` uses — so a stale keyboard
+        from another ledger cannot write here. ``None`` means exactly that: no
+        active monitor with this id belongs to this user.
+
+        When the monitor carries a default unit and none is passed, the default
+        is stamped onto the row. Storing it per occurrence keeps a past entry
+        readable after the monitor's unit is later changed.
+        """
+        amount = _validated_monitor_quantity(quantity)
+        unit = _validated_dose_text(quantity_unit, "quantity unit")
+        label = _validated_dose_text(variant, "variant")
+
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO monitor_logs
+                    (user_id, monitor_id, log_date, quantity, quantity_unit, variant)
+                SELECT ?, m.id, ?, ?, COALESCE(?, m.quantity_unit), ?
+                FROM monitors AS m
+                WHERE m.id = ? AND m.user_id = ? AND m.is_active = 1
+                """,
+                (
+                    user_id, log_date.isoformat(), amount, unit, label,
+                    monitor_id, user_id,
+                ),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            return cursor.lastrowid
+
+    async def delete_last_monitor_occurrence(
+        self, user_id: int, monitor_id: int, log_date: date
+    ) -> bool:
+        """Remove this monitor's most recent occurrence on a date. True if one went.
+
+        Undo is scoped to a single day and a single monitor so a mis-tap is
+        cheap to correct and impossible to over-correct: it can never reach into
+        an earlier day, and it removes one row rather than clearing the date.
+        """
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                """
+                DELETE FROM monitor_logs
+                WHERE id = (
+                    SELECT id FROM monitor_logs
+                    WHERE user_id = ? AND monitor_id = ? AND log_date = ?
+                    ORDER BY id DESC LIMIT 1
+                )
+                """,
+                (user_id, monitor_id, log_date.isoformat()),
+            )
+            return cursor.rowcount > 0
+
+    async def get_monitor_daily_counts(
+        self, user_id: int, start_date: date, end_date: date
+    ) -> dict[int, dict[str, int]]:
+        """Occurrences per monitor per day in an inclusive range.
+
+        Shaped as ``{monitor_id: {"YYYY-MM-DD": count}}`` so one query serves
+        every period a board renders: the caller asks
+        :func:`bot.monitor_targets.period_bounds` for each monitor's window and
+        sums the days inside it. Counting per period in SQL instead would put
+        three date-window definitions in this file that already live — once — in
+        the pure module.
+        """
+        rows = await self._query_all(
+            "SELECT monitor_id, log_date, COUNT(*) AS occurrences "
+            "FROM monitor_logs "
+            "WHERE user_id = ? AND log_date >= ? AND log_date <= ? "
+            "GROUP BY monitor_id, log_date",
+            (user_id, start_date.isoformat(), end_date.isoformat()),
+        )
+        counts: dict[int, dict[str, int]] = {}
+        for row in rows:
+            counts.setdefault(row["monitor_id"], {})[row["log_date"]] = int(
+                row["occurrences"]
+            )
+        return counts
+
+    async def get_monitor_day_entries(
+        self, user_id: int, monitor_id: int, log_date: date
+    ) -> list[dict[str, Any]]:
+        """One monitor's occurrences on a date, oldest first."""
+        rows = await self._query_all(
+            "SELECT * FROM monitor_logs "
+            "WHERE user_id = ? AND monitor_id = ? AND log_date = ? "
+            "ORDER BY id",
+            (user_id, monitor_id, log_date.isoformat()),
+        )
+        return [dict(row) for row in rows]
+
+    async def get_recent_monitor_variants(
+        self, user_id: int, monitor_id: int, limit: int = 3
+    ) -> list[str]:
+        """The most recently used distinct variants, newest first.
+
+        These become quick-tap buttons, which is the whole point of recording a
+        variant: the third time you log the same strain it should be one tap, not
+        a typed word.
+        """
+        bounded = max(1, min(int(limit), 10))
+        rows = await self._query_all(
+            "SELECT variant, MAX(id) AS last_id FROM monitor_logs "
+            "WHERE user_id = ? AND monitor_id = ? "
+            "AND variant IS NOT NULL AND TRIM(variant) != '' "
+            "GROUP BY variant ORDER BY last_id DESC LIMIT ?",
+            (user_id, monitor_id, bounded),
+        )
+        return [row["variant"] for row in rows]
 
     # -------------------------------------------------------------------
     # Undo (preview + delete a recent log across all tables)

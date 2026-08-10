@@ -115,6 +115,7 @@ _CONVERSATION_LABELS = {
     "shortcuts": "meal shortcut setup",
     "weight": "a weigh-in",
     "suggest": "a suggestion",
+    "monitors": "monitor setup",
 }
 _CONVERSATION_DATA_KEYS = {
     "shortcuts": ("shortcut_meal",),
@@ -155,6 +156,7 @@ _CONVERSATION_DATA_KEYS = {
     ),
     "habits": ("habit_setup_prompt",),
     "supplements": ("supplement_setup_prompt",),
+    "monitors": ("monitor_setup_prompt", "monitor_detail_id", "monitor_detail_prompt"),
 }
 _MAX_UNDO_TEXT_LENGTH = 400
 _MAX_UNDO_VALUE_LENGTH = 32
@@ -458,8 +460,10 @@ def describe_abandoned_work(
             return f"Dropped your unfinished <b>{escape_html(str(subject))}</b> session."
         return None
 
-    # habits/supplements setup write each entry as it is confirmed, so there is
-    # never uncommitted work worth naming.
+    # habits/supplements/monitors setup write each entry as it is confirmed, so
+    # there is never uncommitted work worth naming. An abandoned monitor detail
+    # prompt is the same: nothing is logged until the line is sent, and the
+    # one-tap ``+1`` beside it has already committed on its own.
     return None
 
 

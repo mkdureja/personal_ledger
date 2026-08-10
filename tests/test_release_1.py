@@ -239,6 +239,7 @@ async def test_every_idle_entry_renders_the_same_home(db, entry):
     assert _labels(markup) == [
         "🍽️ Log meal", "⚖️ Weight", "✅ Habits", "💊 Supplements",
         "🏋️ Workout", "📖 Study", "🗒️ Recent", "📊 Analytics",
+        "🎯 Monitors",
     ]
 
 

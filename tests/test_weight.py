@@ -221,10 +221,21 @@ class TestFormatting:
 class TestNudgeGrid:
     def test_it_is_anchored_on_the_step_not_the_raw_value(self):
         """A typed 72.35 still offers the clean row a scale would show."""
-        assert weight_series.nudge_values(72.35) == [72.1, 72.2, 72.3, 72.4, 72.5]
+        assert weight_series.nudge_values(72.35) == [
+            71.9, 72.0, 72.1, 72.2, 72.3, 72.4, 72.5, 72.6, 72.7
+        ]
+
+    def test_it_reaches_four_tenths_either_side(self):
+        """±0.2 sent an ordinary day's movement to the keyboard."""
+        values = weight_series.nudge_values(72.0)
+
+        assert min(values) == pytest.approx(71.6)
+        assert max(values) == pytest.approx(72.4)
 
     def test_it_centres_on_the_last_weight(self):
-        assert weight_series.nudge_values(72.4)[2] == 72.4
+        values = weight_series.nudge_values(72.4)
+
+        assert values[len(values) // 2] == 72.4
 
     def test_there_is_nothing_to_nudge_from_without_a_last_weight(self):
         assert weight_series.nudge_values(None) == []
@@ -235,6 +246,46 @@ class TestNudgeGrid:
 
         assert all(value >= weight_series.MIN_WEIGHT_KG for value in values)
         assert len(values) == len(set(values))
+
+
+class TestNudgeKeyboard:
+    def test_the_ladder_is_laid_out_three_to_a_row(self):
+        """Nine labels in one row squeeze past legibility on a phone."""
+        keyboard = keyboards.weight_entry_keyboard(123456789, 72.0)
+        value_rows = keyboard.inline_keyboard
+
+        assert [len(row) for row in value_rows] == [3, 3, 3]
+
+    def test_the_unchanged_weight_sits_in_the_middle_of_the_grid(self):
+        keyboard = keyboards.weight_entry_keyboard(123456789, 72.0)
+
+        assert keyboard.inline_keyboard[1][1].text == "72"
+
+    def test_every_button_logs_the_weight_it_is_labelled_with(self):
+        user_id = 123456789
+        keyboard = keyboards.weight_entry_keyboard(user_id, 72.0)
+
+        for row in keyboard.inline_keyboard:
+            for button in row:
+                action, value = keyboards.parse_weight_tap(
+                    button.callback_data, user_id
+                )
+                assert action == "v"
+                assert weight_series.format_kg(value) == button.text
+
+    def test_a_short_ladder_still_fills_rows_left_to_right(self):
+        """Near the accepted floor some values are dropped, so the grid is
+        partial — it must not leave a hole in the middle of a row."""
+        keyboard = keyboards.weight_entry_keyboard(
+            123456789, weight_series.MIN_WEIGHT_KG
+        )
+        rows = keyboard.inline_keyboard
+
+        assert all(1 <= len(row) <= 3 for row in rows)
+        assert all(len(row) == 3 for row in rows[:-1])
+
+    def test_a_first_ever_weigh_in_offers_no_grid_to_guess_from(self):
+        assert keyboards.weight_entry_keyboard(123456789, None) is None
 
 
 def test_the_series_module_stays_pure():
@@ -503,7 +554,9 @@ class TestFlow:
             for row in _last_markup(update.effective_message).inline_keyboard
             for button in row
         ]
-        assert labels == ["72.2", "72.3", "72.4", "72.5", "72.6"]
+        assert labels == [
+            "72", "72.1", "72.2", "72.3", "72.4", "72.5", "72.6", "72.7", "72.8"
+        ]
         assert "yesterday" in _texts(update.effective_message)[0]
 
     async def test_a_first_ever_weigh_in_gets_no_grid_to_guess_from(self, db, user_id):

@@ -54,10 +54,14 @@ MAX_WEIGHT_KG = 400.0
 #: The nudge grid offered next to the last known weight. Household scales read to
 #: 0.1 kg, so the grid steps in 0.1: a coarser step would only ever match a
 #: reading that happened to land on it, which is the opposite of a fast tap.
-#: Two steps either side keeps the row to five buttons — wider coverage would
-#: crowd the row for days that need typing anyway.
+#:
+#: Four steps either side — ±0.4 kg. Two was too tight in practice: normal
+#: day-to-day movement on water and timing regularly lands outside a ±0.2 band,
+#: which sent an ordinary weigh-in to the keyboard. Nine values no longer fit one
+#: readable row, so the caller lays them out as a 3×3 grid with the anchor in the
+#: middle; that is a rendering decision and stays with the keyboard.
 NUDGE_STEP_KG = 0.1
-NUDGE_STEPS = (-2, -1, 0, 1, 2)
+NUDGE_STEPS = (-4, -3, -2, -1, 0, 1, 2, 3, 4)
 
 
 def nudge_values(

@@ -94,6 +94,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     ⚖️ Weight sits beside 🍽️ Log meal because both are daily and both are the
     reason someone opens the bot at all; the sections you visit weekly stay
     further down.
+
+    🎯 Monitors sits last, on its own row. Its taps *count* something rather than
+    tick it off, and the extra width is a small, cheap signal that it is not
+    another checklist.
     """
     return InlineKeyboardMarkup(
         [
@@ -112,6 +116,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("🗒️ Recent", callback_data="menu_recent"),
                 InlineKeyboardButton("📊 Analytics", callback_data="menu_analytics"),
+            ],
+            [
+                InlineKeyboardButton("🎯 Monitors", callback_data="menu_monitors"),
             ],
         ]
     )
@@ -1143,6 +1150,11 @@ def analytics_keyboard() -> InlineKeyboardMarkup:
 #: back.
 WEIGHT_TAP_PREFIX = "wt"
 
+#: Nudge buttons per row. Three keeps a ``72.35``-width label readable on a
+#: phone and renders the nine-value ladder as a square with the unchanged
+#: weight in the middle.
+WEIGHT_GRID_COLUMNS = 3
+
 
 def weight_tap_data(user_id: int, weight_kg: float) -> str:
     """Encode one tappable weight as ``wt_v_<user>_<hundredths>``."""
@@ -1190,20 +1202,25 @@ def weight_entry_keyboard(
 ) -> InlineKeyboardMarkup | None:
     """Nudge buttons around ``last_kg``, or ``None`` when there is nothing to nudge.
 
-    Each button is labelled with the weight it would log, and the row ascends
-    left to right, so what a tap does is readable without a legend. Returning
-    ``None`` for a first-ever weigh-in is deliberate: a grid centred on a guess
-    would invite a tap that records a number nobody measured.
+    Each button is labelled with the weight it would log, and the grid ascends
+    left to right and top to bottom, so what a tap does is readable without a
+    legend. Returning ``None`` for a first-ever weigh-in is deliberate: a grid
+    centred on a guess would invite a tap that records a number nobody measured.
+
+    ``WEIGHT_GRID_COLUMNS`` values per row. The nine-value ±0.4 kg ladder in one
+    row would squeeze each label past legibility on a phone; three rows of three
+    keep the labels full width *and* put the unchanged weight in the visual
+    centre, which is where the hand goes on a day the scale has not moved.
     """
     values = nudge_values(last_kg)
     rows: list[list[InlineKeyboardButton]] = []
-    if values:
+    for start in range(0, len(values), WEIGHT_GRID_COLUMNS):
         rows.append(
             [
                 InlineKeyboardButton(
                     format_kg(value), callback_data=weight_tap_data(user_id, value)
                 )
-                for value in values
+                for value in values[start : start + WEIGHT_GRID_COLUMNS]
             ]
         )
     if has_today:
@@ -1216,6 +1233,159 @@ def weight_entry_keyboard(
             ]
         )
     return InlineKeyboardMarkup(rows) if rows else None
+
+
+# ---------------------------------------------------------------------------
+# Monitors
+# ---------------------------------------------------------------------------
+#: Callback prefix for the monitor board. Its own family — distinct from
+#: ``habit_`` and ``supp_`` — because a monitor tap is *not* idempotent: routing
+#: one into a checklist handler would turn "already done" into a second
+#: occurrence. The date rides along so a board left in the chat overnight is
+#: recognisably stale rather than silently filing today's tap under yesterday.
+MONITOR_PREFIX = "mon"
+
+#: How many recent variants become quick-tap buttons in the detail prompt.
+MONITOR_VARIANT_CHOICES = 3
+
+
+def monitor_tap_data(
+    user_id: int, action: str, monitor_id: int, extra: int | None = None
+) -> str:
+    """Encode one monitor button as ``mon_<action>_<user>_<id>[_<extra>]``."""
+    tail = "" if extra is None else f"_{int(extra)}"
+    return f"{MONITOR_PREFIX}_{action}_{user_id}_{int(monitor_id)}{tail}"
+
+
+def parse_monitor_tap(
+    data: str, user_id: int
+) -> tuple[str, int, int | None] | None:
+    """Decode a ``mon_*`` callback, or ``None`` if it is not this user's button.
+
+    Returns ``(action, monitor_id, extra)``. The user check is what stops one
+    household member tapping a button rendered for the other in a shared chat.
+    """
+    parts = (data or "").split("_")
+    if len(parts) < 4 or parts[0] != MONITOR_PREFIX:
+        return None
+    action = parts[1]
+    try:
+        if int(parts[2]) != user_id:
+            return None
+        monitor_id = int(parts[3])
+        extra = int(parts[4]) if len(parts) > 4 else None
+    except ValueError:
+        return None
+    return action, monitor_id, extra
+
+
+def monitor_label(monitor: dict) -> str:
+    """The monitor's name with its glyph, if it has one."""
+    emoji = (monitor.get("emoji") or "").strip()
+    name = str(monitor.get("name") or "").strip()
+    return f"{emoji} {name}".strip()
+
+
+def monitor_board_keyboard(
+    monitors: Sequence[dict],
+    user_id: int,
+    today_counts: dict[int, int],
+) -> InlineKeyboardMarkup | None:
+    """One row per monitor: log an occurrence, optionally with detail, and undo.
+
+    The name lives *inside* the logging button rather than on a label row above
+    it. Four monitors would otherwise be eight rows, and the board is meant to be
+    read and tapped in one glance.
+
+    Undo appears only once the day has something to undo. That is not decoration:
+    an occurrence is not idempotent, so the button that fixes a double tap has to
+    be next to the button that caused it.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    for monitor in monitors:
+        monitor_id = int(monitor["id"])
+        row = [
+            InlineKeyboardButton(
+                f"{monitor_label(monitor)} +1",
+                callback_data=monitor_tap_data(user_id, "a", monitor_id),
+            )
+        ]
+        if monitor.get("tracks_quantity") or monitor.get("tracks_variant"):
+            row.append(
+                InlineKeyboardButton(
+                    "📝",
+                    callback_data=monitor_tap_data(user_id, "d", monitor_id),
+                )
+            )
+        if today_counts.get(monitor_id, 0) > 0:
+            row.append(
+                InlineKeyboardButton(
+                    "↩️",
+                    callback_data=monitor_tap_data(user_id, "z", monitor_id),
+                )
+            )
+        rows.append(row)
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def monitor_variant_keyboard(
+    user_id: int, monitor_id: int, variants: Sequence[str]
+) -> InlineKeyboardMarkup | None:
+    """Quick-tap buttons for recently used variants, plus a way out.
+
+    A variant travels as its *index* in this list, never as its text: callback
+    data is 64 bytes and a strain name is arbitrary user text. The handler
+    re-reads the same ordered list to resolve the index, so the button means the
+    same thing when it is tapped as it did when it was drawn.
+    """
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"🔁 {variant}",
+                callback_data=monitor_tap_data(user_id, "v", monitor_id, index),
+            )
+        ]
+        for index, variant in enumerate(variants[:MONITOR_VARIANT_CHOICES])
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "✖️ Cancel",
+                callback_data=monitor_tap_data(user_id, "x", monitor_id),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def monitor_setup_keyboard(
+    monitors: Sequence[dict], user_id: int
+) -> InlineKeyboardMarkup:
+    """Monitor setup: each monitor beside its remove button, then Done."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for monitor in monitors:
+        monitor_id = int(monitor["id"])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    monitor_label(monitor),
+                    callback_data=monitor_tap_data(user_id, "noop", monitor_id),
+                ),
+                InlineKeyboardButton(
+                    "❌",
+                    callback_data=monitor_tap_data(user_id, "rm", monitor_id),
+                ),
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "✅ Done",
+                callback_data=monitor_tap_data(user_id, "done", 0),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
 
 
 # ---------------------------------------------------------------------------

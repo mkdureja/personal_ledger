@@ -117,6 +117,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>Supplements</b>\n"
         "<code>/supplements</code> — Check off today's supplements\n"
         "<code>/supplements setup</code> — Add/remove supplements\n\n"
+        "<b>Monitors</b>\n"
+        "<code>/monitor</code> — Log something you're keeping an eye on\n"
+        "<code>/monitor setup</code> — Add/remove monitors and their targets\n"
+        "A monitor counts occurrences against a target — <i>zero</i>, "
+        "<i>1/month</i>, <i>2-4/week</i>, <i>≤5/day</i>. Unlike a habit, each "
+        "tap adds one, so ↩️ removes the last one.\n\n"
         "<b>Analytics</b>\n"
         "<code>/summary</code> — Today's summary\n"
         "<code>/summary week</code> — Weekly summary\n"
@@ -186,6 +192,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     valid_actions = {
         "menu_habits",
         "menu_supplements",
+        "menu_monitors",
         "menu_analytics",
         "menu_recent",
     }
@@ -217,6 +224,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await show_supplements_checklist(
             query.message, context, update.effective_user.id
         )
+    elif data == "menu_monitors":
+        from .monitors import show_monitor_board
+
+        await show_monitor_board(query.message, context, update.effective_user.id)
     elif data == "menu_recent":
         from .recent import show_recent
 

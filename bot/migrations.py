@@ -1377,6 +1377,85 @@ async def _migration_0016_catalog_preferences(conn: aiosqlite.Connection) -> Non
     )
 
 
+async def _migration_0017_monitors(conn: aiosqlite.Connection) -> None:
+    """Monitored behaviours — counted occurrences measured against a target.
+
+    Every other check-off table here (``habit_logs``, ``supplement_logs``) is
+    keyed ``UNIQUE(user_id, thing_id, log_date)``: the thing either happened that
+    day or it did not, and a second tap is idempotent. This table deliberately
+    breaks that rule. A monitor answers *how many*, so three cigarettes is three
+    rows, and each row can carry the quantity and variant of that one occurrence.
+
+    The consequence is stated here because it drives the UI: a double tap is a
+    real second occurrence, not a no-op, so every surface that logs one must also
+    offer an undo. ``bot.handlers.monitors`` does.
+
+    ``monitors`` holds the *intention* (``target_period`` plus an inclusive
+    ``target_min``/``target_max`` pair) alongside the name. Both bounds nullable
+    covers every shape the two users needed — ``max = 0`` for "zero",
+    ``max = 1`` over a month, a ``2..4`` band over a week, and no bounds at all
+    for something merely observed. ``bot.monitor_targets`` owns what those
+    numbers *mean*; the schema only guarantees they are coherent.
+
+    Soft deactivation and the partial unique index mirror habits and supplements,
+    so history survives a removal and a name can be reused later.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS monitors (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         INTEGER NOT NULL,
+            name            TEXT NOT NULL,
+            name_key        TEXT NOT NULL,
+            emoji           TEXT,
+            target_period   TEXT NOT NULL DEFAULT 'day'
+                            CHECK (target_period IN ('day', 'week', 'month')),
+            target_min      INTEGER CHECK (target_min IS NULL OR target_min >= 0),
+            target_max      INTEGER CHECK (target_max IS NULL OR target_max >= 0),
+            tracks_quantity INTEGER NOT NULL DEFAULT 0
+                            CHECK (tracks_quantity IN (0, 1)),
+            quantity_unit   TEXT,
+            tracks_variant  INTEGER NOT NULL DEFAULT 0
+                            CHECK (tracks_variant IN (0, 1)),
+            is_active       INTEGER NOT NULL DEFAULT 1,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CHECK (
+                target_min IS NULL OR target_max IS NULL OR target_min <= target_max
+            ),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_monitors_active_name "
+        "ON monitors(user_id, name_key) WHERE is_active = 1"
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS monitor_logs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL,
+            monitor_id    INTEGER NOT NULL,
+            log_date      TEXT NOT NULL,
+            quantity      REAL CHECK (quantity IS NULL OR quantity > 0),
+            quantity_unit TEXT,
+            variant       TEXT,
+            logged_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (monitor_id) REFERENCES monitors(id)
+        )
+        """
+    )
+    # Every read is "one monitor's occurrences inside a date window", either to
+    # count them or to show the day's detail. One index serves both, and the
+    # trailing id keeps "the most recent occurrence" (what undo removes) at the
+    # end of the range rather than requiring a separate sort.
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_monitor_logs_monitor_date "
+        "ON monitor_logs(user_id, monitor_id, log_date, id)"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1394,6 +1473,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     14: _migration_0014_app_suggestions,
     15: _migration_0015_ai_parsing_tristate,
     16: _migration_0016_catalog_preferences,
+    17: _migration_0017_monitors,
 }
 
 

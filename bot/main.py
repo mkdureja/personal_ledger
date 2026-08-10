@@ -91,6 +91,11 @@ from .handlers.habits import (
     habit_setup_done_callback,
     habit_setup_page_callback,
 )
+from .handlers.monitors import (
+    monitor_add_callback,
+    monitor_conv_handler,
+    monitor_undo_callback,
+)
 from .handlers.supplements import (
     supplements_setup_conv_handler,
     supplement_take_callback,
@@ -443,6 +448,9 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(diet_conv_handler)
     application.add_handler(habits_setup_conv_handler)
     application.add_handler(supplements_setup_conv_handler)
+    # Registered before the plain ``^mon_`` callbacks below so tapping 📝 reaches
+    # this conversation's entry point rather than falling through as a board tap.
+    application.add_handler(monitor_conv_handler)
     application.add_handler(shortcuts_conv_handler)
     # Registered before the ``^menu_`` catch-all below so the ⚖️ Weight tap
     # reaches this conversation's entry point rather than menu_callback, which
@@ -573,6 +581,16 @@ def build_application(*, register_commands: bool = False) -> Application:
         CallbackQueryHandler(
             supplement_setup_done_callback, pattern=r"^supp_setup_done_"
         )
+    )
+    # Monitor board callbacks — its own prefix family. These two write and unwrite
+    # a *counted* occurrence, so they must never share a pattern with the
+    # idempotent habit/supplement check-offs. The detail (``mon_d_``) and setup
+    # taps belong to ``monitor_conv_handler`` and are registered with it.
+    application.add_handler(
+        CallbackQueryHandler(monitor_add_callback, pattern=r"^mon_a_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(monitor_undo_callback, pattern=r"^mon_z_")
     )
     # Typed-meal (describe) callbacks
     application.add_handler(
