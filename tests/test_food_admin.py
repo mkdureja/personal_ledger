@@ -858,6 +858,11 @@ class TestAppending:
         assert added["portions"] == [{"name": "katori", "base_amount": 150}]
 
     def test_two_foods_can_be_added_in_a_row(self, seed_file):
+        # Measured from wherever the bundled catalog happens to stand: pinning
+        # the literal made every real catalog addition fail this test, which
+        # says nothing about whether two appends in a row work.
+        start, _foods = food_admin.load_catalog_seed()
+        expected = food_admin.bump_revision(food_admin.bump_revision(start))
         food_admin.append_catalog_food(
             food_admin.parse_catalog_payload(catalog_payload(), [])
         )
@@ -870,7 +875,7 @@ class TestAppending:
             )
         )
         revision, foods = food_admin.load_catalog_seed()
-        assert revision == "2026.5"
+        assert revision == expected
         assert {"amul-dahi", "amul-butter"} <= {
             str(f["provider_food_id"]) for f in foods
         }
