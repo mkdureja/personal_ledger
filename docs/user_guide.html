@@ -1470,8 +1470,54 @@ DB_PATH=ledger.db</code></pre>
                 <td><code>/summary week</code></td>
                 <td>Last 7 days: total study hours, workout days, calorie average, known macro totals, habit completion %</td>
             </tr>
+            <tr>
+                <td><code>/meals</code></td>
+                <td>Today's food <em>item by item</em>, each with its own calories and macros</td>
+            </tr>
+            <tr>
+                <td><code>/meals yesterday</code>, <code>/meals 11 aug</code>, <code>/meals 2026-08-11</code></td>
+                <td>The same for any past day — or tap <strong>◀️</strong> to walk back a day at a time</td>
+            </tr>
         </tbody>
     </table>
+
+    <h3>What You Ate, Item by Item</h3>
+    <p><code>/summary</code> tells you <em>how much</em>; <code>/meals</code>
+    tells you <em>of what</em>. Every meal is listed under its type with each
+    item priced separately, so you can see where a day's calories or protein
+    actually came from. The <strong>🍽️ Meal breakdown</strong> button on a
+    summary opens the same view for that day.</p>
+
+    <div class="chat no-break" style="max-width: 420px;">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-user"><div class="msg-bubble">/meals</div></div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble">
+                🍽️ <strong>Thu 13 Aug 2026</strong> — 4 meals<br>
+                1104 cal · P 85.8 · C 115.5 · F 35.3<br><br>
+                🌅 <strong>Breakfast</strong> · 08:48 — 399 cal · P 40.8 · C 52.4 · F 4.5<br>
+                &nbsp;· 1 scoop Cosmix protein<br>
+                &nbsp;&nbsp;&nbsp;142 cal · P 23 · C 11 · F 1<br>
+                &nbsp;· 150 g Skyr<br>
+                &nbsp;&nbsp;&nbsp;152 cal · P 16.5 · C 14.2 · F 3.1<br>
+                &nbsp;· 1 medium Banana<br>
+                &nbsp;&nbsp;&nbsp;105 cal · P 1.3 · C 27.1 · F 0.3
+                <div class="kb">
+                    <div class="kb-row"><span class="kb-btn">◀️ 12 Aug</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <p>Meals are grouped in the order you eat them — breakfast, lunch, dinner,
+    snack — not in the order you typed them, because a morning entered at 2pm
+    would otherwise print breakfast after lunch. The time shown is when the
+    entry was <em>logged</em>. A macro nobody recorded shows as
+    <strong>—</strong> and the day's total says <em>(known values)</em>: unknown
+    is never counted as zero.</p>
 
     <div class="chat no-break">
         <div class="chat-header">

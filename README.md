@@ -420,6 +420,49 @@ each action's outcome is recorded once and replayed.
 | `/habits` | Today's habit checklist — each habit is one full-width button; tap its **name** to check or un-check |
 | `/habits setup` | Add/remove habits |
 
+### A day's food, item by item
+
+`/summary` answers *how much*; `/recent` answers *did my save land*. Neither
+answered the question you actually ask looking back at a day — **what** did I
+eat, and what did each thing cost. Every number needed for it has been stored
+per item since structured meals landed; `/meals` reads it back.
+
+```
+🍽️ Thu 13 Aug 2026 — 4 meals
+1104 cal · P 85.8 · C 115.5 · F 35.3
+
+🌅 Breakfast · 08:48 — 399 cal · P 40.8 · C 52.4 · F 4.5
+ · 1 scoop Cosmix protein
+   142 cal · P 23 · C 11 · F 1
+ · 150 g Skyr
+   152 cal · P 16.5 · C 14.2 · F 3.1
+...
+        [◀️ 12 Aug]
+```
+
+| Command | Description |
+|---|---|
+| `/meals` | Today, item by item |
+| `/meals yesterday` · `/meals 11 aug` · `/meals 2026-08-11` | Any past day |
+
+Four decisions worth knowing:
+
+- **A list, not a table.** Telegram only aligns columns inside a monospace
+  block, ~30–34 characters wide on a phone. Six columns would leave about twelve
+  characters for the food name, so the table you can read costs you the thing
+  you are scanning for.
+- **Meal order, not log order.** People log in bursts — a whole morning entered
+  at 2pm — and sorting by timestamp then prints breakfast after lunch, which
+  reads as an error in the data rather than in the sort.
+- **Any past day, no window.** The check-off screens accept only today and
+  yesterday because they *write*. This reads, so ◀️ ▶️ walk as far back as you
+  have logged. A future date is refused: an empty answer there reads as loss.
+- **Unknown is never zero.** A meal logged without macros makes the day's
+  protein *unknown*, not smaller, and the totals line says `(known values)`.
+
+The layout and the date grammar live in `bot/meal_day.py`, which imports neither
+Telegram nor the database, so both are tested directly.
+
 ### Supplements
 | Command | Description |
 |---|---|

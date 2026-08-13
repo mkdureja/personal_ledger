@@ -14,7 +14,7 @@ from telegram.ext import ContextTypes
 from .common import authorized_callback, escape_html, reply_html
 from .. import charts, weight_series
 from ..config import local_date_from_utc, today_local
-from ..keyboards import MAX_ACTIVE_HABITS
+from ..keyboards import MAX_ACTIVE_HABITS, summary_breakdown_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,14 @@ async def _daily_summary(message: Message, db, user_id: int) -> None:
     else:
         lines.append("✅ <b>Habits</b>: no habits set up")
 
-    await reply_html(message, "\n".join(lines))
+    # The summary answers "how much"; its one button answers "of what". They
+    # belong on the same message because the second question is always asked
+    # about the day the first one just reported.
+    await reply_html(
+        message,
+        "\n".join(lines),
+        reply_markup=summary_breakdown_keyboard(user_id, today),
+    )
 
 
 async def _daily_weight_line(db, user_id: int, today: date) -> str:

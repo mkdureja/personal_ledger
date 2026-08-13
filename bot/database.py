@@ -2849,6 +2849,33 @@ class DatabaseManager:
             (user_id, _sqlite_timestamp(start_utc), _sqlite_timestamp(end_utc)),
         )
 
+    async def get_diet_items_for_meals(
+        self, user_id: int, meal_ids: Sequence[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Every named meal's items, keyed by meal id, in one query.
+
+        A day view needs the children of every meal at once. Calling
+        :meth:`get_diet_log_items` per meal would be one round trip per meal for
+        a screen that is always rendered whole, so the ids are bound in a single
+        ``IN`` clause. Meals with no structured children are simply absent from
+        the map rather than present with an empty list, so a caller must decide
+        what an item-less meal looks like instead of rendering a silent blank.
+        """
+        ids = [int(meal_id) for meal_id in meal_ids]
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        rows = await self._query_all(
+            "SELECT * FROM diet_log_items "
+            f"WHERE user_id = ? AND diet_log_id IN ({placeholders}) "
+            "ORDER BY diet_log_id, item_order, id",
+            (user_id, *ids),
+        )
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(int(row["diet_log_id"]), []).append(dict(row))
+        return grouped
+
     # -------------------------------------------------------------------
     # Recent activity (reconciliation for /recent)
     # -------------------------------------------------------------------

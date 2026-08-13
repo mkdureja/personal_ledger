@@ -115,6 +115,7 @@ from .handlers.analytics import (
     analytics_callback,
 )
 from .handlers.reminders import anchor_job, daily_reminder
+from .handlers.meals import meal_day_handler, meals_handler
 from .handlers.recent import recent_command
 from .handlers.settings import (
     aiparse_command,
@@ -196,6 +197,9 @@ COMMAND_MENU: tuple[tuple[str, str], ...] = (
     # in one message with nothing to enter or leave — the same test /weight
     # passes. "/summary week" still works; the picker offers the daily one.
     ("summary", "Today's totals"),
+    # The totals answer "how much"; this answers "of what". Both are everyday
+    # reads with nothing to enter or leave, which is the bar for this list.
+    ("meals", "What you ate, item by item"),
     ("recent", "Recent entries"),
     ("undo", "Recover the latest supported entry"),
     ("help", "Full reference"),
@@ -480,6 +484,10 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(CommandHandler("streak", streak_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("undo", undo_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("recent", recent_command, filters=AUTH_FILTER))
+    # A day's food, item by item. Read-only and outside every conversation: its
+    # ◀ ▶ keyboard is meant to be usable long after the message was sent.
+    application.add_handler(meals_handler)
+    application.add_handler(meal_day_handler)
     application.add_handler(CommandHandler("settings", settings_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("reminders", reminders_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("suggestions", suggestions_command, filters=AUTH_FILTER))

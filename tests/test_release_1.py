@@ -381,7 +381,7 @@ def test_command_menu_is_only_the_everyday_set():
     # /weight is here because "/weight 72.4" is a complete daily interaction on
     # its own; every other logging command opens a flow and belongs on Home.
     assert [command for command, _ in main_module.COMMAND_MENU] == [
-        "home", "weight", "summary", "recent", "undo", "help",
+        "home", "weight", "summary", "meals", "recent", "undo", "help",
     ]
     assert all(description for _, description in main_module.COMMAND_MENU)
 
@@ -425,7 +425,7 @@ async def test_register_command_menu_sends_only_the_everyday_set():
     await main_module.register_command_menu(SimpleNamespace(bot=_Bot()))
 
     assert [c.command for c in calls[0]] == [
-        "home", "weight", "summary", "recent", "undo", "help",
+        "home", "weight", "summary", "meals", "recent", "undo", "help",
     ]
 
 

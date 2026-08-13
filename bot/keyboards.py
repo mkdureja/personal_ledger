@@ -4,7 +4,7 @@ Reusable InlineKeyboard builders for Ledger bot.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Sequence
 
 from telegram import (
@@ -1312,6 +1312,83 @@ def supplement_target_keyboard(
         ]
     )
     return InlineKeyboardMarkup(rows)
+
+
+#: Callback prefix for the day-by-day meal breakdown. Its own family: ``meal_``
+#: already means "pick a meal type" and ``menu_`` opens a section, so a third
+#: shape sharing either prefix would be one typo away from routing into a write.
+MEAL_DAY_PREFIX = "mday"
+
+
+def meal_day_data(user_id: int, day: date) -> str:
+    """Encode one day as ``mday_<owner36>_<YYYYMMDD>``.
+
+    The date travels in full rather than as an offset from today: an offset
+    would mean a different day tomorrow, so a keyboard left in the scrollback
+    overnight would quietly answer about the wrong day.
+    """
+    return f"{MEAL_DAY_PREFIX}_{to_base36(user_id)}_{day.strftime('%Y%m%d')}"
+
+
+def parse_meal_day(data: str, user_id: int) -> date | None:
+    """Decode an ``mday_*`` callback to its date, or ``None``."""
+    parts = (data or "").split("_")
+    if len(parts) != 3 or parts[0] != MEAL_DAY_PREFIX:
+        return None
+    stamp = parts[2]
+    # Exactly eight digits, checked before slicing: "2026081" would otherwise
+    # slice cleanly into 2026-08-1 and answer confidently about a day nobody
+    # asked for.
+    if len(stamp) != 8 or not stamp.isdigit():
+        return None
+    try:
+        owner = parse_base36(parts[1])
+        day = date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
+    except (TypeError, ValueError):
+        return None
+    if owner != user_id:
+        return None
+    return day
+
+
+def meal_day_keyboard(
+    user_id: int, day: date, *, has_next: bool = True
+) -> InlineKeyboardMarkup:
+    """Step to the day before or after the one being shown.
+
+    There is no forward button on today: the next day holds nothing, and a
+    button that can only ever answer "nothing logged" invites the reading that
+    something was lost.
+    """
+    previous = day - timedelta(days=1)
+    row = [
+        InlineKeyboardButton(
+            f"◀️ {previous.strftime('%d %b')}",
+            callback_data=meal_day_data(user_id, previous),
+        )
+    ]
+    if has_next:
+        following = day + timedelta(days=1)
+        row.append(
+            InlineKeyboardButton(
+                f"{following.strftime('%d %b')} ▶️",
+                callback_data=meal_day_data(user_id, following),
+            )
+        )
+    return InlineKeyboardMarkup([row])
+
+
+def summary_breakdown_keyboard(user_id: int, day: date) -> InlineKeyboardMarkup:
+    """The one control on a daily summary: show that day's food item by item."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🍽️ Meal breakdown", callback_data=meal_day_data(user_id, day)
+                )
+            ]
+        ]
+    )
 
 
 def analytics_keyboard() -> InlineKeyboardMarkup:
