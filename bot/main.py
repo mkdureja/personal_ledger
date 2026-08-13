@@ -191,6 +191,10 @@ COMMAND_MENU: tuple[tuple[str, str], ...] = (
     # Earns its place by being a daily one-liner: "/weight 72.4" is the whole
     # interaction, with no flow to enter or leave.
     ("weight", "Log today's weight"),
+    # Reading the day back is as everyday as logging it, and "/summary" answers
+    # in one message with nothing to enter or leave — the same test /weight
+    # passes. "/summary week" still works; the picker offers the daily one.
+    ("summary", "Today's totals"),
     ("recent", "Recent entries"),
     ("undo", "Recover the latest supported entry"),
     ("help", "Full reference"),
