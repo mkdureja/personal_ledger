@@ -4,6 +4,7 @@ save, and the keep-logging loop â€” plus owner/stale callback safety.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,6 +12,8 @@ import pytest
 from telegram.constants import ChatType
 from telegram.ext import ConversationHandler
 
+from bot.callback_data import to_base36
+from bot.config import today_local
 from bot.handlers import diet
 from bot.handlers.catalog import resolve_catalog_diet_entry
 from bot.handlers.common import activate_conversation, active_conversation_flow
@@ -494,3 +497,152 @@ async def test_stale_diet_callback_rejects_other_users_button():
 
     assert "another user" in query.answer.await_args.args[0]
     query.edit_message_reply_markup.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Finishing a meal from the picker (the "cancelled my whole meal" defect)
+# ---------------------------------------------------------------------------
+# Reported from real use: two items entered, the third could not be found, and
+# the only visible exit from the picker was ✖️ Cancel — which discards the
+# draft. The picker now carries Save whenever there is something to save, and
+# Cancel says what it is about to throw away.
+def _picker_db(foods=()):
+    return SimpleNamespace(
+        list_foods=AsyncMock(return_value=list(foods)),
+        list_recipes=AsyncMock(return_value=[]),
+        get_suggestions_enabled=AsyncMock(return_value=False),
+        get_food_preferences=AsyncMock(return_value={}),
+    )
+
+
+def _item(name, cal, p, c, f):
+    """One drafted item, as the builder assembles it."""
+    return {
+        "source_type": "freetext",
+        "source_id": None,
+        "display_name": name,
+        "entered_amount": None,
+        "entered_unit": None,
+        "resolved_base_amount": None,
+        "resolved_base_unit": None,
+        "calories": cal,
+        "protein_g": p,
+        "carbs_g": c,
+        "fat_g": f,
+    }
+
+
+def _button_texts(markup):
+    return [b.text for row in markup.inline_keyboard for b in row]
+
+
+async def test_the_picker_offers_save_once_the_draft_has_something(monkeypatch):
+    monkeypatch.setattr("bot.config.PHASE1_ENABLED_USER_IDS", frozenset({USER}))
+    db = _picker_db([{"id": 5, "name": "Apple"}])
+    query = _query(f"dadd_{USER}", message_id=100)
+    context = _context(
+        db,
+        {
+            "diet_meal_type": "lunch",
+            "diet_items": [_item("dal", 200, 9, 30, 1), _item("rice", 150, 3, 33, 0)],
+            "diet_ui_message_id": 100,
+            "diet_ui_revision": 0,
+        },
+    )
+
+    state = await diet._prompt_food_choice(
+        _cb_update(query), context, query.message, "lunch"
+    )
+
+    assert state == diet.FOOD_CHOICE
+    markup = query.message.reply_text.await_args.kwargs["reply_markup"]
+    assert "✅ Save meal (2 items)" in _button_texts(markup)
+
+
+async def test_an_empty_draft_gets_no_save_button(monkeypatch):
+    """Nothing to save yet: the button would be a dead end, not a way out."""
+    monkeypatch.setattr("bot.config.PHASE1_ENABLED_USER_IDS", frozenset({USER}))
+    db = _picker_db([{"id": 5, "name": "Apple"}])
+    query = _query(f"meal_{USER}_lunch", message_id=100)
+    context = _context(db, {"diet_meal_type": "lunch", "diet_ui_revision": 0})
+
+    await diet._prompt_food_choice(_cb_update(query), context, query.message, "lunch")
+
+    markup = query.message.reply_text.await_args.kwargs["reply_markup"]
+    assert not any(text.startswith("✅ Save") for text in _button_texts(markup))
+
+
+async def test_saving_from_the_picker_writes_the_meal(db_with_user, user_id):
+    """The two entered items reach the ledger without passing through Cancel."""
+    items = [_item("dal", 200, 9, 30, 1), _item("rice", 150, 3, 33, 0)]
+    query = _query(f"dsave_{to_base36(user_id)}_{to_base36(0)}", message_id=100)
+    context = _context(
+        db_with_user,
+        {
+            "diet_meal_type": "lunch",
+            "diet_items": items,
+            "diet_ui_message_id": 100,
+            "diet_ui_revision": 0,
+        },
+    )
+    update = _cb_update(query)
+    activate_conversation(update, context, "diet")
+
+    state = await diet.save_from_picker_p1(update, context)
+
+    assert state == diet.LOG_ANOTHER
+    logs = await db_with_user.get_diet_logs(
+        user_id, today_local() - timedelta(days=1), today_local()
+    )
+    assert [row["calories"] for row in logs] == [350]
+    assert "diet_items" not in context.user_data
+
+
+async def test_a_stale_picker_save_stays_on_the_picker(db_with_user, user_id):
+    """A stale tap must not silently move the user to the draft screen's state."""
+    query = _query(f"dsave_{to_base36(user_id)}_{to_base36(0)}", message_id=55)
+    context = _context(
+        db_with_user,
+        {
+            "diet_meal_type": "lunch",
+            "diet_items": [_item("dal", 200, 9, 30, 1)],
+            "diet_ui_message_id": 100,  # a newer message owns the flow
+            "diet_ui_revision": 0,
+        },
+    )
+    update = _cb_update(query)
+    activate_conversation(update, context, "diet")
+
+    state = await diet.save_from_picker_p1(update, context)
+
+    assert state == diet.FOOD_CHOICE
+    assert len(context.user_data["diet_items"]) == 1  # nothing written or lost
+
+
+async def test_cancel_names_what_it_discards():
+    context = _context(
+        SimpleNamespace(),
+        {
+            "diet_meal_type": "lunch",
+            "diet_items": [_item("dal", 200, 9, 30, 1), _item("rice", 150, 3, 33, 0)],
+            "diet_ui_message_id": 100,
+        },
+    )
+    query = _query(f"dcancel_{USER}", message_id=100)
+    update = _cb_update(query)
+    activate_conversation(update, context, "diet")
+
+    await diet.cancel_diet_callback(update, context)
+
+    assert "2 items discarded" in query.message.reply_text.await_args.args[0]
+
+
+async def test_cancel_with_nothing_drafted_stays_terse():
+    context = _context(SimpleNamespace(), {"diet_ui_message_id": 100})
+    query = _query(f"dcancel_{USER}", message_id=100)
+    update = _cb_update(query)
+    activate_conversation(update, context, "diet")
+
+    await diet.cancel_diet_callback(update, context)
+
+    assert query.message.reply_text.await_args.args[0] == "✖️ Cancelled."

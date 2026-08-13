@@ -257,6 +257,8 @@ def food_choice_keyboard(
     paginate: bool = False,
     change_meal: bool = False,
     quick: bool = False,
+    draft_count: int = 0,
+    phase1_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     """Ranked saved foods/recipes as one-tap buttons, plus type/cancel escapes.
 
@@ -323,6 +325,25 @@ def food_choice_keyboard(
                 )
             )
         rows.append(nav)
+    # With items already in the draft, this screen needs a way to *finish*.
+    # Without one, the only visible exit from "add another item" was ✖️ Cancel —
+    # which discards the whole meal — so someone who could not find their third
+    # item lost the two they had already entered. Save is drawn first and full
+    # width because it is the tap that keeps the work.
+    if draft_count > 0:
+        items = "item" if draft_count == 1 else "items"
+        # Same two payload shapes ``diet_save_keyboard`` emits, chosen the same
+        # way, so a draft started on one keyboard can always be saved from the
+        # other: revisioned under Phase 1, decimal on the legacy path.
+        save_data = f"dsave_{owner}_{rev}" if phase1_enabled else f"dsave_{user_id}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"✅ Save meal ({draft_count} {items})",
+                    callback_data=save_data,
+                )
+            ]
+        )
     if change_meal:
         rows.append(
             [

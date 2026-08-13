@@ -185,6 +185,17 @@ def _parse_ts(value: object) -> datetime | None:
 MAX_RANKED_CHOICES = 8
 
 
+def _draft_count(context: ContextTypes.DEFAULT_TYPE) -> int:
+    """How many items the meal being built already holds.
+
+    The picker needs this to know whether to offer Save: with an empty draft
+    there is nothing to save, and with a non-empty one Save must be reachable
+    without going through Cancel.
+    """
+    items = context.user_data.get("diet_items")
+    return len(items) if isinstance(items, list) else 0
+
+
 async def _ranked_choices(
     context: ContextTypes.DEFAULT_TYPE, uid: int, meal_type: str
 ) -> list[dict]:
@@ -693,6 +704,8 @@ async def _prompt_food_choice(
             paginate=phase1_enabled_for(uid),
             change_meal=phase1_enabled_for(uid),
             quick=_quick_mode(context, uid),
+            draft_count=_draft_count(context),
+            phase1_enabled=phase1_enabled_for(uid),
         ),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
@@ -1236,6 +1249,8 @@ async def receive_search_query(
             manage=phase1_enabled_for(uid),
             revision=context.user_data.get("diet_ui_revision", 0),
             quick=_quick_mode(context, uid),
+            draft_count=_draft_count(context),
+            phase1_enabled=phase1_enabled_for(uid),
         ),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
@@ -1374,6 +1389,8 @@ async def _reprompt_food_choice(
             paginate=phase1_enabled_for(uid),
             change_meal=phase1_enabled_for(uid),
             quick=_quick_mode(context, uid),
+            draft_count=_draft_count(context),
+            phase1_enabled=phase1_enabled_for(uid),
         ),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
@@ -2987,6 +3004,32 @@ async def save_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return await _persist_draft(update, context, query)
 
 
+async def save_from_picker_p1(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """``Save meal`` tapped on the picker, mid "add another item".
+
+    The same write as the draft screen's Save — only the state a stale tap falls
+    back to differs, because here the user is looking at the picker and must not
+    be silently moved to the draft screen's state.
+    """
+    query = await _consume_phase1_tap(
+        update, context, owner_index=1, revision_index=2
+    )
+    if query is None:
+        return FOOD_CHOICE
+    return await _persist_draft(update, context, query)
+
+
+@authorized_callback
+async def save_from_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """The legacy-payload twin of :func:`save_from_picker_p1`."""
+    query = await _consume_diet_tap(update, context)
+    if query is None:
+        return FOOD_CHOICE
+    return await _persist_draft(update, context, query)
+
+
 async def _persist_draft(
     update: Update, context: ContextTypes.DEFAULT_TYPE, query: object
 ) -> int:
@@ -3147,10 +3190,20 @@ async def cancel_diet_callback(
     query = await _consume_diet_tap(update, context)
     if query is None:
         return None
+    # Read the draft before the flow is finished, so the message can say what
+    # was thrown away. A bare "Cancelled" after two items were entered reads as
+    # "nothing happened", which is the opposite of what just happened.
+    discarded = _draft_count(context)
     await _remove_callback_markup(query)
     finish_conversation(update, context, "diet")
+    items = "item" if discarded == 1 else "items"
+    text = (
+        f"✖️ Cancelled — {discarded} {items} discarded, nothing logged."
+        if discarded
+        else "✖️ Cancelled."
+    )
     try:
-        await query.message.reply_text("✖️ Cancelled.")
+        await query.message.reply_text(text)
     except TelegramError:
         logger.warning("Could not deliver diet cancellation", exc_info=True)
     return ConversationHandler.END
@@ -3722,6 +3775,12 @@ diet_conv_handler = ConversationHandler(
             CallbackQueryHandler(
                 change_meal_type, pattern=r"^dchangemeal_[0-9a-z]+$"
             ),
+            # Finishing a meal from the picker. Both payload shapes, because a
+            # draft may have been started on either keyboard.
+            CallbackQueryHandler(
+                save_from_picker_p1, pattern=r"^dsave_[0-9a-z]+_[0-9a-z]+$"
+            ),
+            CallbackQueryHandler(save_from_picker, pattern=r"^dsave_\d+$"),
             _diet_text_catchall,
         ],
         SEARCH: [

@@ -167,6 +167,13 @@ Because the food list now only grows, the picker shows the top
 `MAX_RANKED_CHOICES` (8) rows and everything else stays one 🔎 Search away —
 which also searches your own foods, not just the shared catalog.
 
+The picker also carries **✅ Save meal (N items)** as soon as the draft holds
+anything. It had no way to *finish*: the only visible exit from "add another
+item" was ✖️ Cancel, so someone who could not find their third item lost the two
+they had already entered. Cancel now names what it discards, too — a bare
+"Cancelled" after two items reads as "nothing happened", which is the opposite
+of what just happened.
+
 ### Meal shortcuts
 
 The picker already learns: `bot/suggestions.py` puts everything you have eaten at
