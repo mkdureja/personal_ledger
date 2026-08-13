@@ -14,7 +14,7 @@ Bump ``CATALOG_REVISION`` when values change; ``seed_catalog`` upserts by
 from __future__ import annotations
 
 CATALOG_PROVIDER = "curated"
-CATALOG_REVISION = "2026.3"
+CATALOG_REVISION = "2026.4"
 
 
 def _food(fid, name, unit, basis, cal, p, c, f, *, category=None, portions=None, aliases=None):
@@ -82,4 +82,8 @@ CATALOG_FOODS: list[dict] = [
           135, 30, 1.5, 0.6, category="protein",
           portions=[{"name": "scoop", "base_amount": 1}],
           aliases=["whey isolate", "whey"]),
+    _food("cosmix-protein", "Cosmix protein", "piece", 1, 142, 23, 11, 1,
+          category="protein",
+          portions=[{"name": "scoop", "base_amount": 1}],
+          aliases=["cosmix", "cosmix plant protein"]),
 ]
