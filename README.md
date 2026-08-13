@@ -11,6 +11,7 @@ A multi-user Telegram bot for tracking **Study**, **Gym**, **Diet**, **Weight**,
 | 🍽️ **Diet** | Meal type, food items, calories, and protein/carbs/fat macros |
 | ⚖️ **Weight** | One body weight per day; missed days carry forward (up to 10) so the 7-day average stays readable |
 | ✅ **Habits** | Predefined habits, daily check-off, streaks |
+| 💊 **Supplements** | Daily check-off, with an optional daily target for anything taken more than once (e.g. 2 scoops of creatine) |
 
 **Extras:**
 - 📊 Charts — Study hours, gym volume, calorie intake, weight trend, habit heatmaps
@@ -391,6 +392,31 @@ each action's outcome is recorded once and replayed.
 |---|---|
 | `/habits` | Today's habit checklist — each habit is one full-width button; tap its **name** to check or un-check |
 | `/habits setup` | Add/remove habits |
+
+### Supplements
+| Command | Description |
+|---|---|
+| `/supplements` | Today's supplement checklist — tap a name to record it |
+| `/supplements setup` | Add/remove supplements, and set a 🎯 daily target |
+
+Adherence only: a supplement has no calorie or macro path and can never move a
+meal total. Most are a plain check-off, but anything dosed more than once a day
+can carry a **daily target**, set with 🎯 in setup:
+
+```
+💊 Supplements — 1/5 taken
+  [🔸 Creatine 1/2]  [➖]
+  [⬜ Mg Gly]
+  [✅ B12]
+```
+
+A counted row *adds* rather than toggling — a second tap is a second scoop, not
+an undo — and ➖ takes one back off, deleting the day's record entirely when it
+reaches zero. The header and the streak both count a day only once its target is
+met, so "one of the two I aim for" reads as outstanding rather than done.
+Supplements without a target behave exactly as they always have, and so do every
+one of their existing streaks: the count lives in the day's single row, which
+before v18 meant "taken once" and still does.
 
 ### Weight
 | Command | Description |

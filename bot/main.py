@@ -99,6 +99,7 @@ from .handlers.monitors import (
 from .handlers.supplements import (
     supplements_setup_conv_handler,
     supplement_take_callback,
+    supplement_decrement_callback,
     supplement_untake_callback,
     supplement_toggle_day_callback,
     supplement_page_callback,
@@ -563,6 +564,12 @@ def build_application(*, register_commands: bool = False) -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(supplement_untake_callback, pattern=r"^supp_u_")
+    )
+    # ➖ on a counted supplement. Registered beside its ``supp_c_`` twin rather
+    # than inside setup: it belongs to the daily checklist, which lives outside
+    # every conversation.
+    application.add_handler(
+        CallbackQueryHandler(supplement_decrement_callback, pattern=r"^supp_m_")
     )
     application.add_handler(
         CallbackQueryHandler(supplement_toggle_day_callback, pattern=r"^supp_toggle_")

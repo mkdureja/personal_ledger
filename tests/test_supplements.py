@@ -515,6 +515,39 @@ def test_the_limit_leaves_room_for_the_checklist_control_rows():
     assert MAX_ACTIVE_SUPPLEMENTS == keyboards.MAX_ACTIVE_HABITS
 
 
+@pytest.mark.parametrize("build", ["checklist", "setup"])
+def test_a_full_list_stays_under_telegrams_button_limit(build):
+    """Over 100 buttons, Telegram rejects the *whole* keyboard, not the excess.
+
+    Both screens grew a button per supplement in v18 (➖ on a counted row, 🎯 in
+    setup), which is exactly the change that can silently take a working screen
+    over the edge for the one user who has a long list.
+    """
+    supplements = [
+        {
+            "id": n,
+            "name": f"Supplement {n}",
+            "dose_amount": None,
+            "dose_unit": None,
+            "timing": None,
+            "target_count": 2,
+        }
+        for n in range(1, MAX_ACTIVE_SUPPLEMENTS + 1)
+    ]
+    if build == "checklist":
+        markup = keyboards.supplement_checklist_keyboard(
+            supplements,
+            {s["id"] for s in supplements},
+            today_local(),
+            UID,
+            counts={s["id"]: 1 for s in supplements},
+        )
+    else:
+        markup = keyboards.supplement_setup_keyboard(supplements, UID)
+
+    assert sum(len(row) for row in markup.inline_keyboard) <= 100
+
+
 async def test_remove_requires_the_live_setup_prompt(db):
     await db.ensure_user(UID, "t", "Test")
     sid, _ = await db.add_supplement(UID, "Zinc")
@@ -526,6 +559,311 @@ async def test_remove_requires_the_live_setup_prompt(db):
     )
 
     assert len(await db.get_active_supplements(UID)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Daily targets — a supplement taken more than once a day (v18)
+# ---------------------------------------------------------------------------
+def _setup_context(db, query):
+    """A context whose live setup prompt is the message this query came from."""
+    return _context(
+        db,
+        user_data={
+            "_ledger_active_conversation": ("supplements", UID),
+            "supplement_setup_prompt": (
+                query.message.chat_id,
+                query.message.message_id,
+            ),
+        },
+    )
+
+
+def test_target_columns_are_introduced_at_v18():
+    from ledger_schema import required_columns_for
+
+    assert "target_count" in required_columns_for(18)["supplements"]
+    assert "taken_count" in required_columns_for(18)["supplement_logs"]
+    # A v17 rollback copy predates them and must still verify as sound.
+    assert "target_count" not in required_columns_for(17)["supplements"]
+    assert "taken_count" not in required_columns_for(17)["supplement_logs"]
+
+
+async def test_migrating_a_populated_v17_database_keeps_every_check_off(
+    monkeypatch,
+):
+    """The step the deployed v17 database takes, with real adherence in it.
+
+    The claim that matters is that an existing row keeps meaning what it meant:
+    it was taken once.
+    """
+    from bot import migrations
+    from bot.database import DatabaseManager
+
+    mgr = DatabaseManager(":memory:")
+    await mgr.connect()
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(migrations, "LATEST_VERSION", 17)
+            await migrations.run_migrations(mgr.conn)
+
+        await mgr.ensure_user(UID, "t", "Test")
+        sid, _ = await mgr.add_supplement(UID, "Creatine")
+        today = today_local()
+        await mgr.take_supplement(UID, sid, today)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(migrations, "LATEST_VERSION", 18)
+            await migrations.run_migrations(mgr.conn)
+
+        assert await migrations.get_user_version(mgr.conn) == 18
+        assert await mgr.get_taken_supplements(UID, today) == {sid}
+        assert await mgr.get_supplement_counts(UID, today) == {sid: 1}
+        assert await mgr.get_supplement_streak(UID, sid, today) == 1
+        cursor = await mgr.conn.execute("PRAGMA foreign_key_check")
+        assert await cursor.fetchall() == []
+    finally:
+        await mgr.close()
+
+
+async def test_a_counted_supplement_adds_up_and_comes_back_down(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 2)
+    today = today_local()
+
+    assert await db.adjust_supplement_count(UID, sid, today, 1) == 1
+    assert await db.adjust_supplement_count(UID, sid, today, 1) == 2
+    assert await db.get_supplement_counts(UID, today) == {sid: 2}
+    assert await db.adjust_supplement_count(UID, sid, today, -1) == 1
+    # Back to zero removes the day, so it is indistinguishable from never taken.
+    assert await db.adjust_supplement_count(UID, sid, today, -1) == 0
+    assert await db.get_supplement_counts(UID, today) == {}
+    assert await db.get_taken_supplements(UID, today) == set()
+
+
+async def test_a_day_stays_one_row_however_many_were_taken(db):
+    """Counts live *in* the day's row — every existing read keeps working."""
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    today = today_local()
+    for _ in range(3):
+        await db.adjust_supplement_count(UID, sid, today, 1)
+
+    rows = await db.get_supplement_logs_range(UID, today, today)
+    assert len(rows) == 1
+    assert rows[0]["taken_count"] == 3
+
+
+async def test_the_count_cannot_run_away(db):
+    from bot.database import MAX_SUPPLEMENT_DAILY_COUNT
+
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    today = today_local()
+    for _ in range(MAX_SUPPLEMENT_DAILY_COUNT + 5):
+        count = await db.adjust_supplement_count(UID, sid, today, 1)
+    assert count == MAX_SUPPLEMENT_DAILY_COUNT
+
+
+async def test_a_half_finished_day_breaks_the_streak(db):
+    """A target of two means one scoop is not a day's worth."""
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 2)
+    today = today_local()
+    yesterday = today - timedelta(days=1)
+    for _ in range(2):
+        await db.adjust_supplement_count(UID, sid, yesterday, 1)
+    await db.adjust_supplement_count(UID, sid, today, 1)
+
+    assert await db.get_supplement_streak(UID, sid, today) == 0
+    await db.adjust_supplement_count(UID, sid, today, 1)
+    assert await db.get_supplement_streak(UID, sid, today) == 2
+
+
+async def test_clearing_the_target_restores_the_plain_check_off(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 3)
+    today = today_local()
+    await db.adjust_supplement_count(UID, sid, today, 1)
+    assert await db.get_supplement_streak(UID, sid, today) == 0
+
+    await db.set_supplement_target(UID, sid, None)
+
+    # The day it already recorded is not rewritten — it now simply suffices.
+    assert await db.get_supplement_counts(UID, today) == {sid: 1}
+    assert await db.get_supplement_streak(UID, sid, today) == 1
+
+
+@pytest.mark.parametrize("bad", [0, -2, 999, 1.5])
+async def test_an_impossible_target_is_refused(db, bad):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    with pytest.raises(ValueError):
+        await db.set_supplement_target(UID, sid, bad)
+
+
+async def test_another_users_supplement_takes_no_target(db):
+    await db.ensure_user(UID, "t", "Test")
+    await db.ensure_user(OTHER, "o", "Other")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+
+    assert await db.set_supplement_target(OTHER, sid, 2) is False
+    active = await db.get_active_supplements(UID)
+    assert active[0]["target_count"] is None
+
+
+async def test_a_counted_row_counts_up_instead_of_toggling(db):
+    """A second tap on a counted row is a second scoop, never an undo."""
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 2)
+    today = today_local()
+
+    for _ in range(2):
+        query = _query(f"supp_c_{UID}_{sid}_{today.isoformat()}")
+        await supplements.supplement_take_callback(
+            _callback_update(query), _context(db)
+        )
+
+    assert await db.get_supplement_counts(UID, today) == {sid: 2}
+
+
+async def test_the_minus_button_appears_only_once_there_is_something_to_remove(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 2)
+    today = today_local()
+    active = await db.get_active_supplements(UID)
+
+    empty = keyboards.supplement_checklist_keyboard(
+        active, set(), today, UID, counts={}
+    )
+    assert len(empty.inline_keyboard[0]) == 1
+    assert empty.inline_keyboard[0][0].text.startswith("⬜ Creatine 0/2")
+
+    started = keyboards.supplement_checklist_keyboard(
+        active, {sid}, today, UID, counts={sid: 1}
+    )
+    assert [b.text for b in started.inline_keyboard[0]] == ["🔸 Creatine 1/2", "➖"]
+
+    done = keyboards.supplement_checklist_keyboard(
+        active, {sid}, today, UID, counts={sid: 2}
+    )
+    assert done.inline_keyboard[0][0].text.startswith("✅ Creatine 2/2")
+
+
+async def test_the_minus_button_takes_one_off(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 2)
+    today = today_local()
+    await db.adjust_supplement_count(UID, sid, today, 2)
+
+    query = _query(f"supp_m_{UID}_{sid}_{today.isoformat()}")
+    await supplements.supplement_decrement_callback(
+        _callback_update(query), _context(db)
+    )
+
+    assert await db.get_supplement_counts(UID, today) == {sid: 1}
+
+
+async def test_a_minus_tap_outside_the_window_writes_nothing(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 2)
+    stale = today_local() - timedelta(days=3)
+    await db.adjust_supplement_count(UID, sid, stale, 2)
+
+    query = _query(f"supp_m_{UID}_{sid}_{stale.isoformat()}")
+    await supplements.supplement_decrement_callback(
+        _callback_update(query), _context(db)
+    )
+
+    assert await db.get_supplement_counts(UID, stale) == {sid: 2}
+
+
+async def test_another_users_minus_button_cannot_write(db):
+    await db.ensure_user(UID, "t", "Test")
+    await db.ensure_user(OTHER, "o", "Other")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    today = today_local()
+    await db.adjust_supplement_count(UID, sid, today, 1)
+
+    query = _query(f"supp_m_{UID}_{sid}_{today.isoformat()}")
+    await supplements.supplement_decrement_callback(
+        _callback_update(query, user_id=OTHER), _context(db)
+    )
+
+    assert await db.get_supplement_counts(UID, today) == {sid: 1}
+
+
+async def test_the_header_counts_a_half_done_supplement_as_outstanding(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 2)
+    active = await db.get_active_supplements(UID)
+
+    assert "0/1 taken" in supplements._checklist_text(active, {sid}, "", {sid: 1})
+    assert "1/1 taken" in supplements._checklist_text(active, {sid}, "", {sid: 2})
+
+
+async def test_the_target_is_set_from_setup(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+
+    open_query = _query(f"supp_tgt_{UID}_{sid}")
+    context = _setup_context(db, open_query)
+    await supplements.supplement_target_callback(
+        _callback_update(open_query), context
+    )
+    offered = {
+        button.callback_data
+        for row in open_query.edit_message_text.call_args.kwargs["reply_markup"]
+        .inline_keyboard
+        for button in row
+    }
+    assert f"supp_tset_{UID}_{sid}_2" in offered
+
+    set_query = _query(f"supp_tset_{UID}_{sid}_2", message=open_query.message)
+    await supplements.supplement_set_target_callback(
+        _callback_update(set_query), context
+    )
+
+    active = await db.get_active_supplements(UID)
+    assert active[0]["target_count"] == 2
+
+
+async def test_a_target_tap_without_a_live_setup_prompt_writes_nothing(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+
+    query = _query(f"supp_tset_{UID}_{sid}_3")
+    await supplements.supplement_set_target_callback(
+        _callback_update(query), _context(db)
+    )
+
+    active = await db.get_active_supplements(UID)
+    assert active[0]["target_count"] is None
+
+
+async def test_setting_one_turns_the_target_off(db):
+    await db.ensure_user(UID, "t", "Test")
+    sid, _ = await db.add_supplement(UID, "Creatine")
+    await db.set_supplement_target(UID, sid, 3)
+
+    query = _query(f"supp_tset_{UID}_{sid}_1")
+    await supplements.supplement_set_target_callback(
+        _callback_update(query), _setup_context(db, query)
+    )
+
+    active = await db.get_active_supplements(UID)
+    assert active[0]["target_count"] is None
+    row = keyboards.supplement_checklist_keyboard(
+        active, set(), today_local(), UID, counts={}
+    ).inline_keyboard[0]
+    assert row[0].text == "⬜ Creatine"
 
 
 # ---------------------------------------------------------------------------

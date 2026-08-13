@@ -181,6 +181,13 @@ MAX_SUPPLEMENT_NAME_LENGTH = 50
 MAX_DOSE_TEXT_LENGTH = 30
 MAX_DOSE_AMOUNT = 10_000.0
 MAX_ACTIVE_SUPPLEMENTS = 49
+#: The largest daily target a supplement can carry. Anything dosed more often
+#: than this is a schedule, not a check-off, and a taller keyboard would not help.
+MAX_SUPPLEMENT_TARGET = 12
+#: A day's count may exceed its target — taking three when aiming for two is a
+#: fact worth recording — but not without bound, so a stuck button cannot run
+#: the number away.
+MAX_SUPPLEMENT_DAILY_COUNT = 20
 MAX_MONITOR_NAME_LENGTH = 50
 #: A display glyph, not a label. Long enough for a multi-code-point emoji
 #: (a flag, a skin tone, a ZWJ sequence), short enough that nobody stores a word.
@@ -312,6 +319,32 @@ def _validated_dose_amount(value: float | None) -> float | None:
             f"dose amount must be greater than 0 and at most {MAX_DOSE_AMOUNT:g}"
         )
     return amount
+
+
+def _validated_target_count(value: int | None) -> int | None:
+    """Validate an optional daily target of at least one, or ``None`` for off.
+
+    ``None`` and ``1`` are stored as they were given rather than folded
+    together: a supplement with no target has never been asked how many, while
+    one deliberately set to 1 has been. Both behave identically at the
+    checklist, so the distinction costs nothing and keeps "turned it off" from
+    looking like "never configured".
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("daily target must be a whole number")
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("daily target must be a whole number") from exc
+    if count != value:
+        raise ValueError("daily target must be a whole number")
+    if count < 1 or count > MAX_SUPPLEMENT_TARGET:
+        raise ValueError(
+            f"daily target must be between 1 and {MAX_SUPPLEMENT_TARGET}"
+        )
+    return count
 
 
 def _validated_dose_text(value: str | None, field_name: str) -> str | None:
@@ -4075,6 +4108,24 @@ class DatabaseManager:
             )
             return cursor.rowcount > 0
 
+    async def set_supplement_target(
+        self, user_id: int, supplement_id: int, target_count: int | None
+    ) -> bool:
+        """Set (or clear) how many times a day a supplement is aimed at.
+
+        ``None`` restores the plain check-off. Only the intention changes — days
+        already recorded keep the counts they were given, because a target is
+        what you were aiming at from now on, not a re-reading of what you took.
+        """
+        target = _validated_target_count(target_count)
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "UPDATE supplements SET target_count = ? "
+                "WHERE id = ? AND user_id = ? AND is_active = 1",
+                (target, supplement_id, user_id),
+            )
+            return cursor.rowcount > 0
+
     async def deactivate_supplement(self, user_id: int, supplement_id: int) -> bool:
         """Soft-delete a supplement. Returns True if a row was affected.
 
@@ -4133,14 +4184,95 @@ class DatabaseManager:
             )
             return cursor.rowcount > 0
 
+    async def adjust_supplement_count(
+        self, user_id: int, supplement_id: int, log_date: date, delta: int = 1
+    ) -> int:
+        """Add ``delta`` to a day's count, returning the count that now stands.
+
+        The unit of adherence is still one row per supplement per day — this
+        moves the number *inside* that row rather than adding rows, so streaks,
+        ranges and the taken set keep reading the same shape they always have.
+        Reaching zero deletes the row, which is what makes decrementing the exact
+        inverse of the first tap: an unrecorded day and a day recorded as zero
+        would otherwise be two spellings of the same thing.
+
+        Read and write share one immediate transaction, so two fast taps cannot
+        both read ``1`` and both write ``2``. Ownership and activity are checked
+        here as well, so a stale keyboard from another ledger cannot write: a
+        supplement that is missing, archived, or another user's writes nothing
+        and reports ``0``, the same as a day with nothing recorded.
+        """
+        step = int(delta)
+        day = log_date.isoformat()
+        async with self._write_operation(begin_immediate=True):
+            cursor = await self.conn.execute(
+                "SELECT 1 FROM supplements "
+                "WHERE id = ? AND user_id = ? AND is_active = 1",
+                (supplement_id, user_id),
+            )
+            if await cursor.fetchone() is None:
+                return 0
+
+            cursor = await self.conn.execute(
+                "SELECT taken_count FROM supplement_logs "
+                "WHERE user_id = ? AND supplement_id = ? AND log_date = ?",
+                (user_id, supplement_id, day),
+            )
+            row = await cursor.fetchone()
+            current = int(row["taken_count"]) if row is not None else 0
+            wanted = current + step
+            if wanted <= 0:
+                await self.conn.execute(
+                    "DELETE FROM supplement_logs "
+                    "WHERE user_id = ? AND supplement_id = ? AND log_date = ?",
+                    (user_id, supplement_id, day),
+                )
+                return 0
+
+            new_count = min(wanted, MAX_SUPPLEMENT_DAILY_COUNT)
+            if row is None:
+                await self.conn.execute(
+                    "INSERT INTO supplement_logs "
+                    "(user_id, supplement_id, log_date, taken_count) "
+                    "VALUES (?, ?, ?, ?)",
+                    (user_id, supplement_id, day, new_count),
+                )
+            elif new_count != current:
+                await self.conn.execute(
+                    "UPDATE supplement_logs SET taken_count = ? "
+                    "WHERE user_id = ? AND supplement_id = ? AND log_date = ?",
+                    (new_count, user_id, supplement_id, day),
+                )
+            return new_count
+
     async def get_taken_supplements(self, user_id: int, log_date: date) -> set[int]:
-        """The set of supplement ids recorded as taken on a local date."""
+        """The set of supplement ids recorded as taken on a local date.
+
+        "Recorded at all", not "target met" — a supplement with a daily target of
+        two that has had one scoop is genuinely in this set, and the checklist
+        uses :meth:`get_supplement_counts` to tell the two apart.
+        """
         rows = await self._query_all(
             "SELECT supplement_id FROM supplement_logs "
             "WHERE user_id = ? AND log_date = ?",
             (user_id, log_date.isoformat()),
         )
         return {row["supplement_id"] for row in rows}
+
+    async def get_supplement_counts(
+        self, user_id: int, log_date: date
+    ) -> dict[int, int]:
+        """How many of each supplement were taken on a local date.
+
+        Absent ids were not taken at all; there is no zero row (see
+        :meth:`adjust_supplement_count`).
+        """
+        rows = await self._query_all(
+            "SELECT supplement_id, taken_count FROM supplement_logs "
+            "WHERE user_id = ? AND log_date = ?",
+            (user_id, log_date.isoformat()),
+        )
+        return {row["supplement_id"]: int(row["taken_count"]) for row in rows}
 
     async def get_supplement_logs_range(
         self, user_id: int, start_date: date, end_date: date
@@ -4159,15 +4291,27 @@ class DatabaseManager:
     ) -> int:
         """Consecutive adherence days ending today, 0 if today is unrecorded.
 
+        A day counts once the supplement's daily target is met. With no target
+        (the default, and every row before v18) that is one tap, so this is
+        unchanged for a plain check-off; with a target of two, a day holding one
+        scoop breaks the streak exactly as a missed day does, because that is
+        what the target says the day was for.
+
         Paged like :meth:`get_streak` so a long history stays bounded in memory
         without capping the reportable streak.
         """
+        row = await self._query_one(
+            "SELECT target_count FROM supplements WHERE id = ? AND user_id = ?",
+            (supplement_id, user_id),
+        )
+        target = int(row["target_count"]) if row and row["target_count"] else 1
+
         streak = 0
         expected = today
         offset = 0
         while True:
             rows = await self._query_all(
-                "SELECT log_date FROM supplement_logs "
+                "SELECT log_date, taken_count FROM supplement_logs "
                 "WHERE user_id = ? AND supplement_id = ? AND log_date <= ? "
                 "ORDER BY log_date DESC LIMIT ? OFFSET ?",
                 (
@@ -4182,6 +4326,8 @@ class DatabaseManager:
                 break
             for row in rows:
                 if date.fromisoformat(row["log_date"]) != expected:
+                    return streak
+                if int(row["taken_count"]) < target:
                     return streak
                 streak += 1
                 expected -= timedelta(days=1)

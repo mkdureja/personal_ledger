@@ -964,6 +964,37 @@ def supplement_dose_label(supplement: dict) -> str:
     return f" · {', '.join(parts)}" if parts else ""
 
 
+def supplement_target(supplement: dict) -> int:
+    """A supplement's daily target — how many taps make the day complete.
+
+    ``1`` for everything that has never been given one, which is every
+    supplement before schema v18 and every plain check-off since.
+    """
+    raw = supplement.get("target_count")
+    try:
+        target = int(raw) if raw is not None else 1
+    except (TypeError, ValueError):
+        return 1
+    return target if target >= 1 else 1
+
+
+def supplement_progress_label(supplement: dict, count: int) -> str:
+    """The ``⬜ Creatine 1/2`` state of one supplement on one day.
+
+    A counted supplement always shows both numbers, including at zero: the
+    target is the reason the row exists, and a row that only revealed it after
+    the first tap would hide the very thing being aimed at. A plain check-off
+    keeps the bare tick it has always had — there is no second number to show.
+    """
+    target = supplement_target(supplement)
+    done = count >= target
+    box = "✅" if done else ("🔸" if count else "⬜")
+    label = f"{box} {supplement['name']}"
+    if target > 1:
+        label = f"{label} {count}/{target}"
+    return label
+
+
 def supplement_checklist_keyboard(
     supplements: list[dict],
     taken_ids: set[int],
@@ -971,6 +1002,7 @@ def supplement_checklist_keyboard(
     user_id: int,
     is_today: bool = True,
     page: int = 0,
+    counts: dict[int, int] | None = None,
 ) -> InlineKeyboardMarkup:
     """Daily supplement adherence checklist.
 
@@ -980,8 +1012,15 @@ def supplement_checklist_keyboard(
     job and a user should not have to learn a second interaction model. The
     callback prefix differs (``supp_*``) so a habit keyboard can never route into
     supplement writes, or the reverse.
+
+    A supplement carrying a daily target (v18) breaks the one-button shape on
+    purpose. Its row *adds* one rather than toggling, and gains a ➖ so the count
+    can come back down — a single toggle cannot express "I have had one of the
+    two I am aiming for", and silently reading the second tap as "undo" would
+    delete a scoop the user had just taken.
     """
     rows: list[list[InlineKeyboardButton]] = []
+    counts = counts or {}
 
     page_items, current_page, page_count = paginate_habits(supplements, page)
     page_suffix = f"_p{current_page}" if page_count > 1 else ""
@@ -989,17 +1028,28 @@ def supplement_checklist_keyboard(
     for supplement in page_items:
         sid = supplement["id"]
         date_str = showing_date.isoformat()
-        taken = sid in taken_ids
-        action = "supp_u" if taken else "supp_c"
-        label = f"{'✅' if taken else '⬜'} {supplement['name']}"
-        rows.append(
-            [
+        count = int(counts.get(sid, 1 if sid in taken_ids else 0))
+        counted = supplement_target(supplement) > 1
+        # A counted row always adds; a plain one still toggles, so the check-off
+        # everyone already knows keeps behaving exactly as it did.
+        action = "supp_c" if counted or sid not in taken_ids else "supp_u"
+        label = supplement_progress_label(supplement, count)
+        row = [
+            InlineKeyboardButton(
+                f"{label}{supplement_dose_label(supplement)}",
+                callback_data=f"{action}_{user_id}_{sid}_{date_str}{page_suffix}",
+            )
+        ]
+        if counted and count > 0:
+            row.append(
                 InlineKeyboardButton(
-                    f"{label}{supplement_dose_label(supplement)}",
-                    callback_data=f"{action}_{user_id}_{sid}_{date_str}{page_suffix}",
+                    "➖",
+                    callback_data=(
+                        f"supp_m_{user_id}_{sid}_{date_str}{page_suffix}"
+                    ),
                 )
-            ]
-        )
+            )
+        rows.append(row)
 
     date_label = showing_date.strftime("%b %d")
     rows.append(
@@ -1057,24 +1107,59 @@ def supplement_checklist_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
+#: Supplement setup draws *three* buttons per row (name, 🎯, ❌), so it cannot
+#: use the checklist's page size: 49 supplements would be 147 buttons and
+#: Telegram rejects a keyboard over 100 outright — the whole screen, not the
+#: overflow. 32 rows leaves room for navigation and the back button.
+SUPPLEMENT_SETUP_PAGE_SIZE = 32
+
+
+def paginate_supplement_setup(
+    supplements: list[dict], page: int = 0
+) -> tuple[list[dict], int, int]:
+    """One Telegram-safe page of the supplement setup list, clamped."""
+    if len(supplements) <= SUPPLEMENT_SETUP_PAGE_SIZE:
+        return supplements, 0, 1
+    page_count = (
+        len(supplements) + SUPPLEMENT_SETUP_PAGE_SIZE - 1
+    ) // SUPPLEMENT_SETUP_PAGE_SIZE
+    normalized = min(max(page, 0), page_count - 1)
+    start = normalized * SUPPLEMENT_SETUP_PAGE_SIZE
+    return (
+        supplements[start : start + SUPPLEMENT_SETUP_PAGE_SIZE],
+        normalized,
+        page_count,
+    )
+
+
 def supplement_setup_keyboard(
     supplements: list[dict],
     user_id: int,
     page: int = 0,
 ) -> InlineKeyboardMarkup:
-    """Supplement setup view with remove buttons."""
+    """Supplement setup view with per-supplement target and remove buttons.
+
+    The 🎯 button is where a daily target is set, because a target is setup — it
+    describes what you are aiming at, not what happened today, and the checklist
+    is no place to be editing intentions while ticking things off.
+    """
     rows: list[list[InlineKeyboardButton]] = []
 
-    page_items, current_page, page_count = paginate_habits(supplements, page)
+    page_items, current_page, page_count = paginate_supplement_setup(supplements, page)
     page_suffix = f"_p{current_page}" if page_count > 1 else ""
 
     for supplement in page_items:
         sid = supplement["id"]
+        target = supplement_target(supplement)
         rows.append(
             [
                 InlineKeyboardButton(
                     f"💊 {supplement['name']}{supplement_dose_label(supplement)}",
                     callback_data=f"supp_noop_{user_id}_{sid}",
+                ),
+                InlineKeyboardButton(
+                    f"🎯 {target}×" if target > 1 else "🎯",
+                    callback_data=f"supp_tgt_{user_id}_{sid}{page_suffix}",
                 ),
                 InlineKeyboardButton(
                     "❌ Remove",
@@ -1110,6 +1195,46 @@ def supplement_setup_keyboard(
         ]
     )
 
+    return InlineKeyboardMarkup(rows)
+
+
+#: The daily targets offered as taps. Anything rarer than "once" is not a target
+#: and anything above this is better typed than tapped — the point of the row is
+#: that the common answers (two scoops, three) are one tap away.
+SUPPLEMENT_TARGET_CHOICES = (2, 3, 4, 5, 6)
+
+
+def supplement_target_keyboard(
+    supplement: dict,
+    user_id: int,
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    """Pick how many times a day one supplement is aimed at.
+
+    ``1×`` is offered as an explicit choice rather than a "cancel", because
+    turning a target *off* is a decision with a consequence — the row goes back
+    to a single check-off and its streak stops asking for the second dose.
+    """
+    sid = supplement["id"]
+    current = supplement_target(supplement)
+    page_suffix = f"_p{page}" if page else ""
+
+    def _cell(value: int) -> InlineKeyboardButton:
+        label = f"{value}×" if value > 1 else "1× (off)"
+        return InlineKeyboardButton(
+            f"✓ {label}" if value == current else label,
+            callback_data=f"supp_tset_{user_id}_{sid}_{value}{page_suffix}",
+        )
+
+    rows = [[_cell(1)], [_cell(value) for value in SUPPLEMENT_TARGET_CHOICES]]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 Back to Setup",
+                callback_data=f"supp_setup_page_{user_id}_{page}",
+            )
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 

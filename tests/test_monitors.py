@@ -164,7 +164,10 @@ async def test_migrating_a_populated_v16_database_adds_monitors_and_keeps_rows(
         await mgr.check_habit(UID, habit_id, date(2026, 8, 9))
 
         await migrations.run_migrations(mgr.conn)
-        assert await migrations.get_user_version(mgr.conn) == 17
+        # Forward to whatever this checkout's latest is — the claim under test is
+        # that a populated v16 database reaches it with its rows intact and the
+        # new section usable, not that 17 is the end of the line for ever.
+        assert await migrations.get_user_version(mgr.conn) == migrations.LATEST_VERSION
 
         # The pre-existing ledger is untouched...
         assert await mgr.get_checked_habits(UID, date(2026, 8, 9)) == {habit_id}

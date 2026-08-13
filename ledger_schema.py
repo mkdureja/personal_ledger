@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # The version this checkout migrates a database to. Bump it (and register the new
 # migration in ``bot.migrations._MIGRATIONS``) for every schema change.
-LATEST_SCHEMA_VERSION = 17
+LATEST_SCHEMA_VERSION = 18
 
 # Version 0 is the pre-versioning legacy shape. It is *not* a certifiable schema
 # version: those databases never stamped a version and their table/column shape
@@ -147,8 +147,17 @@ VERIFIED_COLUMNS: dict[str, tuple[tuple[int, tuple[str, ...]], ...]] = {
                 "dose_unit", "timing", "is_active", "created_at",
             ),
         ),
+        # v18 is column-only: a database that lost the daily-target column would
+        # otherwise verify as a sound v18 while every counted supplement
+        # silently reverted to a plain check-off.
+        (18, ("target_count",)),
     ),
-    "supplement_logs": ((9, ("id", "user_id", "supplement_id", "log_date")),),
+    "supplement_logs": (
+        (9, ("id", "user_id", "supplement_id", "log_date")),
+        # v18, column-only for the same reason: without the count, a day on
+        # which three scoops were taken reads as one.
+        (18, ("taken_count",)),
+    ),
     "exercises": (
         (11, ("id", "user_id", "group_key", "name", "name_key", "is_active")),
     ),

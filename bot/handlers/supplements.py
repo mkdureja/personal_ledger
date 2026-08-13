@@ -53,15 +53,20 @@ from .common import (
 )
 from ..keyboards import (
     paginate_habits,
+    paginate_supplement_setup,
     supplement_checklist_keyboard,
     supplement_dose_label,
+    supplement_progress_label,
     supplement_setup_keyboard,
+    supplement_target,
+    supplement_target_keyboard,
 )
 from ..database import (
     MAX_ACTIVE_SUPPLEMENTS,
     MAX_DOSE_AMOUNT,
     MAX_DOSE_TEXT_LENGTH,
     MAX_SUPPLEMENT_NAME_LENGTH,
+    MAX_SUPPLEMENT_TARGET,
 )
 from ..config import CONVERSATION_TIMEOUT, today_local
 
@@ -71,7 +76,7 @@ logger = logging.getLogger(__name__)
 ADDING_SUPPLEMENT = 0
 
 _SUPP_ACTION_RE = re.compile(
-    r"^supp_(c|u)_(\d+)_(\d+)_(\d{4}-\d{2}-\d{2})(?:_p(\d+))?$"
+    r"^supp_(c|u|m)_(\d+)_(\d+)_(\d{4}-\d{2}-\d{2})(?:_p(\d+))?$"
 )
 _SUPP_TOGGLE_RE = re.compile(r"^supp_toggle_(\d+)_(today|yesterday)(?:_p(\d+))?$")
 _SUPP_PAGE_RE = re.compile(r"^supp_page_(\d+)_(\d{4}-\d{2}-\d{2})_(\d+)$")
@@ -79,6 +84,8 @@ _SUPP_NOOP_RE = re.compile(r"^supp_noop_(\d+)_(date|\d+)$")
 _SUPP_REMOVE_RE = re.compile(r"^supp_remove_(\d+)_(\d+)(?:_p(\d+))?$")
 _SUPP_SETUP_PAGE_RE = re.compile(r"^supp_setup_page_(\d+)_(\d+)$")
 _SUPP_SETUP_DONE_RE = re.compile(r"^supp_setup_done_(\d+)$")
+_SUPP_TARGET_RE = re.compile(r"^supp_tgt_(\d+)_(\d+)(?:_p(\d+))?$")
+_SUPP_TARGET_SET_RE = re.compile(r"^supp_tset_(\d+)_(\d+)_(\d+)(?:_p(\d+))?$")
 _SUPP_SETUP_PROMPT_KEY = "supplement_setup_prompt"
 
 #: A leading positive number (``2``, ``0.5``, ``.5``; ``1,000`` is *not* accepted
@@ -236,11 +243,44 @@ async def supplements_command(
     return ConversationHandler.END
 
 
-def _checklist_text(supplements: list[dict], taken: set[int], page_note: str) -> str:
-    """Compose the checklist header. Adherence counts only — never nutrition."""
-    taken_count = sum(1 for item in supplements if item["id"] in taken)
+def _counts_for(
+    supplements: list[dict], taken: set[int], counts: dict[int, int] | None
+) -> dict[int, int]:
+    """How many of each supplement stand today, from either read.
+
+    ``taken`` alone still answers it for a plain check-off, so a caller that has
+    only the set (an older keyboard path, a test) keeps working: a supplement in
+    the set has one.
+    """
+    resolved = dict(counts or {})
+    for item in supplements:
+        sid = item["id"]
+        if sid not in resolved:
+            resolved[sid] = 1 if sid in taken else 0
+    return resolved
+
+
+def _is_complete(supplement: dict, count: int) -> bool:
+    """Whether a day's count meets that supplement's daily target."""
+    return count >= supplement_target(supplement)
+
+
+def _checklist_text(
+    supplements: list[dict],
+    taken: set[int],
+    page_note: str,
+    counts: dict[int, int] | None = None,
+) -> str:
+    """Compose the checklist header. Adherence counts only — never nutrition.
+
+    "Taken" means *finished*: a supplement aimed at twice a day with one scoop in
+    it is not counted here, because the header exists to answer "what is still
+    outstanding" and a half-done row is still outstanding.
+    """
+    resolved = _counts_for(supplements, taken, counts)
+    done = sum(1 for item in supplements if _is_complete(item, resolved[item["id"]]))
     return (
-        f"💊 <b>Supplements</b> — {taken_count}/{len(supplements)} taken\n"
+        f"💊 <b>Supplements</b> — {done}/{len(supplements)} taken\n"
         f"Tap to check off:{page_note}"
     )
 
@@ -266,6 +306,7 @@ async def show_supplements_checklist(
         return
 
     taken = await db.get_taken_supplements(user_id, target_date)
+    counts = await db.get_supplement_counts(user_id, target_date)
     is_today = target_date == today_local()
 
     _page_items, current_page, page_count = paginate_habits(supplements)
@@ -275,9 +316,9 @@ async def show_supplements_checklist(
 
     await reply_html(
         message,
-        _checklist_text(supplements, taken, page_note),
+        _checklist_text(supplements, taken, page_note, counts),
         reply_markup=supplement_checklist_keyboard(
-            supplements, taken, target_date, user_id, is_today
+            supplements, taken, target_date, user_id, is_today, counts=counts
         ),
     )
 
@@ -289,7 +330,7 @@ async def show_supplements_checklist(
 async def supplement_take_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Record a supplement as taken."""
+    """Record a supplement as taken — one more of it, for a counted one."""
     query = update.callback_query
     user_id = update.effective_user.id
     parsed = await _parse_supplement_action(query, user_id, "c")
@@ -298,12 +339,50 @@ async def supplement_take_callback(
     supplement_id, log_date, page = parsed
 
     db = context.bot_data["db"]
-    if not await _is_active_supplement(db, user_id, supplement_id):
+    supplement = await _active_supplement(db, user_id, supplement_id)
+    if supplement is None:
         await _reject_callback(query, "This supplement is no longer active.")
         return
 
-    await query.answer()
-    await db.take_supplement(user_id, supplement_id, log_date)
+    target = supplement_target(supplement)
+    if target > 1:
+        count = await db.adjust_supplement_count(user_id, supplement_id, log_date, 1)
+        # The count is answered on the tap as well as redrawn, because the
+        # keyboard edit is the slower half and "did that register?" is exactly
+        # the question a second, unwanted scoop gets tapped over.
+        await query.answer(f"{supplement['name']}: {count}/{target}")
+    else:
+        await query.answer()
+        await db.take_supplement(user_id, supplement_id, log_date)
+    await _refresh_checklist(query, context, user_id, log_date, page)
+
+
+@authorized_callback
+async def supplement_decrement_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """➖ on a counted supplement: take one back off the day.
+
+    Reaching zero removes the day's record entirely, so this is the exact
+    inverse of the first tap rather than a stored zero.
+    """
+    query = update.callback_query
+    user_id = update.effective_user.id
+    parsed = await _parse_supplement_action(query, user_id, "m")
+    if parsed is None:
+        return
+    supplement_id, log_date, page = parsed
+
+    db = context.bot_data["db"]
+    supplement = await _active_supplement(db, user_id, supplement_id)
+    if supplement is None:
+        await _reject_callback(query, "This supplement is no longer active.")
+        return
+
+    count = await db.adjust_supplement_count(user_id, supplement_id, log_date, -1)
+    await query.answer(
+        f"{supplement['name']}: {count}/{supplement_target(supplement)}"
+    )
     await _refresh_checklist(query, context, user_id, log_date, page)
 
 
@@ -470,10 +549,21 @@ async def _parse_supplement_action(query, user_id: int, expected_action: str):
     return int(match.group(3)), log_date, int(match.group(5) or 0)
 
 
+async def _active_supplement(db, user_id: int, supplement_id: int) -> dict | None:
+    """The requesting user's active supplement row, or ``None``.
+
+    Read through ``get_active_supplements`` so ownership and activity are
+    checked by exactly the query that draws the keyboard.
+    """
+    supplements = await db.get_active_supplements(user_id)
+    return next(
+        (item for item in supplements if item["id"] == supplement_id), None
+    )
+
+
 async def _is_active_supplement(db, user_id: int, supplement_id: int) -> bool:
     """Return whether a supplement is active and owned by the requesting user."""
-    supplements = await db.get_active_supplements(user_id)
-    return any(item["id"] == supplement_id for item in supplements)
+    return await _active_supplement(db, user_id, supplement_id) is not None
 
 
 async def _reject_callback(query, text: str, *, clear_keyboard: bool = True) -> None:
@@ -497,6 +587,7 @@ async def _refresh_checklist(
     db = context.bot_data["db"]
     supplements = await db.get_active_supplements(user_id)
     taken = await db.get_taken_supplements(user_id, target_date)
+    counts = await db.get_supplement_counts(user_id, target_date)
     is_today = target_date == today_local()
 
     _page_items, current_page, page_count = paginate_habits(supplements, page)
@@ -506,9 +597,15 @@ async def _refresh_checklist(
 
     try:
         await query.edit_message_text(
-            _checklist_text(supplements, taken, page_note),
+            _checklist_text(supplements, taken, page_note, counts),
             reply_markup=supplement_checklist_keyboard(
-                supplements, taken, target_date, user_id, is_today, current_page
+                supplements,
+                taken,
+                target_date,
+                user_id,
+                is_today,
+                current_page,
+                counts=counts,
             ),
             parse_mode="HTML",
         )
@@ -522,8 +619,15 @@ async def _refresh_checklist(
 # Setup flow — add/remove supplements
 # ---------------------------------------------------------------------------
 def _setup_view(supplements: list[dict], user_id: int, page: int = 0):
-    """Build bounded setup text and keyboard."""
-    _page_items, current_page, page_count = paginate_habits(supplements, page)
+    """Build bounded setup text and keyboard.
+
+    Paginated by the *setup* page size, not the checklist's: this screen draws
+    three buttons per supplement, so the two disagree about how many fit — and a
+    page note that names a page the keyboard is not showing is worse than none.
+    """
+    _page_items, current_page, page_count = paginate_supplement_setup(
+        supplements, page
+    )
     if supplements:
         at_limit = len(supplements) >= MAX_ACTIVE_SUPPLEMENTS
         limit_note = (
@@ -541,7 +645,8 @@ def _setup_view(supplements: list[dict], user_id: int, page: int = 0):
         text = (
             "⚙️ <b>Supplement Setup</b>\n\n"
             f"You have {count} active supplement{'s' if count != 1 else ''}.\n"
-            "Tap ❌ to remove, or type a new one to add:"
+            "Tap 🎯 to set a daily target (e.g. 2 scoops a day), ❌ to remove, "
+            "or type a new one to add:"
             f"{limit_note}{page_note}"
         )
     else:
@@ -659,6 +764,112 @@ async def remove_supplement_callback(
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 
+def _target_text(supplement: dict) -> str:
+    """The target picker's prompt for one supplement."""
+    target = supplement_target(supplement)
+    current = (
+        f"Currently <b>{target}× a day</b>."
+        if target > 1
+        else "Currently a plain check-off — one tap finishes the day."
+    )
+    return (
+        f"🎯 <b>{escape_html(str(supplement['name']))}</b> — how many a day?\n\n"
+        f"{current}\n"
+        "With a target above one, its checklist row counts up "
+        "(<i>1/2</i>, <i>2/2</i>) and the day only counts as taken once you "
+        "reach it. ➖ takes one back off."
+    )
+
+
+@authorized_callback
+async def supplement_target_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """🎯 in setup: offer the daily targets for one supplement."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    match = _SUPP_TARGET_RE.fullmatch(query.data or "")
+    if match is None:
+        await _reject_callback(query, "This target button is no longer valid.")
+        return ADDING_SUPPLEMENT
+    if int(match.group(1)) != user_id:
+        await _reject_callback(
+            query, "This supplement setup belongs to another user.", clear_keyboard=False
+        )
+        return ADDING_SUPPLEMENT
+    if not _is_current_setup_callback(update, context):
+        await _reject_callback(query, "This supplement setup has expired.")
+        if conversation_is_active(update, context, "supplements"):
+            return ADDING_SUPPLEMENT
+        return ConversationHandler.END
+
+    db = context.bot_data["db"]
+    supplement = await _active_supplement(db, user_id, int(match.group(2)))
+    if supplement is None:
+        await _reject_callback(query, "This supplement is no longer active.")
+        return ADDING_SUPPLEMENT
+
+    page = int(match.group(3) or 0)
+    await query.answer()
+    await query.edit_message_text(
+        _target_text(supplement),
+        reply_markup=supplement_target_keyboard(supplement, user_id, page),
+        parse_mode="HTML",
+    )
+    return ADDING_SUPPLEMENT
+
+
+@authorized_callback
+async def supplement_set_target_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Store a supplement's daily target and return to setup."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    match = _SUPP_TARGET_SET_RE.fullmatch(query.data or "")
+    if match is None:
+        await _reject_callback(query, "This target button is no longer valid.")
+        return ADDING_SUPPLEMENT
+    if int(match.group(1)) != user_id:
+        await _reject_callback(
+            query, "This supplement setup belongs to another user.", clear_keyboard=False
+        )
+        return ADDING_SUPPLEMENT
+    if not _is_current_setup_callback(update, context):
+        await _reject_callback(query, "This supplement setup has expired.")
+        if conversation_is_active(update, context, "supplements"):
+            return ADDING_SUPPLEMENT
+        return ConversationHandler.END
+
+    supplement_id = int(match.group(2))
+    target = int(match.group(3))
+    page = int(match.group(4) or 0)
+    if target < 1 or target > MAX_SUPPLEMENT_TARGET:
+        await _reject_callback(query, "That daily target isn't available.")
+        return ADDING_SUPPLEMENT
+
+    db = context.bot_data["db"]
+    supplement = await _active_supplement(db, user_id, supplement_id)
+    if supplement is None:
+        await _reject_callback(query, "This supplement is no longer active.")
+        return ADDING_SUPPLEMENT
+
+    # 1× is stored as "no target" rather than as the number one: the two behave
+    # identically everywhere, and the absent value is what every untouched
+    # supplement already carries.
+    await db.set_supplement_target(user_id, supplement_id, target if target > 1 else None)
+    await query.answer(
+        f"{supplement['name']}: {target}× a day"
+        if target > 1
+        else f"{supplement['name']}: plain check-off"
+    )
+
+    supplements = await db.get_active_supplements(user_id)
+    text, keyboard = _setup_view(supplements, user_id, page)
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+    return ADDING_SUPPLEMENT
+
+
 @authorized_callback
 async def supplement_setup_page_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -749,6 +960,15 @@ supplements_setup_conv_handler = ConversationHandler(
             ),
             CallbackQueryHandler(
                 supplement_setup_page_callback, pattern=r"^supp_setup_page_"
+            ),
+            # Both target taps stay inside setup: they edit the *intention*, and
+            # the prompt-location check they share with ❌ Remove is what keeps a
+            # stale setup screen from rewriting a target later.
+            CallbackQueryHandler(
+                supplement_set_target_callback, pattern=r"^supp_tset_"
+            ),
+            CallbackQueryHandler(
+                supplement_target_callback, pattern=r"^supp_tgt_"
             ),
             _control_guard,
             MessageHandler(filters.TEXT & ~filters.COMMAND, add_supplement_text),

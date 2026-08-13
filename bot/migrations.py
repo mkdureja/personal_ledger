@@ -1456,6 +1456,50 @@ async def _migration_0017_monitors(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0018_supplement_counts(conn: aiosqlite.Connection) -> None:
+    """A supplement can be taken more than once a day, against a daily target.
+
+    Until now a supplement was a pure check-off: the row in ``supplement_logs``
+    said *that* it was taken on a date, and a second tap was idempotent by
+    design. That is right for a once-a-day pill and wrong for anything dosed in
+    scoops — "I aim for at least two scoops of creatine and had one" is a
+    statement the schema had no way to hold, so the checklist could only record
+    it as done.
+
+    Two columns, no new table:
+
+    * ``supplements.target_count`` — how many times a day this one is aimed at.
+      ``NULL`` means what it has always meant: one tap and it is done. Only a
+      supplement that opts in changes behaviour, so every existing row keeps its
+      exact semantics and every existing streak keeps its exact value.
+    * ``supplement_logs.taken_count`` — how many were actually taken that day.
+      ``DEFAULT 1`` because that is precisely what every pre-existing row means:
+      it exists, therefore it was taken once. The unique key is untouched, so a
+      day is still one row per supplement — the count lives *in* that row rather
+      than becoming a second row, which keeps every existing adherence read
+      (streaks, ranges, the taken set) correct without rewriting it.
+
+    This is deliberately the opposite trade-off from ``monitor_logs`` (v17),
+    which stores one row per occurrence: a monitor cares *when* each occurrence
+    happened, a supplement only cares how many landed on the day.
+    """
+    cursor = await conn.execute("PRAGMA table_info(supplements)")
+    supplement_columns = {row["name"] for row in await cursor.fetchall()}
+    if "target_count" not in supplement_columns:
+        await conn.execute(
+            "ALTER TABLE supplements ADD COLUMN target_count INTEGER "
+            "CHECK (target_count IS NULL OR target_count >= 1)"
+        )
+
+    cursor = await conn.execute("PRAGMA table_info(supplement_logs)")
+    log_columns = {row["name"] for row in await cursor.fetchall()}
+    if "taken_count" not in log_columns:
+        await conn.execute(
+            "ALTER TABLE supplement_logs ADD COLUMN taken_count INTEGER "
+            "NOT NULL DEFAULT 1 CHECK (taken_count >= 1)"
+        )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1474,6 +1518,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     15: _migration_0015_ai_parsing_tristate,
     16: _migration_0016_catalog_preferences,
     17: _migration_0017_monitors,
+    18: _migration_0018_supplement_counts,
 }
 
 

@@ -1320,6 +1320,47 @@ DB_PATH=ledger.db</code></pre>
     name brings the original back rather than creating a duplicate — the new dose
     and timing you type replace the old ones.</p>
 
+    <h3>Taking Something More Than Once a Day</h3>
+    <p>A single tick cannot say "one of the two scoops I aim for". So in
+    <code>/supplements setup</code>, each supplement has a <strong>🎯</strong>
+    button that sets a <strong>daily target</strong>. Pick 2×, and its checklist
+    row starts counting instead of toggling:</p>
+
+    <div class="chat no-break" style="max-width: 380px;">
+        <div class="chat-header">
+            <div class="chat-avatar">📒</div>
+            <div><div class="chat-name">Ledger Bot</div></div>
+        </div>
+        <div class="msg msg-bot">
+            <div class="msg-bubble" style="width: 100%;">
+                💊 <strong>Supplements</strong> — 0/2 taken<br>Tap to check off:
+                <div class="kb">
+                    <div class="kb-row">
+                        <span class="kb-btn" style="flex: 1; text-align: left;">🔸 Creatine 1/2</span>
+                        <span class="kb-btn">➖</span>
+                    </div>
+                    <div class="kb-row">
+                        <span class="kb-btn" style="flex: 1; text-align: left;">⬜ Magnesium</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="box box-info no-break">
+        <div class="box-title">A second tap is a second scoop, not an undo</div>
+        <p>On a counted row, tapping the name <strong>adds one</strong> — that is
+        the whole point, so it never quietly removes the one you just took. Use
+        <strong>➖</strong> to take one back off; at zero the day's record goes
+        away entirely, exactly as if you had never tapped. Going over the target
+        is fine and is recorded as it happened (<em>3/2</em> still shows ✅).</p>
+    </div>
+
+    <p>The day counts as taken — in the header and in the streak — only once you
+    reach the target, so a half-finished day reads as outstanding. Set the target
+    back to <strong>1× (off)</strong> at any time and the row returns to a plain
+    tick; days you already recorded keep the counts they were given.</p>
+
     <!-- ═══════════════════════════════════════════════════════ -->
     <!-- 8. WEIGHT                                               -->
     <!-- ═══════════════════════════════════════════════════════ -->
