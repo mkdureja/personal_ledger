@@ -210,10 +210,13 @@ def test_pick_quote_deterministic_and_rotates():
 # ---------------------------------------------------------------------------
 # Log-aware message composition
 # ---------------------------------------------------------------------------
-def _anchor(checks=(), quote=False, anchor_id="test", emoji="🔔", title="Test"):
+def _anchor(
+    checks=(), quote=False, anchor_id="test", emoji="🔔", title="Test",
+    only_if_empty=False,
+):
     return Anchor(
         id=anchor_id, at=time(8, 0), emoji=emoji, title=title,
-        checks=tuple(checks), quote=quote,
+        checks=tuple(checks), quote=quote, only_if_empty=only_if_empty,
     )
 
 
@@ -416,6 +419,99 @@ async def test_non_evening_anchor_habit_followup_is_branded(db_with_user, user_i
     assert "Midday check-in" in followup
     assert "Evening Reminder" not in followup
     assert "Stretch" in followup
+
+
+# ---------------------------------------------------------------------------
+# only_if_empty: the anchor that stays quiet once the day is under way
+# ---------------------------------------------------------------------------
+def test_only_if_empty_parses_and_defaults_false(tmp_path):
+    text = (
+        'anchors:\n'
+        '  - id: nudge\n    time: "16:00"\n    checks: [diet]\n'
+        '    only_if_empty: true\n'
+        '  - id: plain\n    time: "20:00"\n    checks: [diet]\n'
+    )
+    nudge, plain = load_routine(_write(tmp_path, text)).anchors
+    assert nudge.only_if_empty is True
+    assert plain.only_if_empty is False
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        # Not a boolean.
+        '  - id: nudge\n    time: "16:00"\n    checks: [diet]\n    only_if_empty: yes please\n',
+        # Nothing to call empty.
+        '  - id: nudge\n    time: "16:00"\n    checks: []\n    only_if_empty: true\n',
+    ],
+)
+def test_only_if_empty_validation_errors(tmp_path, block):
+    with pytest.raises(RoutineConfigError, match="only_if_empty"):
+        load_routine(_write(tmp_path, "anchors:\n" + block))
+
+
+@pytest.mark.asyncio
+async def test_only_if_empty_anchor_is_silent_once_a_meal_is_logged(
+    db_with_user, user_id
+):
+    await db_with_user.set_reminders_enabled(user_id, True)
+    anchor = _anchor(anchor_id="afternoon", checks=["diet"], only_if_empty=True)
+
+    ctx = _job_context(db_with_user, anchor)
+    await anchor_job(ctx)
+    assert len(ctx.bot.send_message.await_args_list) == 1  # nothing logged yet
+
+    await db_with_user.log_diet(
+        user_id, "lunch", "Dal rice", calories=500, protein_g=1, carbs_g=2, fat_g=3
+    )
+    ctx = _job_context(db_with_user, anchor)
+    await anchor_job(ctx)
+    assert ctx.bot.send_message.await_args_list == []
+
+
+@pytest.mark.asyncio
+async def test_only_if_empty_sends_when_any_check_is_outstanding(
+    db_with_user, user_id
+):
+    """A multi-check anchor fires while *any* of its checks is still unmet."""
+    await db_with_user.set_reminders_enabled(user_id, True)
+    await db_with_user.add_habit(user_id, "Walk")
+    await db_with_user.log_diet(
+        user_id, "lunch", "Dal rice", calories=500, protein_g=1, carbs_g=2, fat_g=3
+    )
+    anchor = _anchor(checks=["diet", "habits"], only_if_empty=True)
+
+    ctx = _job_context(db_with_user, anchor)
+    await anchor_job(ctx)
+    assert ctx.bot.send_message.await_args_list  # the habit is still unchecked
+
+
+@pytest.mark.asyncio
+async def test_only_if_empty_treats_a_rest_day_as_settled(db_with_user, user_id):
+    """No workout on a non-gym day is not something to be nudged about."""
+    await db_with_user.set_reminders_enabled(user_id, True)
+    today = today_local()
+    other = WEEKDAYS[(today.weekday() + 1) % 7]
+    anchor = _anchor(checks=["gym"], only_if_empty=True)
+
+    ctx = _job_context(db_with_user, anchor, targets=Targets(gym_days=frozenset({other})))
+    await anchor_job(ctx)
+    assert ctx.bot.send_message.await_args_list == []
+
+    ctx = _job_context(db_with_user, anchor)  # every day is a gym day
+    await anchor_job(ctx)
+    assert ctx.bot.send_message.await_args_list
+
+
+@pytest.mark.asyncio
+async def test_only_if_empty_habits_check_ignores_a_user_with_no_habits(
+    db_with_user, user_id
+):
+    await db_with_user.set_reminders_enabled(user_id, True)
+    anchor = _anchor(checks=["habits"], only_if_empty=True)
+    ctx = _job_context(db_with_user, anchor)
+    await anchor_job(ctx)
+    assert ctx.bot.send_message.await_args_list == []
 
 
 # ---------------------------------------------------------------------------

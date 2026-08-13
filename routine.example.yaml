@@ -25,6 +25,9 @@ targets:
 #   checks : any of [study, gym, diet, habits] — each adds a log-aware line
 #            (empty list = pure motivation)
 #   quote  : true to append the day's motivational line
+#   only_if_empty : true to stay silent unless one of the checks is still
+#            outstanding — nothing logged, or habits left. Needs at least one
+#            check. Rest days and "no habits configured" count as settled.
 anchors:
   - id: morning
     time: "08:00"
@@ -39,6 +42,14 @@ anchors:
     title: "Midday check-in"
     checks: [study, diet]
     quote: false
+
+  - id: nothing_logged
+    time: "16:00"
+    emoji: "⏳"
+    title: "Nothing logged today"
+    checks: [diet]
+    only_if_empty: true            # silent once a meal is logged
+    quote: true
 
   - id: evening
     time: "21:00"

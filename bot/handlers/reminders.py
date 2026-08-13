@@ -325,6 +325,48 @@ async def _habit_status(db, user_id: int, today) -> tuple[str, list[str]]:
     return f"⬜ Habits: {done}/{len(habits)} done — {len(unchecked)} left", unchecked
 
 
+async def _check_is_outstanding(
+    check: str, db, user_id: int, today, targets: Targets
+) -> bool:
+    """Whether one checked category still has nothing logged today.
+
+    "Outstanding" is deliberately not the same as "zero rows": a configured rest
+    day counts as settled, and a user with no habits at all has nothing to be
+    reminded about. Anything else would nudge about a thing that cannot be done.
+    """
+    if check == "study":
+        return await db.get_today_study_total(user_id, today) <= 0
+    if check == "gym":
+        if not targets.is_gym_day(today):
+            return False
+        return await db.get_today_gym_count(user_id, today) <= 0
+    if check == "diet":
+        return await db.get_today_meal_count(user_id, today) <= 0
+    if check == "habits":
+        habits = await db.get_active_habits(user_id)
+        if not habits:
+            return False
+        checked = await db.get_checked_habits(user_id, today)
+        return any(habit["id"] not in checked for habit in habits)
+    return False
+
+
+async def anchor_has_something_to_say(
+    anchor: Anchor, db, user_id: int, today, targets: Targets
+) -> bool:
+    """Whether an ``only_if_empty`` anchor should be sent to this user.
+
+    True when at least one of the anchor's checks is still outstanding. Anchors
+    without the flag always have something to say.
+    """
+    if not anchor.only_if_empty:
+        return True
+    for check in anchor.checks:
+        if await _check_is_outstanding(check, db, user_id, today, targets):
+            return True
+    return False
+
+
 async def build_anchor_message(
     anchor: Anchor, db, user_id: int, today, targets: Targets, quotes
 ) -> tuple[str, list[str]]:
@@ -377,8 +419,14 @@ async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     enabled = await db.get_reminder_enabled_users(ALLOWED_USER_IDS)
     local_date = today.isoformat()
     job_key = f"anchor_{anchor.id}"
+    skipped = 0
     for user_id in enabled:
         try:
+            if not await anchor_has_something_to_say(
+                anchor, db, user_id, today, targets
+            ):
+                skipped += 1
+                continue
             message, unchecked = await build_anchor_message(
                 anchor, db, user_id, today, targets, quotes
             )
@@ -407,4 +455,12 @@ async def anchor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info(
             "Anchor '%s': delivered %d of %d chunk(s)",
             anchor.id, delivered, len(messages),
+        )
+
+    if skipped:
+        # Counts only — a silent anchor is a normal, good outcome, and naming
+        # the user here would put a Telegram ID in ordinary service logs.
+        logger.info(
+            "Anchor '%s': stayed quiet for %d user(s) with nothing outstanding",
+            anchor.id, skipped,
         )

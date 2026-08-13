@@ -64,6 +64,10 @@ class Anchor:
     title: str
     checks: tuple[str, ...]
     quote: bool
+    #: Send only when at least one checked category has nothing logged yet.
+    #: A nudge that arrives after the thing is done is the one that teaches you
+    #: to ignore nudges, so a "did you log?" anchor stays silent once you have.
+    only_if_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -240,6 +244,19 @@ def _parse_anchors(value: object) -> tuple[Anchor, ...]:
         if not isinstance(quote, bool):
             raise RoutineConfigError(f"anchor {anchor_id!r}: 'quote' must be true or false")
 
+        only_if_empty = item.get("only_if_empty", False)
+        if not isinstance(only_if_empty, bool):
+            raise RoutineConfigError(
+                f"anchor {anchor_id!r}: 'only_if_empty' must be true or false"
+            )
+        # Without a check there is nothing to call empty, so the anchor would
+        # either never fire or always fire depending on how you read it. Saying
+        # so at load time beats a nudge that silently stops arriving.
+        if only_if_empty and not checks:
+            raise RoutineConfigError(
+                f"anchor {anchor_id!r}: 'only_if_empty' needs at least one check"
+            )
+
         anchors.append(
             Anchor(
                 id=anchor_id,
@@ -248,6 +265,7 @@ def _parse_anchors(value: object) -> tuple[Anchor, ...]:
                 title=title.strip() or anchor_id,
                 checks=tuple(checks),
                 quote=quote,
+                only_if_empty=only_if_empty,
             )
         )
 
