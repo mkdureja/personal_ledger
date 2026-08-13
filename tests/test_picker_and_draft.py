@@ -136,7 +136,13 @@ def test_the_last_page_has_no_forward_button():
 
 async def test_paging_re_reads_and_renders_the_next_page(monkeypatch):
     _enable(monkeypatch)
-    db = _picker_db(foods=[{"id": n, "name": f"Food {n}"} for n in range(1, 21)])
+    # Personalization off: the plain alphabetical list is the one that can grow
+    # past a page, because it is complete by definition. The ranked list is
+    # capped at MAX_RANKED_CHOICES (see the cap test below) and never paginates.
+    db = _picker_db(
+        foods=[{"id": n, "name": f"Food {n}"} for n in range(1, 21)],
+        suggestions_on=False,
+    )
     update = _callback(f"dpage_{to_base36(UID)}_{to_base36(1)}")
     context = _context(db)
 
@@ -158,6 +164,26 @@ async def test_paging_re_reads_and_renders_the_next_page(monkeypatch):
         d for d in _data(_last_markup(first)) if d.startswith(f"dfood_{UID}_")
     }
     assert page_one.isdisjoint(page_two)
+
+
+async def test_the_ranked_picker_stops_at_the_shortlist_cap(monkeypatch):
+    """A growing food list must not grow the picker — that is what search is for.
+
+    Keeping every typed entry automatically means the food list only ever gets
+    longer, so the quick-fill rows are a shortlist of the top few, not an index.
+    """
+    _enable(monkeypatch)
+    db = _picker_db(foods=[{"id": n, "name": f"Food {n}"} for n in range(1, 31)])
+    update = _callback(f"dpage_{to_base36(UID)}_{to_base36(0)}")
+
+    await diet.change_page(update, _context(db))
+
+    rows = [d for d in _data(_last_markup(update)) if d.startswith(f"dfood_{UID}_")]
+    assert len(rows) == diet.MAX_RANKED_CHOICES
+    # One screenful, so there is nothing left to page through.
+    assert not any(d.startswith("dpage_") for d in _data(_last_markup(update)))
+    # ...and the ways to reach the other 22 are still on the keyboard.
+    assert f"dsearch_{UID}" in _data(_last_markup(update))
 
 
 async def test_a_page_tap_on_a_stale_message_is_ignored(monkeypatch):

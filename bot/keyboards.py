@@ -667,10 +667,13 @@ def diet_save_keyboard(
 #: outside the ``d*`` diet-tap shapes, because the button outlives the flow that
 #: drew it and must not be retired by a stale-diet-tap handler.
 KEEP_FOOD_PREFIX = "kf"
+#: Its inverse: un-keep a food a just-logged typed entry created.
+DROP_FOOD_PREFIX = "kd"
 
 #: A keep-food label is mostly decoration, so the name gets a tighter budget than
 #: a picker row — but never less than :data:`_MIN_NAME_CHARS`.
 _KEEP_FOOD_DECORATION = len("💾 Save “”")
+_DROP_FOOD_DECORATION = len("🗑 Don't keep “”")
 
 
 def keep_food_data(user_id: int, meal_id: int, item_order: int) -> str:
@@ -685,6 +688,38 @@ def keep_food_data(user_id: int, meal_id: int, item_order: int) -> str:
         f"{KEEP_FOOD_PREFIX}_{to_base36(user_id)}"
         f"_{to_base36(int(meal_id))}_{to_base36(int(item_order))}"
     )
+
+
+def drop_food_data(user_id: int, meal_id: int, food_id: int) -> str:
+    """Encode "un-keep food F, saved by meal M" as ``kd_<owner36>_<meal36>_<food36>``.
+
+    The meal travels with the food id so the tap can check that this food is
+    still the one that meal saved. Without it a keyboard left in the scrollback
+    would be an archive button for whatever food happens to hold that id later.
+    """
+    return (
+        f"{DROP_FOOD_PREFIX}_{to_base36(user_id)}"
+        f"_{to_base36(int(meal_id))}_{to_base36(int(food_id))}"
+    )
+
+
+def parse_drop_food(data: str, user_id: int) -> tuple[int, int] | None:
+    """Decode a ``kd_*`` callback to ``(meal_id, food_id)``, or ``None``.
+
+    Rejects for every reason at once, like :func:`parse_keep_food`.
+    """
+    parts = (data or "").split("_")
+    if len(parts) != 4 or parts[0] != DROP_FOOD_PREFIX:
+        return None
+    try:
+        owner = parse_base36(parts[1])
+        meal_id = parse_base36(parts[2])
+        food_id = parse_base36(parts[3])
+    except (TypeError, ValueError):
+        return None
+    if owner != user_id or meal_id <= 0 or food_id <= 0:
+        return None
+    return meal_id, food_id
 
 
 def parse_keep_food(data: str, user_id: int) -> tuple[int, int] | None:
@@ -713,17 +748,37 @@ def log_another_keyboard(
     *,
     meal_id: int | None = None,
     keepable: Sequence[tuple[int, str]] = (),
+    kept: Sequence[tuple[int, str]] = (),
 ) -> InlineKeyboardMarkup:
     """After a save, offer to keep logging or finish the diet flow.
 
-    ``keepable`` adds one 💾 row per typed item of the meal just saved that is
-    not already a saved food — the moment its nutrition is known and the name is
-    still on screen is the only cheap moment to offer this. The rows come first
-    because the Log another / Done pair is the habitual tap and would otherwise
-    move under a new row the user did not expect.
+    ``kept`` adds one 🗑 row per typed item the meal just turned into a saved
+    food, and ``keepable`` one 💾 row per typed item that could not be kept
+    automatically. Both name the same thing from opposite directions, so an item
+    appears in one list or the other and never both.
+
+    The rows come first because the Log another / Done pair is the habitual tap
+    and would otherwise move under a new row the user did not expect.
     """
     rows: list[list[InlineKeyboardButton]] = []
     if meal_id is not None:
+        rows.extend(
+            [
+                InlineKeyboardButton(
+                    "🗑 Don't keep “"
+                    + _button_label(
+                        name,
+                        max(
+                            _MAX_BUTTON_LABEL - _DROP_FOOD_DECORATION,
+                            _MIN_NAME_CHARS,
+                        ),
+                    )
+                    + "”",
+                    callback_data=drop_food_data(user_id, meal_id, food_id),
+                )
+            ]
+            for food_id, name in kept
+        )
         rows.extend(
             [
                 InlineKeyboardButton(

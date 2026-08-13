@@ -335,7 +335,7 @@ class TestSaving:
 
         assert "Rajma chawal" in _texts(update.callback_query.message)[0]
 
-    async def test_the_used_row_goes_and_the_rest_stays(
+    async def test_the_used_row_becomes_its_inverse_and_the_rest_stays(
         self, db_with_user, user_id
     ):
         """Log another / Done share the message and must survive the save."""
@@ -349,14 +349,16 @@ class TestSaving:
             "reply_markup"
         ]
         assert [b.text for row in markup.inline_keyboard for b in row] == [
+            "🗑 Don't keep “Dal”",
             "💾 Save “Chapati”",
             "🍽️ Log another",
             "✅ Done",
         ]
 
-    async def test_the_last_row_leaves_the_plain_keyboard(
+    async def test_the_saved_row_offers_to_drop_it_again(
         self, db_with_user, user_id
     ):
+        """A save is undoable: the row it used swaps to 🗑, it does not vanish."""
         meal_id = await _log_typed_meal(db_with_user, user_id)
 
         update = await _tap(db_with_user, user_id, meal_id)
@@ -364,7 +366,11 @@ class TestSaving:
         markup = update.callback_query.edit_message_reply_markup.call_args.kwargs[
             "reply_markup"
         ]
-        assert len(markup.inline_keyboard) == 1
+        assert len(markup.inline_keyboard) == 2
+        food = await db_with_user.get_food_by_key(user_id, "Rajma chawal")
+        assert markup.inline_keyboard[0][0].callback_data == (
+            keyboards.drop_food_data(user_id, meal_id, food["id"])
+        )
 
     async def test_the_second_item_of_a_meal_can_be_kept(
         self, db_with_user, user_id
@@ -406,11 +412,11 @@ class TestRefusals:
         food = await db_with_user.get_food_by_key(user_id, "Rajma chawal")
         assert food["calories"] == 999
         assert "already have" in _texts(update.callback_query.message)[0]
-        # …and the dead row goes, so a third press has nothing to hit.
+        # …and the row now offers to drop it, so a third press cannot re-save.
         markup = update.callback_query.edit_message_reply_markup.call_args.kwargs[
             "reply_markup"
         ]
-        assert len(markup.inline_keyboard) == 1
+        assert markup.inline_keyboard[0][0].text.startswith("🗑")
 
     async def test_an_undone_meal_saves_nothing(self, db_with_user, user_id):
         meal_id = await _log_typed_meal(db_with_user, user_id)
@@ -501,6 +507,102 @@ class TestRefusals:
 
 
 # ---------------------------------------------------------------------------
+# Dropping one that was kept automatically
+# ---------------------------------------------------------------------------
+async def _drop(db, user_id, meal_id, food_id, tapper=None):
+    update = _callback(
+        keyboards.drop_food_data(user_id, meal_id, food_id), tapper or user_id
+    )
+    await keep_food.drop_kept_food_callback(update, _context(db))
+    return update
+
+
+class TestDropping:
+    async def test_dropping_removes_the_food_and_its_usual_amount(
+        self, db_with_user, user_id
+    ):
+        """Undoing the keep must leave no half-food behind in the picker."""
+        meal_id = await _log_typed_meal(db_with_user, user_id)
+        await _tap(db_with_user, user_id, meal_id)
+        food = await db_with_user.get_food_by_key(user_id, "Rajma chawal")
+
+        await _drop(db_with_user, user_id, meal_id, food["id"])
+
+        assert await db_with_user.get_food_by_key(user_id, "Rajma chawal") is None
+        assert await db_with_user.list_foods(user_id) == []
+        prefs = await db_with_user.get_food_preferences(user_id)
+        assert ("food", food["id"]) not in prefs
+
+    async def test_the_meal_survives_the_drop(self, db_with_user, user_id):
+        """This undoes the keeping, not the logging."""
+        meal_id = await _log_typed_meal(db_with_user, user_id)
+        await _tap(db_with_user, user_id, meal_id)
+        food = await db_with_user.get_food_by_key(user_id, "Rajma chawal")
+
+        update = await _drop(db_with_user, user_id, meal_id, food["id"])
+
+        items = await db_with_user.get_diet_log_items(user_id, meal_id)
+        assert [item["display_name"] for item in items] == ["Rajma chawal"]
+        assert "still logged" in _texts(update.callback_query.message)[0]
+
+    async def test_the_row_offers_to_save_it_again(self, db_with_user, user_id):
+        meal_id = await _log_typed_meal(db_with_user, user_id)
+        await _tap(db_with_user, user_id, meal_id)
+        food = await db_with_user.get_food_by_key(user_id, "Rajma chawal")
+
+        update = await _drop(db_with_user, user_id, meal_id, food["id"])
+
+        markup = update.callback_query.edit_message_reply_markup.call_args.kwargs[
+            "reply_markup"
+        ]
+        assert markup.inline_keyboard[0][0].callback_data == (
+            keyboards.keep_food_data(user_id, meal_id, 0)
+        )
+
+    async def test_a_food_that_is_no_longer_this_meals_is_refused(
+        self, db_with_user, user_id
+    ):
+        """A stale scrollback button must not archive an unrelated food."""
+        meal_id = await _log_typed_meal(db_with_user, user_id)
+        result = await db_with_user.save_food(
+            user_id, "Oats", "g", 100,
+            calories=380, protein_g=13, carbs_g=67, fat_g=7,
+        )
+        unrelated = result["food"]["id"]
+
+        update = await _drop(db_with_user, user_id, meal_id, unrelated)
+
+        assert await db_with_user.get_food_by_key(user_id, "Oats") is not None
+        assert update.callback_query.answer.call_args.kwargs.get("show_alert")
+
+    async def test_another_users_drop_button_does_nothing(
+        self, db_with_user, user_id
+    ):
+        await db_with_user.ensure_user(OTHER, None, None)
+        meal_id = await _log_typed_meal(db_with_user, user_id)
+        await _tap(db_with_user, user_id, meal_id)
+        food = await db_with_user.get_food_by_key(user_id, "Rajma chawal")
+
+        await _drop(db_with_user, user_id, meal_id, food["id"], tapper=OTHER)
+
+        assert await db_with_user.get_food_by_key(user_id, "Rajma chawal") is not None
+
+    async def test_a_second_drop_reports_rather_than_erroring(
+        self, db_with_user, user_id
+    ):
+        meal_id = await _log_typed_meal(db_with_user, user_id)
+        await _tap(db_with_user, user_id, meal_id)
+        food = await db_with_user.get_food_by_key(user_id, "Rajma chawal")
+        await _drop(db_with_user, user_id, meal_id, food["id"])
+
+        update = await _drop(db_with_user, user_id, meal_id, food["id"])
+
+        assert update.callback_query.answer.call_args.args[0] == (
+            "That food is already gone."
+        )
+
+
+# ---------------------------------------------------------------------------
 # The keyboard and its payloads
 # ---------------------------------------------------------------------------
 class TestKeyboard:
@@ -535,6 +637,36 @@ class TestKeyboard:
         pattern = re.compile(keep_food.KEEP_FOOD_PATTERN)
 
         assert pattern.match(keyboards.keep_food_data(UID, 42, 3))
+
+    def test_the_drop_payload_survives_the_round_trip(self):
+        data = keyboards.drop_food_data(UID, 42, 3)
+
+        assert keyboards.parse_drop_food(data, UID) == (42, 3)
+        assert keyboards.parse_drop_food(data, OTHER) is None
+        assert re.compile(keep_food.DROP_FOOD_PATTERN).match(data)
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            "kd_21i3v9_1",
+            "kd_21i3v9_0_1",  # meal ids start at 1
+            "kd_21i3v9_1_0",  # so do food ids
+            "kf_21i3v9_1_1",  # the keep button is not a drop button
+        ],
+    )
+    def test_a_malformed_drop_payload_is_rejected(self, data):
+        assert keyboards.parse_drop_food(data, UID) is None
+
+    def test_the_two_families_never_collide(self):
+        """Same shape, different prefix — neither may decode the other's."""
+        keep = keyboards.keep_food_data(UID, 42, 3)
+        drop = keyboards.drop_food_data(UID, 42, 3)
+
+        assert keep != drop
+        assert keyboards.parse_keep_food(drop, UID) is None
+        assert keyboards.parse_drop_food(keep, UID) is None
+        assert not re.compile(keep_food.KEEP_FOOD_PATTERN).match(drop)
+        assert not re.compile(keep_food.DROP_FOOD_PATTERN).match(keep)
 
     def test_without_offers_the_keyboard_is_unchanged(self):
         """The habitual pair must not move for a meal with nothing to keep."""
@@ -572,7 +704,10 @@ class TestKeyboard:
 # How the offer reaches the user
 # ---------------------------------------------------------------------------
 class TestPostSaveOffer:
-    async def test_a_typed_meal_offers_to_keep_it(self, db_with_user, user_id):
+    async def test_a_typed_meal_is_kept_without_being_asked(
+        self, db_with_user, user_id
+    ):
+        """The whole point: the second time you eat it, it is already there."""
         update = _callback("x")
         context = SimpleNamespace(
             bot_data={"db": db_with_user}, user_data={}, args=[]
@@ -585,6 +720,35 @@ class TestPostSaveOffer:
         )
 
         assert state == diet.LOG_ANOTHER
+        food = await db_with_user.get_food_by_key(user_id, "Rajma chawal")
+        assert food is not None
+        # It is announced by name, and undoable in one tap.
+        text = update.effective_message.reply_text.call_args.args[0]
+        assert "Rajma chawal" in text
+        markup = update.effective_message.reply_text.call_args.kwargs["reply_markup"]
+        assert markup.inline_keyboard[0][0].callback_data == (
+            keyboards.drop_food_data(user_id, meal_id, food["id"])
+        )
+
+    async def test_what_could_not_be_kept_still_offers_the_button(
+        self, db_with_user, user_id
+    ):
+        """A full food list must leave the manual path visible, not nothing."""
+        update = _callback("x")
+        meal_id = await _log_typed_meal(db_with_user, user_id)
+        db = SimpleNamespace(
+            get_food_by_key=AsyncMock(return_value=None),
+            save_food=AsyncMock(
+                return_value={"status": "limit", "food": None, "limit": MAX_ACTIVE_FOODS}
+            ),
+        )
+        context = SimpleNamespace(bot_data={"db": db}, user_data={}, args=[])
+
+        await diet._offer_log_another(
+            update, context, update.effective_message,
+            meal_id=meal_id, items=[_typed()],
+        )
+
         markup = update.effective_message.reply_text.call_args.kwargs["reply_markup"]
         assert markup.inline_keyboard[0][0].callback_data == (
             keyboards.keep_food_data(user_id, meal_id, 0)
@@ -637,11 +801,12 @@ class TestPostSaveOffer:
         await diet._finish_structured_meal(update, context, [_typed()])
 
         markup = update.effective_message.reply_text.call_args.kwargs["reply_markup"]
-        meal_id, order = keyboards.parse_keep_food(
+        meal_id, food_id = keyboards.parse_drop_food(
             markup.inline_keyboard[0][0].callback_data, user_id
         )
-        assert order == 0
         assert await db_with_user.get_diet_log_items(user_id, meal_id)
+        kept = await db_with_user.get_food_by_id(user_id, food_id)
+        assert kept["name"] == "Rajma chawal"
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +852,17 @@ class TestRouting:
 
         assert _first_handler(app, _callback_update(UID, data)) is (
             keep_food.keep_food_handler
+        )
+
+    def test_the_drop_button_is_handled_outside_any_conversation(self):
+        """Its keyboard outlives the flow exactly as the keep button's does."""
+        from bot.main import build_application
+
+        app = build_application()
+        data = keyboards.drop_food_data(UID, 42, 7)
+
+        assert _first_handler(app, _callback_update(UID, data)) is (
+            keep_food.drop_kept_food_handler
         )
 
     def test_it_still_reaches_the_handler_during_a_live_diet_flow(self):

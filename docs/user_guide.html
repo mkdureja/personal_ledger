@@ -1002,20 +1002,25 @@ DB_PATH=ledger.db</code></pre>
 
     <div class="box box-info no-break">
         <div class="box-title">💾 Keep what you typed</div>
-        <p>When a meal you typed out is saved, the <em>Log another meal?</em> keyboard
-        carries an extra row — <strong>💾 Save “&lt;name&gt;”</strong> — for each typed item
-        that isn't already one of your foods. One tap turns it into a saved food priced
-        at exactly what you just logged, so the second time costs a tap instead of a
-        name and four numbers.</p>
+        <p>When a meal you typed out is saved, each typed item is <strong>kept as a
+        saved food automatically</strong>, priced at exactly what you just logged — so
+        the second time you eat it costs a tap instead of a name and four numbers. The
+        <em>Log another meal?</em> keyboard says what was kept and carries a
+        <strong>🗑 Don't keep “&lt;name&gt;”</strong> row for anything you would rather
+        not keep. (A one-off you drop is gone from your foods; the meal itself stays
+        logged — that is what <code>/undo</code> is for.)</p>
         <p>The food is defined as <strong>one helping</strong>: <code>1 portion</code>
         buys the calories and macros you entered, <code>2 portions</code> buys double.
         No gram weight is invented, because you never gave one — if you want the food
         measured by weight instead, save it yourself with
         <code>/food add</code>. That portion is also stored as your usual amount, which
         is what makes the food a one-tap ⚡ row in the meal picker afterwards.</p>
-        <p>Nothing about the meal changes: this only writes to your food list. The button
-        keeps working after the flow times out, and it is never offered for a name you
-        have already saved — it will not overwrite an existing food.</p>
+        <p>Nothing about the meal changes: this only writes to your food list. A name you
+        have already saved is never overwritten, and both buttons keep working after the
+        flow times out. Since your food list only grows this way, the meal picker shows
+        the <strong>eight</strong> things you most likely want for this meal and
+        everything else is one <strong>🔎 Search</strong> away — search looks through
+        your own foods as well as the shared catalog.</p>
     </div>
 
     <div class="box box-info no-break">

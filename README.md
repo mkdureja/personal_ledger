@@ -131,30 +131,50 @@ nutrition is known to be complete, and the name is still on screen.
 ```
 ✅ Saved · Lunch · Rajma chawal · 520 cal
 
+💾 Kept Rajma chawal in your foods — one tap next time.
+
 ➕ Log another meal?
-  [💾 Save “Rajma chawal”]
+  [🗑 Don't keep “Rajma chawal”]
   [🍽️ Log another] [✅ Done]
 ```
 
-One tap writes a private food defined as **one helping** — `base_unit="piece"`,
-`basis_amount=1` — plus a `portion` portion and that same `1 portion` as the
-stored usual, which is what promotes it to a one-tap ⚡ row in the picker. A gram
-weight is deliberately *not* invented: nobody supplied one, and guessing it would
-make every future log from that food quietly wrong.
+It is kept **automatically**, as a private food defined as **one helping** —
+`base_unit="piece"`, `basis_amount=1` — plus a `portion` portion and that same
+`1 portion` as the stored usual, which is what promotes it to a one-tap ⚡ row in
+the picker. A gram weight is deliberately *not* invented: nobody supplied one,
+and guessing it would make every future log from that food quietly wrong.
 
-The button is registered outside every `ConversationHandler`, alongside targeted
-meal Undo and suggestion Withdraw — the keyboard outlives the flow that drew it,
-and a control that goes inert on timeout looks broken. Nothing large rides in the
-callback: it names a meal id and an item position, and both the name and the four
-nutrients are read back from `diet_log_items` at tap time. An existing food of the
-same name suppresses the offer and is re-checked at the tap, so a second press
-reports rather than overwrites.
+Automatic is a deliberate reversal of the original 💾 button. The button worked;
+what it needed was for someone to notice it in the same second they had finished
+logging, which is exactly when attention leaves — three typed meals in one day
+went unkept that way, and the same food was typed again the next day. Keeping
+something you will not eat again costs a row in a list capped at 500 and a 🗑 tap;
+*not* keeping it costs a name and four numbers every single time. The 💾 offer
+still appears for anything the automatic pass could not take (a duplicate name, a
+full food list), because a failed save should leave the manual path visible.
+
+Both buttons are registered outside every `ConversationHandler`, alongside
+targeted meal Undo and suggestion Withdraw — the keyboard outlives the flow that
+drew it, and a control that goes inert on timeout looks broken. Nothing large
+rides in either callback: they name a meal id plus an item position or a food id,
+and the name and the four nutrients are read back from `diet_log_items` at tap
+time. 🗑 archives the food only while it is still one of that meal's typed items,
+so an old keyboard found in the scrollback cannot remove a food that has since
+grown into something else — and it never touches the meal, which is what `/undo`
+is for.
+
+Because the food list now only grows, the picker shows the top
+`MAX_RANKED_CHOICES` (8) rows and everything else stays one 🔎 Search away —
+which also searches your own foods, not just the shared catalog.
 
 ### Meal shortcuts
 
-The picker already learns: `bot/suggestions.py` weights same-meal-type frequency
-three times general use, so what you eat at snack time drifts to the top of the
-snack list on its own. `/shortcuts` is the manual half, for the two cases
+The picker already learns: `bot/suggestions.py` puts everything you have eaten at
+*this* meal type above everything you have not, so the breakfast picker offers
+breakfasts and the snack picker offers snacks, each ordered inside that group by
+frequency and recency. (Per-use weighting alone could not do that — five dinners
+of rice outscored the one breakfast egg, and the picker led with dinner food.)
+`/shortcuts` is the manual half, for the two cases
 learning cannot cover — a food you *know* belongs to a meal but haven't logged
 yet, and a shared-catalog item, which has no per-user preference row at all.
 

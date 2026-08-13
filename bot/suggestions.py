@@ -1,9 +1,9 @@
 """Deterministic, transparent ranking of food/recipe suggestions.
 
-No machine learning: an explicit pin always wins; otherwise candidates are
-ordered by same-meal-type frequency over the user's completed history, then
-recency, then overall frequency, with a stable name/id tie-break so the order
-never wobbles. Learns only from completed meals (``diet_log_items``), never from
+No machine learning: an explicit pin always wins; otherwise anything eaten at
+the meal type being logged comes first, ordered inside that group by same-meal
+frequency, recency, and overall frequency, with a stable name/id tie-break so
+the order never wobbles. Learns only from completed meals (``diet_log_items``), never from
 exploratory taps. All inputs are already owner-scoped by the caller.
 """
 
@@ -21,8 +21,17 @@ _RECENT_DAYS = 7
 _MONTH_DAYS = 30
 _RECENT_BONUS = 2.0
 _MONTH_BONUS = 1.0
+# Anything eaten at *this* meal before outranks everything never eaten at it,
+# regardless of how often the latter is eaten at other times. Per-use weighting
+# alone could not do this: five dinners of rice (5.0) buried the one breakfast
+# egg (3.0 + 1.0), so the breakfast picker led with dinner food and the whole
+# point of asking the meal type first was lost. Within each tier the weights
+# above still decide the order, so the ranking stays frequency- and
+# recency-driven — the tier only says which question is being answered first.
+_MEAL_TYPE_TIER_BONUS = 100_000.0
 # A pin must outrank any inferred score, so its bonus exceeds any realistic
-# frequency total for a personal ledger.
+# frequency total for a personal ledger — including the meal-type tier, which is
+# still an inference about what you usually do.
 _PIN_BONUS = 1_000_000.0
 # An explicit meal shortcut outranks even a pin *within its meal type*, because
 # it is the more specific statement: a pin says "always show me this", a shortcut
@@ -66,6 +75,8 @@ def score(candidate: Candidate, now: datetime) -> float:
         + candidate.total_uses * _GENERAL_WEIGHT
         + _recency_bonus(candidate.last_used, now)
     )
+    if candidate.meal_uses:
+        value += _MEAL_TYPE_TIER_BONUS
     if candidate.is_pinned:
         value += _PIN_BONUS
     if candidate.is_meal_shortcut:

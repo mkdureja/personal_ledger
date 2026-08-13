@@ -72,7 +72,7 @@ from .handlers.diet import (
     stale_phase1_diet_callback,
     stale_receipt_callback,
 )
-from .handlers.keep_food import keep_food_handler
+from .handlers.keep_food import drop_kept_food_handler, keep_food_handler
 from .handlers.receipts import RECEIPT_UNDO_PATTERN, undo_from_receipt
 from .handlers.catalog import food_command, recipe_command
 from .handlers.describe import (
@@ -506,6 +506,9 @@ def build_application(*, register_commands: bool = False) -> Application:
     # offered it has timed out. Registered after diet_conv_handler, which lets an
     # unmatched callback fall through while the flow is still open.
     application.add_handler(keep_food_handler)
+    # And its inverse — 🗑 on a food a typed entry was kept as. Same lifetime,
+    # same reasoning: the row that created it stays in the scrollback.
+    application.add_handler(drop_kept_food_handler)
     # Remaining receipt controls (Use current values, or Log another while a Diet
     # flow owns the update) and revisioned base-36 diet families are retired
     # inertly (answer + retire markup, no DB). Registered before the legacy stale

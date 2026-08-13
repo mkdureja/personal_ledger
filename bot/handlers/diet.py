@@ -52,7 +52,7 @@ from .receipts import (
     RECEIPT_MORE_PATTERN,
     send_meal_receipt,
 )
-from .keep_food import keep_food_offers
+from .keep_food import KeptFood, auto_keep_typed_items
 from .catalog import (
     resolve_catalog_diet_entry,
     resolve_catalog_food_entry,
@@ -176,6 +176,15 @@ def _parse_ts(value: object) -> datetime | None:
         return None
 
 
+#: How many one-tap rows the picker offers. A quick-fill list is a shortlist of
+#: what you actually eat at this meal, not an index of everything you have ever
+#: saved: past a screenful the rows stop being faster than searching, and every
+#: extra row pushes 🔎 Search and ✍️ Type it further down the thumb's reach. The
+#: rest of a growing food list stays one search away — which is why typed
+#: entries can be kept automatically without the picker degrading.
+MAX_RANKED_CHOICES = 8
+
+
 async def _ranked_choices(
     context: ContextTypes.DEFAULT_TYPE, uid: int, meal_type: str
 ) -> list[dict]:
@@ -183,9 +192,11 @@ async def _ranked_choices(
 
     With personalization off, returns the plain alphabetical union of the user's
     *own* foods and recipes — no learned catalog history, no frequency, no
-    recency, because that is what "off" means. With it on, ranks everything the
-    user has actually used by meal-type frequency, recency, and overall use,
-    applies pins, and drops hidden sources.
+    recency, because that is what "off" means, and no cap either: an unranked
+    list has no defensible way to choose which eight to keep, so it paginates
+    instead. With it on, ranks everything the user has actually used by meal
+    type first, then recency and overall use, applies pins, drops hidden
+    sources, and keeps the top :data:`MAX_RANKED_CHOICES`.
 
     Either way the result is decorated with each source's stored "usual" from
     **one** batched ``get_food_preferences`` read — the same map the ranking
@@ -262,7 +273,7 @@ async def _ranked_choices(
                 "name": names[(c.source_type, c.source_id)],
                 "is_meal_shortcut": c.is_meal_shortcut,
             }
-            for c in suggestions.rank(candidates, now)
+            for c in suggestions.rank(candidates, now)[:MAX_RANKED_CHOICES]
         ],
         prefs,
     )
@@ -656,10 +667,17 @@ async def _prompt_food_choice(
     # with no personal foods yet — otherwise the shared catalog is unreachable by
     # tapping and the flow looks like the old free-text one.
     if choices:
-        prompt_text = f"{emoji} <b>{title}</b> — pick a saved item, 🔎 search, or ✍️ type it:"
+        # "usually have" rather than "saved item": the rows are led by what this
+        # user has eaten at *this* meal before, so the label should say which
+        # question the list is answering.
+        prompt_text = (
+            f"{emoji} <b>{title}</b> — what you usually have, 🔎 search, "
+            "or ✍️ type it:"
+        )
     else:
         prompt_text = (
-            f"{emoji} <b>{title}</b> — 🔎 search the catalog or ✍️ type what you ate:"
+            f"{emoji} <b>{title}</b> — 🔎 search your foods and the catalog, "
+            "or ✍️ type what you ate:"
         )
     prompt = await _send_tap_keyboard(
         update,
@@ -1138,7 +1156,8 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     try:
         await reply_html(
             query.message,
-            "🔎 Type a food to search the catalog (e.g. <code>banana</code>):",
+            "🔎 Type a food to search your saved foods and the catalog "
+            "(e.g. <code>banana</code>):",
         )
     except TelegramError:
         logger.warning("Could not deliver search prompt", exc_info=True)
@@ -1207,7 +1226,17 @@ async def receive_search_query(
         context,
         update.effective_message,
         f"🔎 Results for “{escape_html(text)}” — pick one:",
-        food_choice_keyboard(uid, decorated, quick=_quick_mode(context, uid)),
+        food_choice_keyboard(
+            uid,
+            decorated,
+            # ⚙️ belongs here as much as in the picker. The picker shows only the
+            # top few rows, so search is how a food outside them is reached at
+            # all — without this, setting a usual amount on a food you have not
+            # eaten lately would be impossible rather than merely slower.
+            manage=phase1_enabled_for(uid),
+            revision=context.user_data.get("diet_ui_revision", 0),
+            quick=_quick_mode(context, uid),
+        ),
     )
     return FOOD_CHOICE if prompt is not None else ConversationHandler.END
 
@@ -1335,7 +1364,7 @@ async def _reprompt_food_choice(
         update,
         context,
         message,
-        "Pick a saved item, 🔎 search, or ✍️ type it:",
+        "What you usually have, 🔎 search, or ✍️ type it:",
         food_choice_keyboard(
             uid,
             choices,
@@ -3042,29 +3071,43 @@ async def _offer_log_another(
     Clears the finished meal's data but leaves the conversation active; the
     normal 300s idle timeout closes it when the user stops logging.
 
-    A typed item of the meal just saved also gets a 💾 row here, because this is
-    the one place where its name and its complete nutrition are both already
-    known — see :mod:`bot.handlers.keep_food`. Building the offers must not be
-    able to cost the user their keyboard, so a failed read degrades to the plain
-    two-button version rather than propagating.
+    A typed item of the meal just saved is also *kept* here as a saved food,
+    because this is the one place where its name and its complete nutrition are
+    both already known — see :mod:`bot.handlers.keep_food`. The keyboard reports
+    what was kept and offers 🗑 to drop it, plus a 💾 for anything the automatic
+    pass could not take. Keeping must not be able to cost the user their
+    keyboard, so a failure degrades to the plain two-button version rather than
+    propagating: the meal is already saved by this point.
     """
     uid = update.effective_user.id
+    kept: list[KeptFood] = []
     keepable: list[tuple[int, str]] = []
     if meal_id is not None and items:
         try:
-            keepable = await keep_food_offers(context.bot_data["db"], uid, items)
+            kept, keepable = await auto_keep_typed_items(
+                context.bot_data["db"], uid, items
+            )
         except Exception:
-            logger.warning("Could not build keep-food offers", exc_info=True)
+            logger.warning("Could not keep typed entries", exc_info=True)
+    prompt_text = "➕ Log another meal?"
+    if kept:
+        names = ", ".join(f"<b>{escape_html(food.name)}</b>" for food in kept)
+        # Named, not counted: "kept 2 foods" would leave the user to guess which
+        # of the things they typed is now going to reappear in their picker.
+        prompt_text = (
+            f"💾 Kept {names} in your foods — one tap next time.\n\n{prompt_text}"
+        )
     _clear_diet_entry_data(context)
     prompt = await _send_tap_keyboard(
         update,
         context,
         message,
-        "➕ Log another meal?",
+        prompt_text,
         log_another_keyboard(
             uid,
-            meal_id=meal_id if keepable else None,
+            meal_id=meal_id if (kept or keepable) else None,
             keepable=keepable,
+            kept=[(food.food_id, food.name) for food in kept],
         ),
     )
     return LOG_ANOTHER if prompt is not None else ConversationHandler.END
@@ -3539,7 +3582,8 @@ async def _rerender_diet_state(
         try:
             await reply_html(
                 message,
-                "🔎 Type a food to search the catalog (e.g. <code>banana</code>):",
+                "🔎 Type a food to search your saved foods and the catalog "
+                "(e.g. <code>banana</code>):",
             )
         except TelegramError:
             return await _diet_draft_expired(update, context)
