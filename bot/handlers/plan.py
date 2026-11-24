@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, timedelta
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -91,7 +92,61 @@ def _progress_line(status: PlanStatus) -> str | None:
     return line
 
 
-def status_text(status: PlanStatus) -> str:
+@dataclass(frozen=True)
+class BudgetView:
+    """The calorie side of the plan screen, read once and rendered once."""
+
+    maintenance_kcal: int
+    budget_kcal: int
+    adjustment_kcal: int
+    eaten_today: int
+    incomplete_today: bool
+    #: Average known calories over plan days before today that have meals.
+    average_kcal: float | None
+    logged_days: int
+
+
+_MAINTENANCE_HINT = (
+    "<i>🍽️ Add a daily calorie budget: <code>/plan maintenance 2350</code> "
+    "(the calories you'd hold your weight on).</i>"
+)
+
+
+def _budget_formula(budget: BudgetView) -> str:
+    """``maintenance 2,350 − 385`` — how the budget was reached."""
+    adjustment = budget.adjustment_kcal
+    if adjustment == 0:
+        return f"maintenance {budget.maintenance_kcal:,}"
+    sign = "−" if adjustment < 0 else "+"
+    return f"maintenance {budget.maintenance_kcal:,} {sign} {abs(adjustment):,}"
+
+
+def _budget_lines(status: PlanStatus, budget: BudgetView | None) -> list[str]:
+    if budget is None:
+        return [_MAINTENANCE_HINT]
+    lines: list[str] = []
+    if status.phase == "running":
+        incomplete = " <i>(a meal has no calories)</i>" if budget.incomplete_today else ""
+        lines.append(
+            "🍽️ Calories today: <b>"
+            f"{weight_plan.budget_phrase(budget.eaten_today, budget.budget_kcal)}"
+            f"</b>{incomplete}"
+        )
+        lines.append(f"<i>Budget {budget.budget_kcal:,} = {_budget_formula(budget)}</i>")
+    elif status.phase == "upcoming":
+        lines.append(
+            f"🍽️ From day 1, aim for about <b>{budget.budget_kcal:,} kcal/day</b> "
+            f"({_budget_formula(budget)})."
+        )
+    if budget.logged_days:
+        lines.append(
+            f"📒 Plan days with meals logged: {budget.logged_days}, averaging "
+            f"<b>{budget.average_kcal:,.0f} kcal</b>"
+        )
+    return lines
+
+
+def status_text(status: PlanStatus, budget: BudgetView | None = None) -> str:
     """The whole plan screen, as Telegram HTML."""
     plan, today = status.plan, status.today
     title = f"📉 <b>{plan.length_days}-day plan</b>"
@@ -105,6 +160,7 @@ def status_text(status: PlanStatus) -> str:
             f"🎯 Day 1 target: <b>{format_kg(plan.start_kg)} kg</b>. Weigh in each "
             "morning with <code>/weight</code> and this screen fills in."
         )
+        lines.extend(_budget_lines(status, budget))
         return "\n".join(lines)
 
     if status.phase == "finished":
@@ -158,6 +214,8 @@ def status_text(status: PlanStatus) -> str:
             f"🏁 To finish at {format_kg(plan.end_kg)} kg: "
             f"{format_rate(required)} from here"
         )
+    lines.append("")
+    lines.extend(_budget_lines(status, budget))
     if status.phase == "finished":
         lines.append("")
         lines.append("Start the next one with <code>/plan new …</code>.")
@@ -176,6 +234,31 @@ async def _load(
     return weight_plan.plan_status(plan, entries, today), entries
 
 
+async def _budget_view(db, user_id: int, status: PlanStatus) -> BudgetView | None:
+    """Read the calorie side of the plan, or ``None`` when no maintenance is set."""
+    maintenance = await db.get_maintenance_kcal(user_id)
+    if maintenance is None:
+        return None
+    plan, today = status.plan, status.today
+    eaten, incomplete = await db.get_today_calories(user_id, today)
+    # Today is still in progress, so the average covers plan days before it.
+    last_full_day = min(today - timedelta(days=1), plan.end_date)
+    daily = (
+        await db.get_daily_calories(user_id, plan.start_date, last_full_day)
+        if last_full_day >= plan.start_date
+        else {}
+    )
+    return BudgetView(
+        maintenance_kcal=maintenance,
+        budget_kcal=weight_plan.daily_budget_kcal(plan, maintenance),
+        adjustment_kcal=weight_plan.daily_adjustment_kcal(plan),
+        eaten_today=int(eaten),
+        incomplete_today=bool(incomplete),
+        average_kcal=(sum(daily.values()) / len(daily)) if daily else None,
+        logged_days=len(daily),
+    )
+
+
 async def show_plan(message, context, user_id: int) -> None:
     """Send the plan screen: the status as a caption on the chart."""
     db = context.bot_data["db"]
@@ -187,7 +270,12 @@ async def show_plan(message, context, user_id: int) -> None:
         )
         return
     status, entries = loaded
-    text = status_text(status)
+    try:
+        budget = await _budget_view(db, user_id, status)
+    except Exception:
+        logger.warning("Could not read the calorie budget", exc_info=False)
+        budget = None
+    text = status_text(status, budget)
     try:
         buf = await asyncio.to_thread(
             charts.plan_chart, status.plan, entries, today
@@ -240,6 +328,10 @@ async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await show_plan(message, context, user.id)
         return
 
+    if action in ("maintenance", "maint"):
+        await _maintenance(message, db, user.id, args[1:])
+        return
+
     if action in ("end", "stop"):
         ended = await db.end_weight_plan(user.id)
         await reply_html(
@@ -255,8 +347,52 @@ async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         message,
         "📉 <b>Weight plan</b>\n"
         "<code>/plan</code> — where you stand, with the chart\n"
+        "<code>/plan maintenance 2350</code> — set the calories you maintain on; "
+        "the plan turns it into a daily budget\n"
         "<code>/plan end</code> — end the current plan\n\n" + PLAN_NEW_USAGE,
     )
+
+
+async def _maintenance(message, db, user_id: int, args: list[str]) -> None:
+    """``/plan maintenance [kcal|off]`` — show, set, or clear maintenance calories."""
+    if not args:
+        current = await db.get_maintenance_kcal(user_id)
+        if current is None:
+            await reply_html(message, f"No maintenance set.\n{_MAINTENANCE_HINT}")
+        else:
+            await reply_html(
+                message,
+                f"🍽️ Maintenance: <b>{current:,} kcal</b>. Change it with "
+                "<code>/plan maintenance 2400</code>, or "
+                "<code>/plan maintenance off</code> to stop showing a budget.",
+            )
+        return
+
+    raw = args[0].strip().lower()
+    if raw in ("off", "clear", "none"):
+        await db.set_maintenance_kcal(user_id, None)
+        await reply_html(message, "🍽️ Maintenance cleared — no calorie budget is shown.")
+        return
+
+    try:
+        kcal = weight_plan.validated_maintenance_kcal(
+            raw.removesuffix("kcal").removesuffix("cal").replace(",", "")
+        )
+    except PlanInputError as exc:
+        await reply_html(message, f"❌ {exc}")
+        return
+    await db.set_maintenance_kcal(user_id, kcal)
+
+    lines = [f"🍽️ Maintenance set to <b>{kcal:,} kcal</b>."]
+    plan = await db.get_active_weight_plan(user_id)
+    if plan is not None:
+        adjustment = weight_plan.daily_adjustment_kcal(plan)
+        lines.append(
+            f"With your plan ({format_rate(plan.daily_change_kg)}), the daily budget "
+            f"is <b>{weight_plan.daily_budget_kcal(plan, kcal):,} kcal</b> "
+            f"({kcal:,} {'−' if adjustment < 0 else '+'} {abs(adjustment):,})."
+        )
+    await reply_html(message, "\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +427,29 @@ async def weight_receipt_line(db, user_id: int, today: date) -> str | None:
         f"<b>{format_kg(status.target_today)} kg</b> → "
         f"{verdict_phrase(plan, status.latest)}"
     )
+
+
+async def calories_line(db, user_id: int, today: date) -> str | None:
+    """``🍽️ Calories today: 1,200 of 1,965 · 765 left`` while a budget applies.
+
+    A budget applies only while a plan is running *and* maintenance is set; any
+    other state returns ``None`` so the screens that borrow this line stay
+    exactly as they were. Called after a meal is already saved, so it never
+    raises — a failed read must not make the save look like it failed.
+    """
+    try:
+        maintenance = await db.get_maintenance_kcal(user_id)
+        if maintenance is None:
+            return None
+        plan = await db.get_active_weight_plan(user_id)
+        if plan is None or not plan.contains(today):
+            return None
+        eaten, _incomplete = await db.get_today_calories(user_id, today)
+    except Exception:
+        logger.warning("Could not read the calorie budget", exc_info=False)
+        return None
+    budget = weight_plan.daily_budget_kcal(plan, maintenance)
+    return f"🍽️ Calories today: {weight_plan.budget_phrase(int(eaten), budget)}"
 
 
 async def home_line(db, user_id: int, today: date) -> str | None:

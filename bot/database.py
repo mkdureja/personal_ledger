@@ -2993,6 +2993,52 @@ class DatabaseManager:
     # -------------------------------------------------------------------
     # Per-user settings (reminder opt-in, routine profile)
     # -------------------------------------------------------------------
+    async def set_maintenance_kcal(self, user_id: int, kcal: int | None) -> None:
+        """Store (or clear, with ``None``) the calories this user maintains on."""
+        from .weight_plan import validated_maintenance_kcal
+
+        value = None if kcal is None else validated_maintenance_kcal(kcal)
+        async with self._write_operation():
+            await self.conn.execute(
+                "INSERT INTO user_settings (user_id) VALUES (?) "
+                "ON CONFLICT(user_id) DO NOTHING",
+                (user_id,),
+            )
+            await self.conn.execute(
+                "UPDATE user_settings SET maintenance_kcal = ?, updated_at = ? "
+                "WHERE user_id = ?",
+                (value, _utc_timestamp_now(), user_id),
+            )
+
+    async def get_maintenance_kcal(self, user_id: int) -> int | None:
+        """The stored maintenance calories, or ``None`` when not set."""
+        row = await self._query_one(
+            "SELECT maintenance_kcal FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        )
+        if row is None or row["maintenance_kcal"] is None:
+            return None
+        return int(row["maintenance_kcal"])
+
+    async def get_daily_calories(
+        self, user_id: int, start: date, end: date
+    ) -> dict[date, int]:
+        """Known calories per *local* day in ``[start, end]``, days with meals only.
+
+        A day with no meals is absent rather than zero: "nothing logged" and
+        "ate nothing" are different statements, and an average over the plan
+        must not count the first as the second.
+        """
+        from .config import local_date_from_utc
+
+        totals: dict[date, int] = {}
+        for row in await self.get_diet_logs(user_id, start, end):
+            day = local_date_from_utc(datetime.fromisoformat(row["logged_at"]))
+            if not (start <= day <= end):
+                continue
+            totals[day] = totals.get(day, 0) + int(row["calories"] or 0)
+        return totals
+
     async def get_user_settings(self, user_id: int) -> dict[str, Any] | None:
         """Return a user's settings row, or ``None`` if they have none yet."""
         row = await self._query_one(

@@ -53,6 +53,7 @@ from .receipts import (
     send_meal_receipt,
 )
 from .keep_food import KeptFood, auto_keep_typed_items
+from .plan import calories_line
 from .catalog import (
     resolve_catalog_diet_entry,
     resolve_catalog_food_entry,
@@ -73,7 +74,7 @@ from ..keyboards import (
     recipe_quantity_keyboard,
     reply_keyboard_remove,
 )
-from ..config import CONVERSATION_TIMEOUT, now_local, phase1_enabled_for
+from ..config import CONVERSATION_TIMEOUT, now_local, phase1_enabled_for, today_local
 from ..meal_models import (
     CurrentCommitStatus,
     CurrentValueDecision,
@@ -479,18 +480,19 @@ async def diet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 [entry.as_item()],
                 source=mutation_source(update),
             )
+            text = _confirmation(
+                meal_type,
+                entry.display_text,
+                entry.calories,
+                entry.protein_g,
+                entry.carbs_g,
+                entry.fat_g,
+            )
+            budget_line = await calories_line(db, user.id, today_local())
+            if budget_line:
+                text = f"{text}\n{budget_line}"
             try:
-                await reply_html(
-                    update.message,
-                    _confirmation(
-                        meal_type,
-                        entry.display_text,
-                        entry.calories,
-                        entry.protein_g,
-                        entry.carbs_g,
-                        entry.fat_g,
-                    ),
-                )
+                await reply_html(update.message, text)
             except TelegramError:
                 logger.warning("Could not deliver diet confirmation", exc_info=True)
             return ConversationHandler.END
@@ -576,11 +578,12 @@ async def diet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             source=mutation_source(update),
         )
 
+        text = _confirmation(meal_type, food_items, calories, **macros)
+        budget_line = await calories_line(db, user.id, today_local())
+        if budget_line:
+            text = f"{text}\n{budget_line}"
         try:
-            await reply_html(
-                update.message,
-                _confirmation(meal_type, food_items, calories, **macros),
-            )
+            await reply_html(update.message, text)
         except TelegramError:
             logger.warning("Could not deliver diet confirmation", exc_info=True)
         return ConversationHandler.END
@@ -1835,8 +1838,11 @@ async def _finish_with_receipt(
 ) -> int:
     """End the Diet flow and leave the durable receipt behind."""
     finish_conversation(update, context, "diet")
+    footer = await calories_line(
+        context.bot_data["db"], update.effective_user.id, today_local()
+    )
     try:
-        await send_meal_receipt(message, receipt, headline)
+        await send_meal_receipt(message, receipt, headline, footer=footer)
     except TelegramError:
         logger.warning("Could not deliver quick-log receipt", exc_info=True)
     return ConversationHandler.END
@@ -3133,6 +3139,9 @@ async def _offer_log_another(
         except Exception:
             logger.warning("Could not keep typed entries", exc_info=True)
     prompt_text = "➕ Log another meal?"
+    budget_line = await calories_line(context.bot_data["db"], uid, today_local())
+    if budget_line:
+        prompt_text = f"{budget_line}\n\n{prompt_text}"
     if kept:
         names = ", ".join(f"<b>{escape_html(food.name)}</b>" for food in kept)
         # Named, not counted: "kept 2 foods" would leave the user to guess which

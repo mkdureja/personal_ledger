@@ -427,14 +427,42 @@ async def test_migrating_a_populated_v18_database_adds_plans_and_keeps_rows(
         await mgr.ensure_user(UID, "t", "Test")
         await mgr.log_weight(UID, 71.1, date(2026, 8, 26))
 
-        await migrations.run_migrations(mgr.conn)
+        with monkeypatch.context() as patched:
+            patched.setattr(migrations, "LATEST_VERSION", 19)
+            await migrations.run_migrations(mgr.conn)
 
         assert await migrations.get_user_version(mgr.conn) == 19
         assert (await mgr.get_latest_weight(UID))["weight_kg"] == 71.1
         assert await mgr.get_active_weight_plan(UID) is None
-        await migrations.verify_current_schema(mgr.conn)
         cursor = await mgr.conn.execute("PRAGMA foreign_key_check")
         assert await cursor.fetchall() == []
+    finally:
+        await mgr.close()
+
+
+async def test_migrating_a_v19_database_with_a_plan_adds_maintenance(monkeypatch):
+    """v19 -> v20 is the step the live database takes next: the plan survives."""
+    from bot import migrations
+    from bot.database import DatabaseManager
+
+    mgr = DatabaseManager(":memory:")
+    await mgr.connect()
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(migrations, "LATEST_VERSION", 19)
+            await migrations.run_migrations(mgr.conn)
+        await mgr.ensure_user(UID, "t", "Test")
+        await mgr.ensure_user_settings(UID, default_enabled=True)
+        await mgr.start_weight_plan(UID, _his_plan())
+
+        await migrations.run_migrations(mgr.conn)
+
+        assert await migrations.get_user_version(mgr.conn) == 20
+        await migrations.verify_current_schema(mgr.conn)
+        assert await mgr.get_active_weight_plan(UID) == _his_plan()
+        assert await mgr.get_maintenance_kcal(UID) is None
+        settings = await mgr.get_user_settings(UID)
+        assert settings["reminders_enabled"] == 1
     finally:
         await mgr.close()
 
@@ -625,6 +653,202 @@ class TestElsewhere:
             "plan_command"
         )
         assert "plan" in dict(COMMAND_MENU)
+
+
+# ---------------------------------------------------------------------------
+# Calorie budget
+# ---------------------------------------------------------------------------
+class TestBudgetArithmetic:
+    def test_his_budget_is_maintenance_minus_the_plans_deficit(self):
+        plan = _his_plan()
+
+        assert weight_plan.daily_adjustment_kcal(plan) == -385
+        assert weight_plan.daily_budget_kcal(plan, 2350) == 1965
+
+    def test_a_gain_plan_adds_to_maintenance(self):
+        gain = make_plan(START, 60.0, 0.05, 28)
+
+        assert weight_plan.daily_budget_kcal(gain, 2350) == 2735
+
+    def test_the_phrase_says_left_or_over(self):
+        assert weight_plan.budget_phrase(1200, 1965) == "1,200 of 1,965 · 765 left"
+        assert weight_plan.budget_phrase(2100, 1965) == "2,100 of 1,965 · 135 over"
+
+    @pytest.mark.parametrize("bad", [0, 235, 23500, "abc"])
+    def test_an_implausible_maintenance_is_refused(self, bad):
+        with pytest.raises(PlanInputError):
+            weight_plan.validated_maintenance_kcal(bad)
+
+
+async def _with_running_plan(db, user_id, *, maintenance=2350, days_in=2):
+    await db.ensure_user(user_id, "t", "T")
+    await db.start_weight_plan(
+        user_id, make_plan(today_local() - timedelta(days=days_in), 70, -0.05, 28)
+    )
+    if maintenance is not None:
+        await db.set_maintenance_kcal(user_id, maintenance)
+
+
+class TestBudgetStorage:
+    async def test_maintenance_round_trips_and_clears(self, db_with_user, user_id):
+        await db_with_user.set_maintenance_kcal(user_id, 2350)
+        assert await db_with_user.get_maintenance_kcal(user_id) == 2350
+
+        await db_with_user.set_maintenance_kcal(user_id, None)
+        assert await db_with_user.get_maintenance_kcal(user_id) is None
+
+    async def test_the_schema_refuses_a_typo(self, db_with_user, user_id):
+        await db_with_user.set_maintenance_kcal(user_id, 2350)
+        with pytest.raises(sqlite3.IntegrityError):
+            await db_with_user.conn.execute(
+                "UPDATE user_settings SET maintenance_kcal = 23500 WHERE user_id = ?",
+                (user_id,),
+            )
+
+    async def test_daily_calories_skip_days_without_meals(self, db_with_user, user_id):
+        today = today_local()
+        await db_with_user.log_diet(user_id, "lunch", "dal", 600, 20.0, 80.0, 15.0)
+        await db_with_user.log_diet(user_id, "snack", "tea", 20, 1.0, 2.0, 1.0)
+
+        daily = await db_with_user.get_daily_calories(
+            user_id, today - timedelta(days=3), today
+        )
+
+        assert daily == {today: 620}
+
+
+class TestBudgetScreens:
+    async def test_plan_maintenance_sets_it_and_names_the_budget(self, db, user_id):
+        await _with_running_plan(db, user_id, maintenance=None)
+        update = _update(user_id)
+
+        await plan_handler.plan_command(update, _context(db, ["maintenance", "2,350"]))
+
+        assert await db.get_maintenance_kcal(user_id) == 2350
+        text = update.effective_message.reply_text.await_args.args[0]
+        assert "daily budget is <b>1,965 kcal</b> (2,350 − 385)" in text
+
+    async def test_plan_maintenance_off_clears_it(self, db, user_id):
+        await _with_running_plan(db, user_id)
+        update = _update(user_id)
+
+        await plan_handler.plan_command(update, _context(db, ["maintenance", "off"]))
+
+        assert await db.get_maintenance_kcal(user_id) is None
+
+    async def test_a_typo_is_refused_and_nothing_changes(self, db, user_id):
+        await _with_running_plan(db, user_id)
+        update = _update(user_id)
+
+        await plan_handler.plan_command(update, _context(db, ["maintenance", "23500"]))
+
+        assert await db.get_maintenance_kcal(user_id) == 2350
+        assert "between 1,000 and 6,000" in (
+            update.effective_message.reply_text.await_args.args[0]
+        )
+
+    async def test_the_plan_screen_shows_today_against_the_budget(self, db, user_id):
+        await _with_running_plan(db, user_id)
+        await db.log_diet(user_id, "lunch", "dal", 600, 20.0, 80.0, 15.0)
+        update = _update(user_id)
+
+        await plan_handler.plan_command(update, _context(db))
+
+        caption = update.effective_message.reply_photo.await_args.kwargs["caption"]
+        assert "Calories today: <b>600 of 1,965 · 1,365 left</b>" in caption
+        assert "Budget 1,965 = maintenance 2,350 − 385" in caption
+
+    async def test_without_maintenance_the_screen_offers_to_set_it(self, db, user_id):
+        await _with_running_plan(db, user_id, maintenance=None)
+        update = _update(user_id)
+
+        await plan_handler.plan_command(update, _context(db))
+
+        caption = update.effective_message.reply_photo.await_args.kwargs["caption"]
+        assert "/plan maintenance 2350" in caption
+
+    async def test_a_full_caption_fits_telegrams_limit(self, db, user_id):
+        """Telegram refuses a photo caption over 1024 characters."""
+        await _with_running_plan(db, user_id, days_in=9)
+        today = today_local()
+        for offset in range(8):
+            await db.log_weight(user_id, 70.3 - 0.05 * offset, today - timedelta(days=offset))
+        update = _update(user_id)
+
+        await plan_handler.plan_command(update, _context(db))
+
+        caption = update.effective_message.reply_photo.await_args.kwargs["caption"]
+        import re
+
+        assert len(re.sub(r"<[^>]+>", "", caption)) < 1024
+
+    async def test_the_calories_line_needs_both_a_plan_and_maintenance(
+        self, db, user_id
+    ):
+        await db.ensure_user(user_id, "t", "T")
+        await db.set_maintenance_kcal(user_id, 2350)
+        assert await plan_handler.calories_line(db, user_id, today_local()) is None
+
+        await db.start_weight_plan(user_id, make_plan(today_local(), 70, -0.05, 28))
+        assert await plan_handler.calories_line(db, user_id, today_local()) == (
+            "🍽️ Calories today: 0 of 1,965 · 1,965 left"
+        )
+
+    async def test_an_upcoming_plan_shows_no_budget_line_yet(self, db, user_id):
+        await db.ensure_user(user_id, "t", "T")
+        await db.set_maintenance_kcal(user_id, 2350)
+        await db.start_weight_plan(
+            user_id, make_plan(today_local() + timedelta(days=1), 70, -0.05, 28)
+        )
+
+        assert await plan_handler.calories_line(db, user_id, today_local()) is None
+
+    async def test_home_and_summary_carry_the_budget(self, db, user_id):
+        from bot.handlers import analytics, home
+
+        await _with_running_plan(db, user_id)
+        await db.log_diet(user_id, "lunch", "dal", 600, 20.0, 80.0, 15.0)
+
+        update = _update(user_id)
+        await home.show_home(update, _context(db))
+        home_text = update.effective_message.reply_text.await_args_list[0].args[0]
+        assert "🍽️ Calories today: 600 of 1,965 · 1,365 left" in home_text
+
+        message = _message()
+        await analytics._daily_summary(message, db, user_id)
+        assert "Calories today: 600 of 1,965" in message.reply_text.await_args.args[0]
+
+    async def test_a_typed_one_liner_reports_what_is_left(self, db, user_id):
+        from bot.handlers import diet
+
+        await _with_running_plan(db, user_id)
+        update = _update(user_id)
+        context = _context(db, ["lunch", "dal", "600", "p=20", "c=80", "f=15"])
+
+        await diet.diet_command(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "Calories today: 600 of 1,965 · 1,365 left" in text
+
+    async def test_a_receipt_carries_the_footer(self):
+        from bot.handlers import receipts
+
+        message = _message()
+        receipt = SimpleNamespace(
+            header=SimpleNamespace(user_id=UID, meal_id=1), items=()
+        )
+        original = receipts.format_meal_receipt
+        try:
+            receipts.format_meal_receipt = lambda _r, headline: headline
+            await receipts.send_meal_receipt(
+                message, receipt, "✅ Logged", footer="🍽️ Calories today: x"
+            )
+        finally:
+            receipts.format_meal_receipt = original
+
+        assert message.reply_text.await_args.args[0] == (
+            "✅ Logged\n🍽️ Calories today: x"
+        )
 
 
 class TestChart:

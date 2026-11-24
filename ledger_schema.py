@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # The version this checkout migrates a database to. Bump it (and register the new
 # migration in ``bot.migrations._MIGRATIONS``) for every schema change.
-LATEST_SCHEMA_VERSION = 19
+LATEST_SCHEMA_VERSION = 20
 
 # Version 0 is the pre-versioning legacy shape. It is *not* a certifiable schema
 # version: those databases never stamped a version and their table/column shape
@@ -124,6 +124,8 @@ VERIFIED_COLUMNS: dict[str, tuple[tuple[int, tuple[str, ...]], ...]] = {
         # columns are unchanged by name. Listed again at 15 so a database that
         # lost them cannot verify as a sound v15 either.
         (15, ("ai_parsing_enabled", "ai_parsing_consented_at")),
+        # v20 is column-only too: the maintenance calories a budget is built on.
+        (20, ("maintenance_kcal",)),
     ),
     "diet_log_items": (
         (

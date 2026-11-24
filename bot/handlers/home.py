@@ -189,11 +189,15 @@ async def show_home(
         f"👋 <b>{first_name}</b> — here's today:",
         "",
         f"🍽️ Diet: {meal_count} meal(s), {calories} cal{cal_suffix}",
-        f"⚖️ Weight: {await _weight_snapshot(db, uid, today)}",
     ]
     # Only while a plan exists; Home says nothing about a feature not in use.
+    from .plan import calories_line
     from .plan import home_line as plan_home_line
 
+    budget_line = await calories_line(db, uid, today)
+    if budget_line:
+        lines.append(budget_line)
+    lines.append(f"⚖️ Weight: {await _weight_snapshot(db, uid, today)}")
     plan_line = await plan_home_line(db, uid, today)
     if plan_line:
         lines.append(plan_line)
@@ -342,7 +346,10 @@ async def repeat_last_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if result.status is RepeatStatus.CREATED
         else "🔁 <b>Already repeated</b>"
     )
-    await send_meal_receipt(message, result.receipt, headline)
+    from .plan import calories_line
+
+    footer = await calories_line(db, user.id, today_local())
+    await send_meal_receipt(message, result.receipt, headline, footer=footer)
 
 
 # ---------------------------------------------------------------------------

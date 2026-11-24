@@ -310,11 +310,16 @@ async def describe_save_callback(
     context.user_data.pop(_PENDING_KEY, None)
     await query.answer()
     await _retire(query)
-    await reply_html(
-        query.message,
+    text = (
         f"✅ Logged {len(items)} item{'s' if len(items) != 1 else ''} "
-        f"as <b>{escape_html(meal_type)}</b>. Use /undo if that was wrong.",
+        f"as <b>{escape_html(meal_type)}</b>. Use /undo if that was wrong."
     )
+    from .plan import calories_line
+
+    budget_line = await calories_line(db, user_id, config.today_local())
+    if budget_line:
+        text = f"{text}\n{budget_line}"
+    await reply_html(query.message, text)
 
 
 @authorized_callback

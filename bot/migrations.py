@@ -1544,6 +1544,26 @@ async def _migration_0019_weight_plans(conn: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0020_maintenance_kcal(conn: aiosqlite.Connection) -> None:
+    """The calories a person maintains weight on — what a daily budget is built from.
+
+    A property of the *person*, not of any one plan: it is estimated once,
+    refined from real intake against real weight, and should carry over when the
+    next plan starts. So it lives in ``user_settings`` rather than
+    ``weight_plans``. ``NULL`` means "not set", and nothing shows a budget until
+    it is. The bounds are a typo guard (a dropped or doubled digit), not an
+    opinion about anybody's metabolism.
+    """
+    cursor = await conn.execute("PRAGMA table_info(user_settings)")
+    columns = {row["name"] for row in await cursor.fetchall()}
+    if "maintenance_kcal" not in columns:
+        await conn.execute(
+            "ALTER TABLE user_settings ADD COLUMN maintenance_kcal INTEGER "
+            "CHECK (maintenance_kcal IS NULL OR "
+            "(maintenance_kcal >= 1000 AND maintenance_kcal <= 6000))"
+        )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1564,6 +1584,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     17: _migration_0017_monitors,
     18: _migration_0018_supplement_counts,
     19: _migration_0019_weight_plans,
+    20: _migration_0020_maintenance_kcal,
 }
 
 

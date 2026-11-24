@@ -505,6 +505,7 @@ always drawn as a hollow dot, so it can never be mistaken for a day you weighed.
 |---|---|
 | `/plan` | Where you stand: day N of the plan, today's target, your latest weigh-in against it, a 7-day trend, progress, and a chart |
 | `/plan new 25 nov 68.85 -0.05 28` | Start a plan: first day, starting kg, daily change (or a finish weight, e.g. `67.5`), days |
+| `/plan maintenance 2350` | The calories you hold your weight on; `off` clears it. While a plan runs it becomes a daily budget |
 | `/plan end` | End the current plan (it stays in history) |
 
 A plan is a straight line, and your ordinary `/weight` entries are what get
@@ -515,6 +516,14 @@ measured *against the plan* (target plus the average gap over the week's
 weigh-ins), because a plain rolling average lags a sloped line and would show an
 on-plan week as behind. A daily change must carry its sign (`-0.05` loses,
 `+0.05` gains). One plan is active at a time; a new one retires the old.
+
+**Calorie budget.** With maintenance set, a running plan turns its rate into a
+daily budget at 7,700 kcal per kg: −0.05 kg/day is −385 kcal, so 2,350 becomes
+**1,965**. Home, `/summary`, `/plan` and every meal confirmation then show
+*eaten of budget · left*. `/plan` also averages your intake over the plan's days
+that have meals (today excluded; empty days left out, never counted as zero), so
+maintenance can be re-estimated from real intake against the weight trend after
+the first week or two.
 
 ### Analytics
 | Command | Description |

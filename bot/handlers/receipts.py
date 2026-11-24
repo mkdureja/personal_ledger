@@ -111,12 +111,19 @@ def can_use_current_values(receipt: MealReceipt) -> bool:
 
 
 async def send_meal_receipt(
-    message, receipt: MealReceipt, headline: str
+    message, receipt: MealReceipt, headline: str, *, footer: str | None = None
 ) -> None:
-    """Send a receipt with its durable Undo / Log another controls."""
+    """Send a receipt with its durable Undo / Log another controls.
+
+    ``footer`` is one extra trusted-HTML line under the receipt — the calorie
+    budget's "left today" while a weight plan runs.
+    """
+    text = format_meal_receipt(receipt, headline)
+    if footer:
+        text = f"{text}\n{footer}"
     await reply_html(
         message,
-        format_meal_receipt(receipt, headline),
+        text,
         reply_markup=meal_receipt_keyboard(
             receipt.header.user_id,
             receipt.header.meal_id,

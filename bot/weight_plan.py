@@ -396,6 +396,52 @@ def trend_points(
     return points
 
 
+# ---------------------------------------------------------------------------
+# Calorie budget
+# ---------------------------------------------------------------------------
+#: Energy in one kilogram of body-weight change — the usual rule of thumb. It is
+#: an approximation (early water loss moves faster than this), which is exactly
+#: why the maintenance figure it is paired with is meant to be re-estimated from
+#: real intake against real weight after a week or two, not trusted forever.
+KCAL_PER_KG = 7700
+
+#: Typo guards for a stated maintenance figure, matching the schema CHECK.
+MIN_MAINTENANCE_KCAL = 1000
+MAX_MAINTENANCE_KCAL = 6000
+
+
+def validated_maintenance_kcal(value: float) -> int:
+    """A whole-calorie maintenance figure inside the guards, or PlanInputError."""
+    try:
+        kcal = int(round(float(value)))
+    except (TypeError, ValueError):
+        raise PlanInputError("Maintenance must be a number of calories.") from None
+    if not (MIN_MAINTENANCE_KCAL <= kcal <= MAX_MAINTENANCE_KCAL):
+        raise PlanInputError(
+            f"Maintenance must be between {MIN_MAINTENANCE_KCAL:,} and "
+            f"{MAX_MAINTENANCE_KCAL:,} kcal — for example "
+            "<code>/plan maintenance 2350</code>."
+        )
+    return kcal
+
+
+def daily_adjustment_kcal(plan: WeightPlan) -> int:
+    """The daily calorie change the plan's rate implies: −385 for −0.05 kg/day."""
+    return int(round(plan.daily_change_kg * KCAL_PER_KG))
+
+
+def daily_budget_kcal(plan: WeightPlan, maintenance_kcal: int) -> int:
+    """Calories a day that would move weight along the plan: maintenance + adjustment."""
+    return int(maintenance_kcal) + daily_adjustment_kcal(plan)
+
+
+def budget_phrase(eaten_kcal: int, budget_kcal: int) -> str:
+    """``1,200 of 1,965 · 765 left`` — or ``2,100 of 1,965 · 135 over``."""
+    left = budget_kcal - eaten_kcal
+    tail = f"{left:,} left" if left >= 0 else f"{-left:,} over"
+    return f"{eaten_kcal:,} of {budget_kcal:,} · {tail}"
+
+
 def format_rate(value: float) -> str:
     """A signed daily change, to the gram: ``−0.05 kg/day``."""
     rounded = round(value, 3)

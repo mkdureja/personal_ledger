@@ -242,6 +242,11 @@ async def _daily_summary(message: Message, db, user_id: int) -> None:
         lines.extend(_macro_summary_lines(diet_entries))
     else:
         lines.append("🍽️ <b>Diet</b>: —")
+    from .plan import calories_line
+
+    budget_line = await calories_line(db, user_id, today)
+    if budget_line:
+        lines.append(budget_line)
 
     lines.append(await _daily_weight_line(db, user_id, today))
 
