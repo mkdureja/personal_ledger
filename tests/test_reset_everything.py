@@ -54,6 +54,9 @@ DEFINITION_TABLES = (
     "catalog_foods",
     "catalog_portions",
     "catalog_aliases",
+    # A weight plan is an intention, not a record: a fresh start of the logs
+    # must not cost the plan they are about to be measured against.
+    "weight_plans",
 )
 
 
@@ -82,6 +85,11 @@ async def populated(tmp_path):
         await db.set_food_preference(UID, "food", food_id, is_pinned=True)
         habit_id, _ = await db.add_habit(UID, "Read")
         supplement_id, _ = await db.add_supplement(UID, "Creatine")
+        from bot.weight_plan import make_plan
+
+        await db.start_weight_plan(
+            UID, make_plan(today_local(), 68.85, -0.05, 28)
+        )
 
         # --- logs (must go) ---
         await db.log_diet(UID, "lunch", "dal", 300, 10.0, 40.0, 5.0)
@@ -128,6 +136,7 @@ class TestEverything:
 
     def test_no_definition_is_touched(self, populated):
         before = _counts(populated, DEFINITION_TABLES)
+        assert before["weight_plans"] == 1, "fixture stored no plan to protect"
 
         reset_diet_logs.main(
             ["--db", str(populated), "--everything", "--no-backup"]

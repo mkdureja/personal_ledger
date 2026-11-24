@@ -1500,6 +1500,50 @@ async def _migration_0018_supplement_counts(conn: aiosqlite.Connection) -> None:
         )
 
 
+async def _migration_0019_weight_plans(conn: aiosqlite.Connection) -> None:
+    """A weight plan — the straight line a person means to follow.
+
+    A plan is a *definition*, not a log: it states an intention (start here, move
+    this much a day, for this many days) and every target is derived from it by
+    :mod:`bot.weight_plan`. So the table stores the four inputs and nothing
+    derived — not the finish weight, not a per-day target table — which keeps
+    the line and its finish from ever disagreeing.
+
+    The rate is stored signed (``-0.05`` loses 50 g a day) rather than as a
+    finish weight, because "0.05 a day" is what people actually commit to and the
+    finish is exact arithmetic from it.
+
+    One active plan per user, enforced by a partial unique index. Starting a new
+    plan retires the old one (``is_active = 0``, ``ended_at`` stamped) instead of
+    deleting it, mirroring habits and monitors: the previous line stays readable
+    and a mistaken restart loses nothing. Weigh-ins are never copied in; a plan is
+    compared against ``weight_logs`` at read time.
+    """
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS weight_plans (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         INTEGER NOT NULL,
+            start_date      TEXT NOT NULL,
+            start_weight_kg REAL NOT NULL
+                            CHECK (start_weight_kg > 0),
+            daily_change_kg REAL NOT NULL,
+            length_days     INTEGER NOT NULL
+                            CHECK (length_days >= 1 AND length_days <= 366),
+            is_active       INTEGER NOT NULL DEFAULT 1
+                            CHECK (is_active IN (0, 1)),
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at        TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_weight_plans_one_active "
+        "ON weight_plans(user_id) WHERE is_active = 1"
+    )
+
+
 _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     1: _migration_0001_baseline,
     2: _migration_0002_mutation_receipts,
@@ -1519,6 +1563,7 @@ _MIGRATIONS: dict[int, Callable[[aiosqlite.Connection], Awaitable[None]]] = {
     16: _migration_0016_catalog_preferences,
     17: _migration_0017_monitors,
     18: _migration_0018_supplement_counts,
+    19: _migration_0019_weight_plans,
 }
 
 

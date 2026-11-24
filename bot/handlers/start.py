@@ -111,6 +111,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<code>/weight 72.4</code> — Log it in one message\n"
         "One entry per day; weighing again corrects the day. Missed days are "
         "carried forward on the chart for up to 10 days.\n\n"
+        "<b>Weight plan</b>\n"
+        "<code>/plan</code> — Your plan: target vs actual, with a chart\n"
+        "<code>/plan new 25 nov 68.85 -0.05 28</code> — Start a plan (first day, "
+        "start kg, kg per day or finish kg, days)\n"
+        "<code>/plan end</code> — End the current plan\n"
+        "Your daily <code>/weight</code> is what gets compared — there is "
+        "nothing extra to log.\n\n"
         "<b>Habits</b>\n"
         "<code>/habits</code> — Check off today's habits\n"
         "<code>/habits setup</code> — Add/remove habits\n\n"
@@ -193,6 +200,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_habits",
         "menu_supplements",
         "menu_monitors",
+        "menu_plan",
         "menu_analytics",
         "menu_recent",
     }
@@ -228,6 +236,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         from .monitors import show_monitor_board
 
         await show_monitor_board(query.message, context, update.effective_user.id)
+    elif data == "menu_plan":
+        from .plan import show_plan
+
+        await show_plan(query.message, context, update.effective_user.id)
     elif data == "menu_recent":
         from .recent import show_recent
 

@@ -37,7 +37,7 @@ from telegram.ext import (
 from .. import weight_series
 from ..config import CONVERSATION_TIMEOUT, today_local
 from ..database import MAX_WEIGHT_KG, MIN_WEIGHT_KG
-from ..keyboards import parse_weight_tap, weight_entry_keyboard
+from ..keyboards import parse_weight_tap, plan_chart_keyboard, weight_entry_keyboard
 from ..weight_series import format_change, format_kg
 from .common import (
     ACTIVE_CONTROL_FILTER,
@@ -234,8 +234,18 @@ async def _record(
             "<i>Weigh in a few more days and I'll show the 7-day trend.</i>"
         )
 
+    # The morning weigh-in is the moment a plan comparison matters, so a running
+    # plan reports against today's target right here, with the chart one tap away.
+    from .plan import weight_receipt_line
+
+    plan_line = await weight_receipt_line(db, user_id, today)
+    markup = None
+    if plan_line:
+        lines.append(plan_line)
+        markup = plan_chart_keyboard()
+
     finish_conversation(update, context, "weight")
-    await reply_html(message, "\n".join(lines))
+    await reply_html(message, "\n".join(lines), reply_markup=markup)
     return ConversationHandler.END
 
 

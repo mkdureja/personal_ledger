@@ -95,9 +95,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     reason someone opens the bot at all; the sections you visit weekly stay
     further down.
 
-    🎯 Monitors sits last, on its own row. Its taps *count* something rather than
-    tick it off, and the extra width is a small, cheap signal that it is not
-    another checklist.
+    🎯 Monitors sits last. Its taps *count* something rather than tick it off.
+    📉 Plan shares its row: it is a *read* (the weight plan and its chart), not
+    a logging action, so it sits with the other once-in-a-while sections rather
+    than beside ⚖️ Weight, which is where the daily number is entered.
     """
     return InlineKeyboardMarkup(
         [
@@ -119,8 +120,28 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("🎯 Monitors", callback_data="menu_monitors"),
+                InlineKeyboardButton("📉 Plan", callback_data="menu_plan"),
             ],
         ]
+    )
+
+
+def plan_keyboard(*, has_plan: bool = True) -> InlineKeyboardMarkup:
+    """Under the plan screen: log today's number, or redraw the plan.
+
+    ``menu_weight`` is the weight flow's own entry point, so the tap opens the
+    same nudge grid as ⚖️ Weight on Home. ``menu_plan`` redraws this screen.
+    """
+    row = [InlineKeyboardButton("⚖️ Log weight", callback_data="menu_weight")]
+    if has_plan:
+        row.append(InlineKeyboardButton("🔄 Refresh", callback_data="menu_plan"))
+    return InlineKeyboardMarkup([row])
+
+
+def plan_chart_keyboard() -> InlineKeyboardMarkup:
+    """The one button under a weight receipt while a plan is running."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📉 Plan chart", callback_data="menu_plan")]]
     )
 
 
@@ -1411,6 +1432,7 @@ def analytics_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("⚖️ Weight Chart", callback_data="chart_weight"),
+                InlineKeyboardButton("📉 Plan Chart", callback_data="menu_plan"),
             ],
             [
                 InlineKeyboardButton("🔥 Streaks", callback_data="analytics_streak"),

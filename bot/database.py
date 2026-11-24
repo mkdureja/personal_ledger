@@ -175,6 +175,19 @@ def _validated_weight_kg(value: float) -> float:
             f"Weight must be between {MIN_WEIGHT_KG:g} and {MAX_WEIGHT_KG:g} kg"
         )
     return round(weight, 2)
+
+
+def _weight_plan_from_row(row):
+    """Rebuild a stored plan from its four inputs (nothing derived is stored)."""
+    from .weight_plan import WeightPlan
+
+    return WeightPlan(
+        start_date=date.fromisoformat(row["start_date"]),
+        start_kg=float(row["start_weight_kg"]),
+        daily_change_kg=float(row["daily_change_kg"]),
+        length_days=int(row["length_days"]),
+    )
+
 MAX_CATALOG_AMOUNT = float(NUTRITION_MAX_CATALOG_AMOUNT)
 MAX_NUTRIENT_VALUE = float(NUTRITION_MAX_NUTRIENT_VALUE)
 MAX_SUPPLEMENT_NAME_LENGTH = 50
@@ -2239,6 +2252,78 @@ class DatabaseManager:
             cursor = await self.conn.execute(
                 "DELETE FROM weight_logs WHERE user_id = ? AND log_date = ?",
                 (user_id, log_date.isoformat()),
+            )
+            return bool(cursor.rowcount)
+
+    # -------------------------------------------------------------------
+    # Weight plan — the line a weigh-in is compared against (v19)
+    # -------------------------------------------------------------------
+    # Only the plan's four inputs are stored; every target is derived by
+    # ``bot.weight_plan``. A user has at most one active plan, and starting a new
+    # one retires the old rather than deleting it.
+    async def start_weight_plan(self, user_id: int, plan) -> dict[str, Any]:
+        """Make ``plan`` this user's active plan, retiring any current one.
+
+        Returns ``{"id": int, "replaced": WeightPlan | None}``. The retire and
+        the insert share one immediate transaction, so there is never a moment
+        with two active plans or none.
+        """
+        from .weight_plan import make_plan
+
+        # Re-validate here so a plan built anywhere else meets the same bounds
+        # as one typed into /plan.
+        checked = make_plan(
+            plan.start_date, plan.start_kg, plan.daily_change_kg, plan.length_days
+        )
+        async with self._write_operation(begin_immediate=True):
+            cursor = await self.conn.execute(
+                "SELECT * FROM weight_plans WHERE user_id = ? AND is_active = 1",
+                (user_id,),
+            )
+            previous = await cursor.fetchone()
+            if previous is not None:
+                await self.conn.execute(
+                    "UPDATE weight_plans SET is_active = 0, ended_at = ? "
+                    "WHERE id = ?",
+                    (_utc_timestamp_now(), previous["id"]),
+                )
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO weight_plans
+                    (user_id, start_date, start_weight_kg, daily_change_kg,
+                     length_days, is_active, created_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    user_id,
+                    checked.start_date.isoformat(),
+                    checked.start_kg,
+                    checked.daily_change_kg,
+                    checked.length_days,
+                    _utc_timestamp_now(),
+                ),
+            )
+            new_id = cursor.lastrowid
+        return {
+            "id": new_id,
+            "replaced": _weight_plan_from_row(previous) if previous else None,
+        }
+
+    async def get_active_weight_plan(self, user_id: int):
+        """This user's active :class:`~bot.weight_plan.WeightPlan`, or ``None``."""
+        row = await self._query_one(
+            "SELECT * FROM weight_plans WHERE user_id = ? AND is_active = 1",
+            (user_id,),
+        )
+        return _weight_plan_from_row(row) if row is not None else None
+
+    async def end_weight_plan(self, user_id: int) -> bool:
+        """Retire the active plan, keeping its row. ``True`` if one was active."""
+        async with self._write_operation():
+            cursor = await self.conn.execute(
+                "UPDATE weight_plans SET is_active = 0, ended_at = ? "
+                "WHERE user_id = ? AND is_active = 1",
+                (_utc_timestamp_now(), user_id),
             )
             return bool(cursor.rowcount)
 

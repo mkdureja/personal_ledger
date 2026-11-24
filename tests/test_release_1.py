@@ -239,7 +239,7 @@ async def test_every_idle_entry_renders_the_same_home(db, entry):
     assert _labels(markup) == [
         "🍽️ Log meal", "⚖️ Weight", "✅ Habits", "💊 Supplements",
         "🏋️ Workout", "📖 Study", "🗒️ Recent", "📊 Analytics",
-        "🎯 Monitors",
+        "🎯 Monitors", "📉 Plan",
     ]
 
 
@@ -380,8 +380,9 @@ async def test_first_ever_start_onboards_opted_out_and_still_shows_home(db):
 def test_command_menu_is_only_the_everyday_set():
     # /weight is here because "/weight 72.4" is a complete daily interaction on
     # its own; every other logging command opens a flow and belongs on Home.
+    # /plan is its daily read while a weight plan runs.
     assert [command for command, _ in main_module.COMMAND_MENU] == [
-        "home", "weight", "summary", "meals", "recent", "undo", "help",
+        "home", "weight", "plan", "summary", "meals", "recent", "undo", "help",
     ]
     assert all(description for _, description in main_module.COMMAND_MENU)
 
@@ -425,7 +426,7 @@ async def test_register_command_menu_sends_only_the_everyday_set():
     await main_module.register_command_menu(SimpleNamespace(bot=_Bot()))
 
     assert [c.command for c in calls[0]] == [
-        "home", "weight", "summary", "meals", "recent", "undo", "help",
+        "home", "weight", "plan", "summary", "meals", "recent", "undo", "help",
     ]
 
 

@@ -116,6 +116,7 @@ from .handlers.analytics import (
 )
 from .handlers.reminders import anchor_job, daily_reminder
 from .handlers.meals import meal_day_handler, meals_handler
+from .handlers.plan import plan_command
 from .handlers.recent import recent_command
 from .handlers.settings import (
     aiparse_command,
@@ -193,6 +194,9 @@ COMMAND_MENU: tuple[tuple[str, str], ...] = (
     # Earns its place by being a daily one-liner: "/weight 72.4" is the whole
     # interaction, with no flow to enter or leave.
     ("weight", "Log today's weight"),
+    # The daily companion to /weight while a plan runs: one message, nothing to
+    # enter or leave.
+    ("plan", "Weight plan: target vs actual"),
     # Reading the day back is as everyday as logging it, and "/summary" answers
     # in one message with nothing to enter or leave — the same test /weight
     # passes. "/summary week" still works; the picker offers the daily one.
@@ -484,6 +488,9 @@ def build_application(*, register_commands: bool = False) -> Application:
     application.add_handler(CommandHandler("streak", streak_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("undo", undo_command, filters=AUTH_FILTER))
     application.add_handler(CommandHandler("recent", recent_command, filters=AUTH_FILTER))
+    # The weight plan. Read-only apart from /plan new|end, and outside every
+    # conversation: its buttons route through ``^menu_`` like Home's.
+    application.add_handler(CommandHandler("plan", plan_command, filters=AUTH_FILTER))
     # A day's food, item by item. Read-only and outside every conversation: its
     # ◀ ▶ keyboard is meant to be usable long after the message was sent.
     application.add_handler(meals_handler)

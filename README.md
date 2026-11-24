@@ -500,6 +500,22 @@ average carry the last reading forward for up to **10 days**, then break the
 line rather than draw a flat one across a longer silence. A carried day is
 always drawn as a hollow dot, so it can never be mistaken for a day you weighed.
 
+### Weight plan
+| Command | Description |
+|---|---|
+| `/plan` | Where you stand: day N of the plan, today's target, your latest weigh-in against it, a 7-day trend, progress, and a chart |
+| `/plan new 25 nov 68.85 -0.05 28` | Start a plan: first day, starting kg, daily change (or a finish weight, e.g. `67.5`), days |
+| `/plan end` | End the current plan (it stays in history) |
+
+A plan is a straight line, and your ordinary `/weight` entries are what get
+compared with it — there is nothing extra to log. While a plan runs, every
+`/weight` receipt reports against today's target. Behind by up to **0.3 kg**
+counts as normal day-to-day swing and carries no warning. The chart's trend is
+measured *against the plan* (target plus the average gap over the week's
+weigh-ins), because a plain rolling average lags a sloped line and would show an
+on-plan week as behind. A daily change must carry its sign (`-0.05` loses,
+`+0.05` gains). One plan is active at a time; a new one retires the old.
+
 ### Analytics
 | Command | Description |
 |---|---|
@@ -537,6 +553,7 @@ always drawn as a hollow dot, so it can never be mistaken for a day you weighed.
 [✅ Habits]      [💊 Supplements]
 [🏋️ Workout]     [📖 Study]
 [🗒️ Recent]      [📊 Analytics]
+[🎯 Monitors]    [📉 Plan]
 ```
 
 During a guided log, every one of those entries preserves the draft and returns

@@ -190,6 +190,14 @@ async def show_home(
         "",
         f"🍽️ Diet: {meal_count} meal(s), {calories} cal{cal_suffix}",
         f"⚖️ Weight: {await _weight_snapshot(db, uid, today)}",
+    ]
+    # Only while a plan exists; Home says nothing about a feature not in use.
+    from .plan import home_line as plan_home_line
+
+    plan_line = await plan_home_line(db, uid, today)
+    if plan_line:
+        lines.append(plan_line)
+    lines += [
         f"📖 Study: {study_min} min",
         f"🏋️ Gym: {gym_count} exercise(s)",
         f"✅ Habits: {checked_count}/{len(active_habits)} done",

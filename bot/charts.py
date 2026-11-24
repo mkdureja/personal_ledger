@@ -383,6 +383,174 @@ def weight_chart(
 
 
 # ---------------------------------------------------------------------------
+# Weight plan chart — the planned line against what the scale said
+# ---------------------------------------------------------------------------
+#: The plan is a *reference*, not a data series, so it is drawn in neutral ink
+#: (dashed) rather than spending a third hue. The two data marks keep the colours
+#: the plain weight chart already uses, so the same thing looks the same on both.
+_PLAN_LINE_COLOR = "#b8b8d0"
+_WEIGHED_COLOR = "#ffd93d"
+_AVERAGE_COLOR = "#00d2ff"
+
+
+def plan_chart(plan, entries: list[tuple[date, float]], today: date) -> io.BytesIO:
+    """The whole plan window: target line, normal-swing band, weigh-ins, average.
+
+    The x-axis always spans the full plan, so the finish is visible from day 1
+    and the remaining distance reads at a glance. Marks:
+
+    * **dashed line** — the plan, labelled with its start and finish weights;
+    * **shaded band** — ±``ON_TRACK_BAND_KG`` around it, the ordinary
+      day-to-day swing, so a single heavy morning inside it reads as noise;
+    * **dots** — days the scale was actually read (carried days are never drawn
+      as weigh-ins);
+    * **solid line** — the 7-day trend *measured against the plan*
+      (:func:`bot.weight_plan.trend_points`). A plain trailing average lags a
+      sloped line by half a window and would show an on-plan week as behind;
+      this one sits on the dashed line exactly when the readings do, and breaks
+      where the record breaks.
+
+    Args:
+        plan: a :class:`bot.weight_plan.WeightPlan`.
+        entries: ``(day, kg)`` weigh-ins; may extend outside the plan.
+        today: draws the "today" marker when it falls inside the plan.
+    """
+    from . import weight_plan, weight_series
+
+    start, end = plan.start_date, plan.end_date
+    days_axis = [start + timedelta(days=i) for i in range(plan.length_days)]
+    last_shown = min(today, end)
+    measured = sorted(
+        (day, float(kg))
+        for day, kg in entries
+        if kg is not None and start <= day <= last_shown
+    )
+    trend = weight_plan.trend_points(plan, entries, today)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    _apply_theme(ax, fig)
+
+    targets = np.array([plan.target_on(day) for day in days_axis], dtype=float)
+    band = weight_plan.ON_TRACK_BAND_KG
+    ax.fill_between(
+        days_axis,
+        targets - band,
+        targets + band,
+        color=_PLAN_LINE_COLOR,
+        alpha=0.10,
+        linewidth=0,
+        label=f"Normal daily swing (±{band:g} kg)",
+        zorder=1,
+    )
+    ax.plot(
+        [start, end],
+        [plan.start_kg, plan.end_kg],
+        color=_PLAN_LINE_COLOR,
+        linewidth=1.6,
+        linestyle=(0, (5, 4)),
+        label=f"Plan ({weight_plan.format_rate(plan.daily_change_kg)})",
+        zorder=2,
+    )
+
+    masked_trend = np.array(
+        [value if value is not None else np.nan for _, value in trend], dtype=float
+    )
+    if np.isfinite(masked_trend).sum() >= 2:
+        ax.plot(
+            [day for day, _ in trend],
+            masked_trend,
+            color=_AVERAGE_COLOR,
+            linewidth=2.0,
+            label="7-day trend",
+            zorder=3,
+        )
+    if measured:
+        ax.scatter(
+            [day for day, _ in measured],
+            [value for _, value in measured],
+            s=34,
+            color=_WEIGHED_COLOR,
+            edgecolors=_BG_COLOR,
+            linewidths=1.0,
+            label="Weighed",
+            zorder=5,
+        )
+
+    # Direct labels, selectively: where the line starts, where it ends, and the
+    # latest reading. Text stays in the foreground ink; the mark beside it
+    # carries the identity.
+    label_style = dict(color=_FG_COLOR, fontsize=9, zorder=6)
+    ax.annotate(
+        f"{weight_series.format_kg(plan.start_kg)}",
+        (start, plan.start_kg),
+        xytext=(0, 12), textcoords="offset points", ha="center", **label_style,
+    )
+    ax.annotate(
+        f"{weight_series.format_kg(plan.end_kg)}",
+        (end, plan.end_kg),
+        xytext=(6, -12), textcoords="offset points", ha="left", **label_style,
+    )
+    if measured:
+        last_day, last_kg = measured[-1]
+        ax.annotate(
+            f"{weight_series.format_kg(last_kg)}",
+            (last_day, last_kg),
+            xytext=(8, -14), textcoords="offset points", ha="left",
+            fontweight="bold", **label_style,
+        )
+
+    if start <= today <= end:
+        ax.axvline(today, color=_FG_COLOR, linewidth=0.8, linestyle=":", alpha=0.6,
+                   zorder=1)
+        ax.annotate(
+            "today", (today, 1.0), xycoords=("data", "axes fraction"),
+            xytext=(3, -12), textcoords="offset points", color=_FG_COLOR,
+            fontsize=8, alpha=0.8,
+        )
+
+    # Keep the whole band and every reading in frame, with a little air.
+    values = list(targets - band) + list(targets + band)
+    values += [value for _, value in measured]
+    values += [value for _, value in trend if value is not None]
+    low, high = min(values), max(values)
+    pad = max(0.1, (high - low) * 0.08)
+    ax.set_ylim(low - pad, high + pad)
+    ax.set_xlim(start - timedelta(days=1), end + timedelta(days=1))
+
+    if today < start:
+        status = f"starts {start.strftime('%b %d')}"
+    elif today > end:
+        status = "finished"
+    else:
+        status = f"day {plan.day_number(today)} of {plan.length_days}"
+    ax.set_title(f"{plan.length_days}-day plan — {status}")
+    ax.set_ylabel("Weight (kg)")
+    # Ticks counted from the plan's own first day, finishing on its last, so the
+    # axis reads in plan days rather than wherever a calendar locator lands.
+    step = max(1, round(plan.length_days / 8))
+    ticks = days_axis[::step]
+    if ticks[-1] != end:
+        if (end - ticks[-1]).days < step / 2 and len(ticks) > 1:
+            ticks[-1] = end
+        else:
+            ticks.append(end)
+    ax.set_xticks(ticks)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    for label in ax.get_xticklabels():
+        label.set_rotation(45)
+        label.set_horizontalalignment("right")
+    ax.legend(
+        loc="upper right" if plan.direction < 0 else "upper left",
+        fontsize=8,
+        facecolor=_BG_COLOR,
+        edgecolor=_GRID_COLOR,
+        labelcolor=_FG_COLOR,
+    )
+
+    return _to_buffer(fig)
+
+
+# ---------------------------------------------------------------------------
 # Habits chart — grid/heatmap (14 days × habits)
 # ---------------------------------------------------------------------------
 def habits_chart(
